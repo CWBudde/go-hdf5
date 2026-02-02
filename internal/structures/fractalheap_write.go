@@ -746,7 +746,8 @@ func (fh *WritableFractalHeap) writeDirectBlockAt(writer Writer, addr uint64, sb
 //
 // Reference: H5HFdblock.c - H5HF__cache_dblock_deserialize().
 func (fh *WritableFractalHeap) readDirectBlockFromFile(reader io.ReaderAt, address, blockSize uint64,
-	heapOffsetSize, fileOffsetSize uint8, endianness binary.ByteOrder, headerAddr uint64) (*DirectBlock, error) {
+	heapOffsetSize, fileOffsetSize uint8, endianness binary.ByteOrder, headerAddr uint64,
+) (*DirectBlock, error) {
 	if address == 0 || address == ^uint64(0) {
 		return nil, fmt.Errorf("invalid direct block address: 0x%X", address)
 	}

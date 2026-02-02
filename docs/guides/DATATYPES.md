@@ -22,17 +22,17 @@ HDF5 uses its own type system that maps to native types in different programming
 
 ### Type Categories
 
-| Category | HDF5 Class | Go Representation | Read | Write |
-|----------|------------|-------------------|------|-------|
-| **Fixed-point** | H5T_INTEGER | int8-64, uint8-64 | ✅ | ✅ |
-| **Floating-point** | H5T_FLOAT | float32, float64 | ✅ | ✅ |
-| **String** | H5T_STRING | string, []string | ✅ | ✅ |
-| **Compound** | H5T_COMPOUND | map[string]interface{} | ✅ | ✅ |
-| **Array** | H5T_ARRAY | [N]T (fixed arrays) | ✅ | ✅ |
-| **Enum** | H5T_ENUM | Named integer constants | ✅ | ✅ |
-| **Reference** | H5T_REFERENCE | uint64, [12]byte | ✅ | ✅ |
-| **Opaque** | H5T_OPAQUE | []byte with tag | ✅ | ✅ |
-| **Time** | H5T_TIME | - | ❌ | ❌ Deprecated |
+| Category           | HDF5 Class    | Go Representation       | Read | Write         |
+| ------------------ | ------------- | ----------------------- | ---- | ------------- |
+| **Fixed-point**    | H5T_INTEGER   | int8-64, uint8-64       | ✅   | ✅            |
+| **Floating-point** | H5T_FLOAT     | float32, float64        | ✅   | ✅            |
+| **String**         | H5T_STRING    | string, []string        | ✅   | ✅            |
+| **Compound**       | H5T_COMPOUND  | map[string]interface{}  | ✅   | ✅            |
+| **Array**          | H5T_ARRAY     | [N]T (fixed arrays)     | ✅   | ✅            |
+| **Enum**           | H5T_ENUM      | Named integer constants | ✅   | ✅            |
+| **Reference**      | H5T_REFERENCE | uint64, [12]byte        | ✅   | ✅            |
+| **Opaque**         | H5T_OPAQUE    | []byte with tag         | ✅   | ✅            |
+| **Time**           | H5T_TIME      | -                       | ❌   | ❌ Deprecated |
 
 ---
 
@@ -43,6 +43,7 @@ HDF5 uses its own type system that maps to native types in different programming
 #### 32-bit Signed Integer
 
 **HDF5 Types**:
+
 - `H5T_STD_I32LE` (little-endian)
 - `H5T_STD_I32BE` (big-endian)
 - `H5T_NATIVE_INT` (platform-native, 32-bit)
@@ -50,6 +51,7 @@ HDF5 uses its own type system that maps to native types in different programming
 **Go Type**: `int32`
 
 **Example**:
+
 ```go
 // HDF5 file contains int32 dataset
 data, err := ds.Read()  // Returns []float64
@@ -67,6 +69,7 @@ info, _ := ds.Info()
 #### 64-bit Signed Integer
 
 **HDF5 Types**:
+
 - `H5T_STD_I64LE` (little-endian)
 - `H5T_STD_I64BE` (big-endian)
 - `H5T_NATIVE_LLONG` (platform-native, 64-bit)
@@ -74,6 +77,7 @@ info, _ := ds.Info()
 **Go Type**: `int64`
 
 **Example**:
+
 ```go
 data, err := ds.Read()  // Returns []float64
 
@@ -90,6 +94,7 @@ data, err := ds.Read()  // Returns []float64
 **Status**: Partially supported (converted to signed)
 
 **HDF5 Types**:
+
 - `H5T_STD_U32LE`, `H5T_STD_U32BE`
 - `H5T_STD_U64LE`, `H5T_STD_U64BE`
 
@@ -102,6 +107,7 @@ data, err := ds.Read()  // Returns []float64
 #### 32-bit Float (Single Precision)
 
 **HDF5 Types**:
+
 - `H5T_IEEE_F32LE` (little-endian)
 - `H5T_IEEE_F32BE` (big-endian)
 - `H5T_NATIVE_FLOAT` (platform-native)
@@ -111,6 +117,7 @@ data, err := ds.Read()  // Returns []float64
 **Precision**: ~7 decimal digits
 
 **Example**:
+
 ```go
 data, err := ds.Read()  // Returns []float64
 
@@ -123,6 +130,7 @@ data, err := ds.Read()  // Returns []float64
 #### 64-bit Float (Double Precision)
 
 **HDF5 Types**:
+
 - `H5T_IEEE_F64LE` (little-endian)
 - `H5T_IEEE_F64BE` (big-endian)
 - `H5T_NATIVE_DOUBLE` (platform-native)
@@ -132,6 +140,7 @@ data, err := ds.Read()  // Returns []float64
 **Precision**: ~15 decimal digits
 
 **Example**:
+
 ```go
 data, err := ds.Read()  // Returns []float64 (native)
 
@@ -143,12 +152,12 @@ data, err := ds.Read()  // Returns []float64 (native)
 
 ### Numeric Type Conversion Summary
 
-| HDF5 Type | Size | Go Read Type | Conversion |
-|-----------|------|--------------|------------|
-| H5T_STD_I32LE/BE | 4 bytes | float64 | int32 → float64 |
-| H5T_STD_I64LE/BE | 8 bytes | float64 | int64 → float64 |
-| H5T_IEEE_F32LE/BE | 4 bytes | float64 | float32 → float64 |
-| H5T_IEEE_F64LE/BE | 8 bytes | float64 | No conversion |
+| HDF5 Type         | Size    | Go Read Type | Conversion        |
+| ----------------- | ------- | ------------ | ----------------- |
+| H5T_STD_I32LE/BE  | 4 bytes | float64      | int32 → float64   |
+| H5T_STD_I64LE/BE  | 8 bytes | float64      | int64 → float64   |
+| H5T_IEEE_F32LE/BE | 4 bytes | float64      | float32 → float64 |
+| H5T_IEEE_F64LE/BE | 8 bytes | float64      | No conversion     |
 
 ---
 
@@ -159,6 +168,7 @@ data, err := ds.Read()  // Returns []float64 (native)
 **HDF5 Type**: `H5T_STRING` with fixed size
 
 **Padding Strategies**:
+
 1. **Null-terminated** (C-style): `"hello\0\0\0"`
 2. **Null-padded**: `"hello\0\0\0"`
 3. **Space-padded**: `"hello   "`
@@ -168,6 +178,7 @@ data, err := ds.Read()  // Returns []float64 (native)
 **Automatic Handling**: The library automatically strips padding.
 
 **Example**:
+
 ```go
 // HDF5 file has fixed-length string dataset
 strings, err := ds.ReadStrings()  // Returns []string
@@ -178,6 +189,7 @@ strings, err := ds.ReadStrings()  // Returns []string
 ```
 
 **Python h5py equivalent**:
+
 ```python
 # Creating fixed-length strings in Python
 import h5py
@@ -198,6 +210,7 @@ with h5py.File('strings.h5', 'w') as f:
 **Go Type**: `string`
 
 **Example**:
+
 ```go
 // HDF5 file has variable-length string dataset
 strings, err := ds.ReadStrings()  // Returns []string
@@ -207,6 +220,7 @@ strings, err := ds.ReadStrings()  // Returns []string
 ```
 
 **Python h5py equivalent**:
+
 ```python
 import h5py
 
@@ -218,10 +232,10 @@ with h5py.File('vlen_strings.h5', 'w') as f:
 
 ### Character Sets
 
-| Encoding | Status | Notes |
-|----------|--------|-------|
-| ASCII | ✅ Full | Standard ASCII (0-127) |
-| UTF-8 | ✅ Full | Unicode support |
+| Encoding | Status  | Notes                  |
+| -------- | ------- | ---------------------- |
+| ASCII    | ✅ Full | Standard ASCII (0-127) |
+| UTF-8    | ✅ Full | Unicode support        |
 
 ---
 
@@ -236,6 +250,7 @@ Compound types are struct-like data with named fields (similar to C structs or G
 **Go Type**: `map[string]interface{}`
 
 **Example HDF5 Structure**:
+
 ```
 Compound Type:
   - "temperature" : float64
@@ -244,6 +259,7 @@ Compound Type:
 ```
 
 **Reading Compound Data**:
+
 ```go
 compounds, err := ds.ReadCompound()  // Returns []map[string]interface{}
 
@@ -262,6 +278,7 @@ for i, record := range compounds {
 ```
 
 **Output**:
+
 ```
 Record 0:
   Temperature: 25.3°C
@@ -278,6 +295,7 @@ Record 1:
 Compound types can contain other compound types:
 
 **HDF5 Structure**:
+
 ```
 Compound Type "Measurement":
   - "timestamp" : int64
@@ -289,6 +307,7 @@ Compound Type "Measurement":
 ```
 
 **Reading Nested Compounds**:
+
 ```go
 compounds, err := ds.ReadCompound()
 
@@ -309,6 +328,7 @@ for _, record := range compounds {
 ### Compound Type with Arrays
 
 **HDF5 Structure**:
+
 ```
 Compound Type:
   - "name" : string
@@ -352,24 +372,26 @@ with h5py.File('compounds.h5', 'w') as f:
 
 The library performs these conversions automatically:
 
-| From (HDF5) | To (Go) | Information Loss? |
-|-------------|---------|-------------------|
-| int32 | float64 | ✅ No (exact) |
-| int64 | float64 | ⚠️ Yes (> 2^53) |
-| float32 | float64 | ✅ No (promoted) |
-| float64 | float64 | ✅ No (exact) |
-| fixed string | string | ✅ No (padding removed) |
-| variable string | string | ✅ No (exact) |
+| From (HDF5)     | To (Go) | Information Loss?       |
+| --------------- | ------- | ----------------------- |
+| int32           | float64 | ✅ No (exact)           |
+| int64           | float64 | ⚠️ Yes (> 2^53)         |
+| float32         | float64 | ✅ No (promoted)        |
+| float64         | float64 | ✅ No (exact)           |
+| fixed string    | string  | ✅ No (padding removed) |
+| variable string | string  | ✅ No (exact)           |
 
 ### Precision Considerations
 
 #### Integer to Float Conversion
 
 **Safe Range** (no precision loss):
+
 - int32: All values (max 2^31 << 2^53)
 - int64: -2^53 to 2^53 (±9,007,199,254,740,992)
 
 **Example of Precision Loss**:
+
 ```go
 // int64 value in HDF5: 9223372036854775807 (2^63 - 1)
 // Converted to float64: 9223372036854776000 (rounded)
@@ -458,6 +480,7 @@ if strings.Contains(info, "int64") {
 ### 4. Use Compound Types for Structured Data
 
 Instead of separate datasets:
+
 ```
 /measurement_temperature
 /measurement_humidity
@@ -465,11 +488,13 @@ Instead of separate datasets:
 ```
 
 Use compound types:
+
 ```
 /measurements (compound with temperature, humidity, location fields)
 ```
 
 Benefits:
+
 - Keeps related data together
 - More efficient storage
 - Easier to maintain consistency
@@ -524,4 +549,4 @@ func main() {
 
 ---
 
-*Last Updated: 2025-11-13*
+_Last Updated: 2025-11-13_

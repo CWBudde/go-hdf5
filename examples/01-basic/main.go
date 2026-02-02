@@ -59,7 +59,7 @@ func createTestFiles() error {
 		return nil
 	}
 
-	if err := os.MkdirAll("testdata", 0755); err != nil {
+	if err := os.MkdirAll("testdata", 0o755); err != nil {
 		return fmt.Errorf("failed to create testdata directory: %v", err)
 	}
 
@@ -99,7 +99,7 @@ print(f'Created: {filename}')
 `
 
 	pyFile := "testdata/create_test_files.py"
-	if err := os.WriteFile(pyFile, []byte(pyScript), 0644); err != nil {
+	if err := os.WriteFile(pyFile, []byte(pyScript), 0o644); err != nil {
 		return fmt.Errorf("failed to write Python script: %v", err)
 	}
 

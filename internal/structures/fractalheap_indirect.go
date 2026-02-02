@@ -310,7 +310,8 @@ func (wb *WritableIndirectBlock) writeAt(writer Writer, address uint64, sb *core
 //
 // Reference: H5HFcache.c - H5HF__cache_iblock_deserialize().
 func ParseIndirectBlock(reader io.ReaderAt, address uint64, numRows, tableWidth uint16,
-	sizeofAddr, heapOffsetSize uint8, endianness binary.ByteOrder, expectedHeapHeaderAddr uint64) (*IndirectBlock, error) {
+	sizeofAddr, heapOffsetSize uint8, endianness binary.ByteOrder, expectedHeapHeaderAddr uint64,
+) (*IndirectBlock, error) {
 	if address == 0 || address == ^uint64(0) {
 		return nil, fmt.Errorf("invalid indirect block address: 0x%X", address)
 	}
@@ -397,7 +398,8 @@ func ParseIndirectBlock(reader io.ReaderAt, address uint64, numRows, tableWidth 
 //
 // Reference: H5HFiblock.c - H5HF__man_iblock_protect().
 func (wb *WritableIndirectBlock) LoadFromFile(reader io.ReaderAt, address uint64, numRows, tableWidth, maxDirectRows uint16,
-	sb *core.Superblock, heapOffsetSize uint8, expectedHeapHeaderAddr uint64) error {
+	sb *core.Superblock, heapOffsetSize uint8, expectedHeapHeaderAddr uint64,
+) error {
 	// Parse the indirect block
 	iblock, err := ParseIndirectBlock(reader, address, numRows, tableWidth,
 		sb.OffsetSize, heapOffsetSize, sb.Endianness, expectedHeapHeaderAddr)

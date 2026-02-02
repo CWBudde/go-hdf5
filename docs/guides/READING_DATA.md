@@ -99,6 +99,7 @@ file.Walk(func(path string, obj hdf5.Object) {
 ```
 
 **Output example**:
+
 ```
 📁 Group: / (3 children)
 📊 Dataset: /temperature
@@ -185,6 +186,7 @@ file.Walk(func(path string, obj hdf5.Object) {
 ```
 
 **Supported numeric types**:
+
 - `int32` → `float64`
 - `int64` → `float64`
 - `float32` → `float64`
@@ -210,6 +212,7 @@ if ds, ok := obj.(*hdf5.Dataset); ok {
 ```
 
 **Supported string types**:
+
 - Fixed-length strings (null-padded)
 - Fixed-length strings (space-padded)
 - Fixed-length strings (null-terminated)
@@ -240,6 +243,7 @@ if ds, ok := obj.(*hdf5.Dataset); ok {
 ```
 
 **Example output**:
+
 ```
 Compound dataset: /measurements
   Record 0:
@@ -271,6 +275,7 @@ if ds, ok := obj.(*hdf5.Dataset); ok {
 ```
 
 **Example output**:
+
 ```
 Dataset: temperature
   Datatype: float64
@@ -412,6 +417,7 @@ printHierarchy(root, "")
 ```
 
 **Output**:
+
 ```
 /
   experiments/
@@ -452,33 +458,36 @@ fmt.Printf("  Datasets: %d\n", datasetCount)
 
 The library automatically converts HDF5 types to Go types:
 
-| HDF5 Type | Go Type (Read()) | Go Type (Specific) |
-|-----------|-----------------|-------------------|
-| H5T_STD_I32LE/BE | float64 | int32 |
-| H5T_STD_I64LE/BE | float64 | int64 |
-| H5T_IEEE_F32LE/BE | float64 | float32 |
-| H5T_IEEE_F64LE/BE | float64 | float64 |
-| H5T_STRING (fixed) | string | string |
-| H5T_STRING (variable) | string | string |
-| H5T_COMPOUND | map[string]interface{} | CompoundValue |
+| HDF5 Type             | Go Type (Read())       | Go Type (Specific) |
+| --------------------- | ---------------------- | ------------------ |
+| H5T_STD_I32LE/BE      | float64                | int32              |
+| H5T_STD_I64LE/BE      | float64                | int64              |
+| H5T_IEEE_F32LE/BE     | float64                | float32            |
+| H5T_IEEE_F64LE/BE     | float64                | float64            |
+| H5T_STRING (fixed)    | string                 | string             |
+| H5T_STRING (variable) | string                 | string             |
+| H5T_COMPOUND          | map[string]interface{} | CompoundValue      |
 
 ### Handling Different Layouts
 
 The library transparently handles all dataset layouts:
 
 **Compact Layout** (data in object header):
+
 ```go
 // Small datasets stored directly in object header
 data, err := ds.Read()  // Works automatically
 ```
 
 **Contiguous Layout** (sequential storage):
+
 ```go
 // Data stored in one continuous block
 data, err := ds.Read()  // Works automatically
 ```
 
 **Chunked Layout** (chunked with indexing):
+
 ```go
 // Data stored in chunks with B-tree index
 data, err := ds.Read()  // Works automatically
@@ -847,4 +856,4 @@ func main() {
 
 ---
 
-*Last Updated: 2025-11-13*
+_Last Updated: 2025-11-13_

@@ -20,7 +20,8 @@ func createTestBTreeWithSNOD(offsetSize uint8, endianness binary.ByteOrder, snod
 	linkNameOffset uint64
 	objectAddress  uint64
 	cacheType      uint32
-}) []byte {
+},
+) []byte {
 	buf := make([]byte, 4096)
 
 	// B-tree header at offset 0

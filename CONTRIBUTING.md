@@ -139,16 +139,19 @@ chore: update golangci-lint configuration
 ### Before Committing
 
 1. **Format code**:
+
    ```bash
    make fmt
    ```
 
 2. **Run linter**:
+
    ```bash
    make lint
    ```
 
 3. **Run tests**:
+
    ```bash
    make test
    ```

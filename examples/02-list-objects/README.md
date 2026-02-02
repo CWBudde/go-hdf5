@@ -18,6 +18,7 @@ go run main.go
 ## What You'll See
 
 **Output**:
+
 ```
 Superblock version: 2
 
@@ -102,4 +103,4 @@ file.Walk(func(path string, obj hdf5.Object) {
 
 ---
 
-*Part of the HDF5 Go Library v0.10.0-beta*
+_Part of the HDF5 Go Library v0.10.0-beta_

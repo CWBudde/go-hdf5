@@ -705,7 +705,7 @@ func CreateForWrite(filename string, mode CreateMode, opts ...interface{}) (*Fil
 	}
 
 	// Ensure cleanup on error
-	var cleanupOnError = true
+	cleanupOnError := true
 	defer func() {
 		if cleanupOnError {
 			_ = fw.Close()

@@ -71,7 +71,7 @@ func Create(filename string, mode CreateMode) (*File, error) {
 	}
 
 	// Ensure cleanup on error
-	var cleanupOnError = true
+	cleanupOnError := true
 	defer func() {
 		if cleanupOnError {
 			_ = fw.Close()

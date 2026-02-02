@@ -21,11 +21,13 @@
 ### Problem: "not an HDF5 file" Error
 
 **Error Message**:
+
 ```
 Error: not an HDF5 file
 ```
 
 **Possible Causes**:
+
 1. File is not actually an HDF5 file
 2. File is corrupted
 3. File path is incorrect
@@ -99,6 +101,7 @@ defer file.Close()
 ### Problem: "unsupported superblock version" Error
 
 **Error Message**:
+
 ```
 Error: unsupported superblock version: 1
 ```
@@ -117,6 +120,7 @@ h5repack -f SHUF -f GZIP=6 oldfile.h5 newfile.h5
 ```
 
 Or open an issue at https://github.com/meko-christian/go-hdf5/issues with:
+
 - Your HDF5 file (if shareable)
 - Output of `h5dump -H yourfile.h5`
 - How the file was created
@@ -124,6 +128,7 @@ Or open an issue at https://github.com/meko-christian/go-hdf5/issues with:
 ### Problem: "root group address beyond file size" Error
 
 **Error Message**:
+
 ```
 Error: root group address 12345678 beyond file size 1000000
 ```
@@ -147,6 +152,7 @@ ls -lh yourfile.h5
 **Symptoms**: `file.Walk()` shows no objects or very few objects.
 
 **Possible Causes**:
+
 1. Empty file
 2. Objects we don't support yet (external links, virtual datasets)
 3. Corrupt file structure
@@ -178,6 +184,7 @@ for i, child := range root.Children() {
 ### Problem: "unsupported datatype" Error
 
 **Error Message**:
+
 ```
 Error: unsupported datatype class: 10
 Error: unsupported datatype class 9 or size 16
@@ -186,6 +193,7 @@ Error: unsupported datatype class 9 or size 16
 **Cause**: Dataset or attribute uses a datatype not yet implemented.
 
 **Supported Types (v0.13.4+)**:
+
 - Integer types (int8-64, uint8-64)
 - Floating point (float32, float64, bfloat16, FP8)
 - Strings (fixed-length and variable-length)
@@ -242,6 +250,7 @@ with h5py.File('original.h5', 'r') as f_in:
 **Symptoms**: `Read()` returns empty slice or nil.
 
 **Possible Causes**:
+
 1. Dataset is actually empty
 2. Unsupported layout (e.g., external storage)
 3. Compression format not supported
@@ -271,6 +280,7 @@ if err != nil {
 **Symptoms**: Strings contain garbage characters or are truncated.
 
 **Causes**:
+
 1. Encoding mismatch (ASCII vs UTF-8)
 2. Fixed-length strings with padding issues
 3. Non-standard string format
@@ -301,6 +311,7 @@ for i, str := range strings {
 ### Problem: Compression Error
 
 **Error Message**:
+
 ```
 Error: gzip: invalid header
 Error: unsupported filter: 6
@@ -346,6 +357,7 @@ with h5py.File('original.h5', 'r') as f_in:
 **Cause**: Automatic conversion to float64.
 
 **Example**:
+
 ```go
 // HDF5 int64: 9223372036854775807
 // Read as float64: 9223372036854776000  (rounded!)
@@ -373,6 +385,7 @@ for i, v := range data {
 ### Problem: Type Assertion Panic
 
 **Error**:
+
 ```
 panic: interface conversion: interface {} is float64, not int32
 ```
@@ -461,6 +474,7 @@ file.Walk(func(path string, obj hdf5.Object) {
 **Symptom**: Program uses excessive memory when reading large datasets.
 
 **Causes**:
+
 1. Reading entire dataset into memory
 2. Keeping multiple file handles open
 3. Not releasing buffers
@@ -494,6 +508,7 @@ runtime.GC()
 **Symptom**: Reading individual datasets is slow.
 
 **Possible Causes**:
+
 1. Chunked dataset with many small chunks
 2. High compression level
 3. Disk I/O bottleneck
@@ -548,6 +563,7 @@ echo $PATH  # Should include Go bin directory
 ### Problem: "go get" Fails
 
 **Error**:
+
 ```
 go: github.com/meko-christian/go-hdf5: unknown revision
 ```
@@ -720,11 +736,13 @@ Include:
 **Problem**: Cannot read string dataset
 
 **Error message**:
+
 ```
 Error: unsupported datatype class: 3
 ```
 
 **Code**:
+
 ```go
 file, _ := hdf5.Open("strings.h5")
 defer file.Close()
@@ -734,6 +752,7 @@ defer file.Close()
 ```
 
 **HDF5 file info**:
+
 ```
 $ h5dump -H strings.h5
 HDF5 "strings.h5" {
@@ -749,10 +768,10 @@ GROUP "/" {
 ```
 
 **What I tried**:
+
 - ReadStrings() method
 - Read() method
 - Checked file with Python h5py (works fine there)
-
 
 ### Where to Get Help
 
@@ -771,4 +790,4 @@ GROUP "/" {
 
 ---
 
-*Last Updated: 2025-11-13*
+_Last Updated: 2025-11-13_

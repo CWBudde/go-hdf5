@@ -11,6 +11,7 @@ go get github.com/meko-christian/go-hdf5
 ```
 
 **Requirements**:
+
 - Go 1.25 or later
 - No CGo dependencies
 - No external libraries required
@@ -82,6 +83,7 @@ func main() {
 ```
 
 **Example output**:
+
 ```
 📁 Group: / (2 children)
 📊 Dataset: /temperature
@@ -280,6 +282,7 @@ func main() {
 ```
 
 **Usage**:
+
 ```bash
 go build -o analyze
 ./analyze -file mydata.h5
@@ -348,7 +351,9 @@ func main() {
 ## ❓ Common Questions
 
 ### Q: Can I read dataset values?
+
 **A**: **Yes!** The library supports reading:
+
 - ✅ Integers (int32, int64)
 - ✅ Floats (float32, float64)
 - ✅ Strings (fixed-length and variable-length)
@@ -357,16 +362,21 @@ func main() {
 - ✅ Chunked datasets
 
 ### Q: Can I write HDF5 files?
+
 **A**: Yes! Write support advancing rapidly - contiguous/chunked datasets, all datatypes, groups, attributes (compact & dense), compression (GZIP/Shuffle), dense storage RMW complete. See [ROADMAP.md](../../ROADMAP.md) for details.
 
 ### Q: Does it require CGo?
+
 **A**: **No!** This is a pure Go implementation with zero C dependencies. Works on all Go-supported platforms.
 
 ### Q: What HDF5 versions are supported?
+
 **A**: The library supports HDF5 format with superblock v0, v2, and v3 (covering HDF5 1.0 through HDF5 2.0.0).
 
 ### Q: What datatypes are supported?
+
 **A**: Fully supported:
+
 - Fixed-point integers (int8-64, uint8-64)
 - Floating-point (float32, float64, FP8, bfloat16)
 - Fixed-length and variable-length strings
@@ -379,14 +389,18 @@ func main() {
 Not supported: H5T_TIME (deprecated in HDF5 spec)
 
 ### Q: What compression formats work?
+
 **A**: Currently:
+
 - ✅ GZIP/Deflate (most common)
 - ❌ SZIP, LZF, BZIP2, Blosc, LZ4, Zstd (optional filters, planned for v0.14.0+)
 
 ### Q: Is it thread-safe?
+
 **A**: Currently, each `File` instance should be used from a single goroutine. Thread-safe concurrent access and SWMR mode are planned for v0.14.0+.
 
 ### Q: What about performance?
+
 **A**: The library uses buffer pooling and efficient memory management. Performance is within 2-3x of the C library for most operations.
 
 ---
@@ -409,6 +423,7 @@ Not supported: H5T_TIME (deprecated in HDF5 spec)
 ## 🐛 Troubleshooting
 
 ### "not an HDF5 file" error
+
 ```go
 file, err := hdf5.Open("data.h5")
 if err != nil {
@@ -418,6 +433,7 @@ if err != nil {
 ```
 
 **Solutions**:
+
 - Verify file exists and is readable
 - Check file is valid HDF5 (try with `h5dump -H file.h5` if HDF5 tools installed)
 - Ensure file isn't corrupted
@@ -426,6 +442,7 @@ if err != nil {
 ### "unsupported superblock version" error
 
 **Solution**: Your HDF5 file uses a format version we don't support yet (v1). Please file an issue at https://github.com/meko-christian/go-hdf5/issues with:
+
 - HDF5 file (if shareable)
 - Output of `h5dump -H yourfile.h5`
 - How the file was created (tool/library used)
@@ -437,6 +454,7 @@ if err != nil {
 ### Reading compressed data fails
 
 **Solution**:
+
 - Check if compression is GZIP (supported)
 - Other formats (SZIP, LZF) not yet supported - see [ROADMAP.md](../../ROADMAP.md)
 
@@ -447,12 +465,14 @@ if err != nil {
 **Current Status: Production-ready for reading and writing HDF5 files**
 
 ✅ **Ready for production use** if your files contain:
+
 - Standard datatypes (int, float, string, compound, arrays, enums)
 - GZIP compression
 - Superblock v0, v2, or v3 (HDF5 2.0.0 compatible)
 - Object header v2
 
 **Production Status**:
+
 - ✅ Full read/write support
 - ✅ All datatypes including compound
 - ✅ Soft/external links supported
@@ -476,4 +496,4 @@ After completing this quick start, explore:
 
 ---
 
-*Last Updated: 2025-11-13*
+_Last Updated: 2025-11-13_

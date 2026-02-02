@@ -23,6 +23,7 @@
 ### What is B-tree Rebalancing?
 
 When you delete attributes from dense storage (8+ attributes), the B-tree index becomes sparse. Rebalancing:
+
 - **Merges** sparse nodes to maintain ≥50% occupancy
 - **Redistributes** records for balanced tree structure
 - **Decreases depth** when root becomes empty (future feature)
@@ -31,11 +32,11 @@ When you delete attributes from dense storage (8+ attributes), the B-tree index 
 
 ### Performance Impact
 
-| Operation | With Rebalancing | Without Rebalancing | Speedup |
-|-----------|------------------|---------------------|---------|
-| Single deletion | ~5ms | ~0.5ms | **10x faster** |
-| 1000 deletions | ~5s | ~0.5s | **10x faster** |
-| 10000 deletions | ~50s | ~5s | **10x faster** |
+| Operation       | With Rebalancing | Without Rebalancing | Speedup        |
+| --------------- | ---------------- | ------------------- | -------------- |
+| Single deletion | ~5ms             | ~0.5ms              | **10x faster** |
+| 1000 deletions  | ~5s              | ~0.5s               | **10x faster** |
+| 10000 deletions | ~50s             | ~5s                 | **10x faster** |
 
 **Trade-off**: Without rebalancing, B-tree becomes sparse (wastes space, slower reads).
 
@@ -48,6 +49,7 @@ When you delete attributes from dense storage (8+ attributes), the B-tree index 
 ### Use Case: Batch Deletions
 
 **Disable** rebalancing (`WithBTreeRebalancing(false)`) when:
+
 - Deleting **many** attributes (>100)
 - Performance is **critical**
 - Real-time data acquisition
@@ -78,6 +80,7 @@ ds.RebalanceAttributeBTree()
 ```
 
 **Total time**:
+
 - **With rebalancing**: 10,000 × 5ms = **50 seconds**
 - **Without + manual**: 10,000 × 0.5ms + 100ms = **5.1 seconds**
 - **Speedup**: ~**10x faster!**
@@ -123,6 +126,7 @@ ds.WriteAttribute("new_attr", 42)
 ### Use Case: Interactive Operations
 
 **Keep enabled** (default) when:
+
 - Interactive use (few deletions)
 - Long-running processes (maintain optimal structure)
 - Unknown deletion patterns
@@ -144,6 +148,7 @@ ds.DeleteAttribute("experiment_1")  // Tree stays balanced
 ```
 
 **Benefits**:
+
 - Tree stays optimal (≥50% node occupancy)
 - Fast reads (minimal tree depth)
 - No manual maintenance needed
@@ -187,6 +192,7 @@ fw.RebalanceAllBTrees()  // Rebalance all datasets in file
 ```
 
 **When to use global**:
+
 - Multiple datasets modified
 - End-of-session cleanup
 - Before closing file
@@ -194,10 +200,10 @@ fw.RebalanceAllBTrees()  // Rebalance all datasets in file
 **Performance**:
 
 | File Size | Datasets | Global Rebalancing Time |
-|-----------|----------|-------------------------|
-| Small | <10 | <1ms |
-| Medium | 10-100 | 1-10ms |
-| Large | 100+ | 10-100ms |
+| --------- | -------- | ----------------------- |
+| Small     | <10      | <1ms                    |
+| Medium    | 10-100   | 1-10ms                  |
+| Large     | 100+     | 10-100ms                |
 
 ---
 
@@ -213,16 +219,17 @@ For **very large** HDF5 files with millions of attributes:
 
 ### Performance Estimates
 
-| Attribute Count | File Size | Rebalancing Time | Notes |
-|----------------|-----------|------------------|-------|
-| 100 | <1 KB | <1 ms | Instant |
-| 1,000 | ~100 KB | 1-10 ms | Instant |
-| 10,000 | ~1 MB | 10-100 ms | Fast |
-| 100,000 | ~10 MB | 100ms-1s | Noticeable |
-| 1,000,000 | ~100 MB | 1-10s | Slow |
-| 10,000,000 | ~1 GB | 10-100s | Very slow |
+| Attribute Count | File Size | Rebalancing Time | Notes      |
+| --------------- | --------- | ---------------- | ---------- |
+| 100             | <1 KB     | <1 ms            | Instant    |
+| 1,000           | ~100 KB   | 1-10 ms          | Instant    |
+| 10,000          | ~1 MB     | 10-100 ms        | Fast       |
+| 100,000         | ~10 MB    | 100ms-1s         | Noticeable |
+| 1,000,000       | ~100 MB   | 1-10s            | Slow       |
+| 10,000,000      | ~1 GB     | 10-100s          | Very slow  |
 
 **Factors affecting performance**:
+
 1. **Disk I/O** - Main bottleneck (reads/writes B-tree nodes)
 2. **B-tree depth** - More levels = more I/O
 3. **Node size** - Larger nodes = fewer I/O operations
@@ -291,6 +298,7 @@ fw.EnableRebalancing()
 ```
 
 **Benefits**:
+
 - More predictable performance
 - Progress tracking
 - Graceful interruption (can stop/resume)
@@ -303,11 +311,11 @@ fw.EnableRebalancing()
 
 Current implementation uses single-leaf B-trees (depth=0):
 
-| Operation | Time | Notes |
-|-----------|------|-------|
-| Manual rebalancing | <1ms | No-op (single leaf already optimal) |
-| Deletion with rebalancing | ~5ms | Includes B-tree search + deletion |
-| Deletion without rebalancing | ~0.5ms | Only B-tree search + deletion |
+| Operation                    | Time   | Notes                               |
+| ---------------------------- | ------ | ----------------------------------- |
+| Manual rebalancing           | <1ms   | No-op (single leaf already optimal) |
+| Deletion with rebalancing    | ~5ms   | Includes B-tree search + deletion   |
+| Deletion without rebalancing | ~0.5ms | Only B-tree search + deletion       |
 
 **Speedup**: Disabling rebalancing → **10x faster** deletions!
 
@@ -315,11 +323,11 @@ Current implementation uses single-leaf B-trees (depth=0):
 
 When multi-level B-trees are implemented:
 
-| Dataset Size | Rebalancing Time | Deletion Time (w/ rebalancing) |
-|--------------|------------------|--------------------------------|
-| Small (<1000 attrs) | <10ms | ~5-10ms |
-| Medium (1000-10000 attrs) | 10-100ms | ~10-20ms |
-| Large (10000+ attrs) | 100ms-1s | ~20-50ms |
+| Dataset Size              | Rebalancing Time | Deletion Time (w/ rebalancing) |
+| ------------------------- | ---------------- | ------------------------------ |
+| Small (<1000 attrs)       | <10ms            | ~5-10ms                        |
+| Medium (1000-10000 attrs) | 10-100ms         | ~10-20ms                       |
+| Large (10000+ attrs)      | 100ms-1s         | ~20-50ms                       |
 
 **Speedup will remain** ~**10-20x** for batch operations!
 
@@ -466,15 +474,17 @@ fw.RebalanceAllBTrees()
 **Key Takeaway**: For batch deletions (>100 attributes), **disable rebalancing** → **10x speedup!**
 
 **Simple Rule**:
+
 - Interactive use → **keep rebalancing enabled** (default)
 - Batch operations → **disable, delete, manual rebalance**
 - Gigabyte files → **batch mode + off-peak scheduling**
 
 **Questions?** See:
+
 - [User Guide - Attribute Operations](ATTRIBUTE_OPERATIONS.md)
 - [API Reference - FileWriter](../API.md#filewriter)
 - [Benchmarks](../../btree_rebalancing_bench_test.go)
 
 ---
 
-*Last Updated: 2025-11-13*
+_Last Updated: 2025-11-13_

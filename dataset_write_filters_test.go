@@ -286,38 +286,46 @@ func TestChunkedDatasetDifferentDataTypes(t *testing.T) {
 		data     interface{}
 		elemSize int
 	}{
-		{"int32 with shuffle+gzip", Int32,
+		{
+			"int32 with shuffle+gzip", Int32,
 			func() []int32 {
 				d := make([]int32, 1000)
 				for i := range d {
 					d[i] = int32(i)
 				}
 				return d
-			}(), 4},
-		{"float64 with shuffle+gzip", Float64,
+			}(), 4,
+		},
+		{
+			"float64 with shuffle+gzip", Float64,
 			func() []float64 {
 				d := make([]float64, 1000)
 				for i := range d {
 					d[i] = float64(i) * 0.1
 				}
 				return d
-			}(), 8},
-		{"int16 with shuffle+gzip", Int16,
+			}(), 8,
+		},
+		{
+			"int16 with shuffle+gzip", Int16,
 			func() []int16 {
 				d := make([]int16, 1000)
 				for i := range d {
 					d[i] = int16(i)
 				}
 				return d
-			}(), 2},
-		{"uint64 with shuffle+gzip", Uint64,
+			}(), 2,
+		},
+		{
+			"uint64 with shuffle+gzip", Uint64,
 			func() []uint64 {
 				d := make([]uint64, 1000)
 				for i := range d {
 					d[i] = uint64(i)
 				}
 				return d
-			}(), 8},
+			}(), 8,
+		},
 	}
 
 	for _, tt := range tests {

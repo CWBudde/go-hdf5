@@ -49,6 +49,7 @@ Dataset → Global Heap Reference → Global Heap → String Data
 ```
 
 **Example**:
+
 ```
 Dataset contains:
   Reference 1: {heap_addr: 0x1000, object_index: 0}
@@ -112,9 +113,9 @@ compounds, err := ds.ReadCompound()
 
 ## Fixed vs Variable-Length Strings
 
-| Type | Storage | Example |
-|------|---------|---------|
-| **Fixed** | In dataset directly | All strings padded to 20 bytes |
+| Type         | Storage                | Example                        |
+| ------------ | ---------------------- | ------------------------------ |
+| **Fixed**    | In dataset directly    | All strings padded to 20 bytes |
 | **Variable** | Global Heap references | Each string has natural length |
 
 **Python h5py Example**:
@@ -159,6 +160,7 @@ with h5py.File('strings.h5', 'w') as f:
 ### Reference Format
 
 8 or 16 bytes depending on offset size:
+
 ```
 Bytes 0-7/15: Global Heap address
 Bytes 8-11/16-19: Object index
@@ -177,6 +179,7 @@ Bytes 8-11/16-19: Object index
 **Cause**: Encoding mismatch (ASCII vs UTF-8).
 
 **Solution**: Verify encoding with h5dump:
+
 ```bash
 h5dump -d /dataset file.h5
 ```
@@ -189,4 +192,4 @@ h5dump -d /dataset file.h5
 
 ---
 
-*Part of the HDF5 Go Library v0.10.0-beta*
+_Part of the HDF5 Go Library v0.10.0-beta_

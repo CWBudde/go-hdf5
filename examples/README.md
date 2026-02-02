@@ -36,9 +36,11 @@ go build
 Each example has its own README.md with detailed explanations, code walkthroughs, and use cases.
 
 ### [01-basic](01-basic/) - Basic Usage
+
 **Best starting point for new users!**
 
 Demonstrates:
+
 - Opening HDF5 files
 - Reading superblock information
 - Walking file structure
@@ -47,7 +49,9 @@ Demonstrates:
 📖 [Full Documentation →](01-basic/README.md)
 
 ### [02-list-objects](02-list-objects/) - File Navigation
+
 Demonstrates:
+
 - Traversing groups and datasets
 - Reading object hierarchy
 - Walking nested structures
@@ -56,7 +60,9 @@ Demonstrates:
 📖 [Full Documentation →](02-list-objects/README.md)
 
 ### [03-read-dataset](03-read-dataset/) - Dataset Reading
+
 Demonstrates:
+
 - Reading numeric datasets (floats, integers)
 - Reading matrices (2D data)
 - Reading multiple datasets
@@ -66,7 +72,9 @@ Demonstrates:
 📖 [Full Documentation →](03-read-dataset/README.md)
 
 ### [04-vlen-strings](04-vlen-strings/) - Variable-Length Strings
+
 Demonstrates:
+
 - Reading variable-length strings via Global Heap
 - Global Heap architecture
 - String storage mechanisms
@@ -75,9 +83,11 @@ Demonstrates:
 📖 [Full Documentation →](04-vlen-strings/README.md)
 
 ### [05-comprehensive](05-comprehensive/) - Full Feature Demo
+
 **Complete demonstration of all library features!**
 
 Demonstrates:
+
 - All superblock versions (0, 2, 3)
 - Object headers (v1 + v2)
 - All group formats
@@ -91,6 +101,7 @@ Demonstrates:
 ## Test Files
 
 Examples expect test HDF5 files in `../../testdata/`:
+
 - `v0.h5` - HDF5 version 0 (earliest format)
 - `v2.h5` - HDF5 version 2 (1.8.x format)
 - `v3.h5` - HDF5 version 3 (latest format)
@@ -105,6 +116,7 @@ Most examples auto-generate test files if Python with h5py is available.
 - For test file generation (optional): Python 3 with `h5py` and `numpy`
 
 Install Python dependencies:
+
 ```bash
 pip install h5py numpy
 ```
@@ -114,6 +126,7 @@ pip install h5py numpy
 ## API Usage Patterns
 
 ### Opening Files
+
 ```go
 file, err := hdf5.Open("data.h5")
 if err != nil {
@@ -123,6 +136,7 @@ defer file.Close()
 ```
 
 ### Walking File Structure
+
 ```go
 file.Walk(func(path string, obj hdf5.Object) {
     switch v := obj.(type) {
@@ -135,6 +149,7 @@ file.Walk(func(path string, obj hdf5.Object) {
 ```
 
 ### Reading Datasets
+
 ```go
 // Numeric data
 values, err := dataset.Read()
@@ -149,6 +164,7 @@ records, err := dataset.ReadCompound()
 ## Building All Examples
 
 From repository root:
+
 ```bash
 make examples
 ```
@@ -158,6 +174,7 @@ This builds all examples to verify they compile correctly.
 ## Documentation
 
 ### User Guides
+
 - **[Installation Guide](../docs/guides/INSTALLATION.md)** - Setup and verification
 - **[Quick Start Guide](../docs/guides/QUICKSTART.md)** - Get started in 5 minutes
 - **[Reading Data Guide](../docs/guides/READING_DATA.md)** - Comprehensive reading guide
@@ -166,6 +183,7 @@ This builds all examples to verify they compile correctly.
 - **[FAQ](../docs/guides/FAQ.md)** - Frequently asked questions
 
 ### Reference
+
 - **[Main README](../README.md)** - Library overview
 - **[ROADMAP](../ROADMAP.md)** - Future plans
 - **[API Documentation](https://pkg.go.dev/github.com/meko-christian/go-hdf5)** - GoDoc
@@ -173,5 +191,5 @@ This builds all examples to verify they compile correctly.
 
 ---
 
-*Last Updated: 2025-10-29*
-*Version: 0.10.0-beta*
+_Last Updated: 2025-10-29_
+_Version: 0.10.0-beta_

@@ -141,16 +141,19 @@ func demonstrateDataset(file *hdf5.File, ds *hdf5.Dataset) {
 ### 1. Superblock Versions
 
 **Version 0** (HDF5 1.0-1.6):
+
 - Original format
 - Symbol table groups
 - Fixed-size offsets
 
 **Version 2** (HDF5 1.8+):
+
 - Streamlined superblock
 - Object header v2
 - Larger file support
 
 **Version 3** (HDF5 1.10+):
+
 - SWMR (Single Writer Multiple Readers)
 - Enhanced concurrency
 - Checksums
@@ -158,11 +161,13 @@ func demonstrateDataset(file *hdf5.File, ds *hdf5.Dataset) {
 ### 2. Object Headers
 
 **Version 1** (legacy):
+
 - Used in pre-1.8 files
 - Continuation blocks for large headers
 - ✅ **NEW in v0.10.0-beta**
 
 **Version 2** (modern):
+
 - Compact format
 - More efficient
 - Supports larger objects
@@ -170,6 +175,7 @@ func demonstrateDataset(file *hdf5.File, ds *hdf5.Dataset) {
 ### 3. Dataset Layouts
 
 **Compact**:
+
 ```
 Data stored directly in object header
 Best for: Small datasets (< 64KB)
@@ -177,6 +183,7 @@ Example: Configuration values, metadata
 ```
 
 **Contiguous**:
+
 ```
 Data stored in one continuous block
 Best for: Medium datasets, sequential access
@@ -184,6 +191,7 @@ Example: Time series, matrices
 ```
 
 **Chunked**:
+
 ```
 Data split into chunks with B-tree index
 Best for: Large datasets, partial reads, compression
@@ -193,11 +201,13 @@ Example: Large scientific datasets, images
 ### 4. Compression
 
 **GZIP/Deflate**:
+
 - Supported compression levels: 0-9
 - Level 6 recommended for balance
 - Automatic decompression on read
 
 **Example**:
+
 ```
 Layout: Chunked (addr: 0x1000)
 Chunk dimensions: [100, 100]
@@ -206,36 +216,40 @@ Filters: GZIP
 
 ### 5. Datatypes Demonstrated
 
-| Type | Example Dataset | Notes |
-|------|----------------|-------|
-| int32 | `/counts` | Signed 32-bit integers |
-| int64 | `/timestamps` | Signed 64-bit integers |
-| float32 | `/measurements` | Single precision |
-| float64 | `/data` | Double precision |
-| Fixed string | `/names` | Fixed-length strings |
-| VLen string | `/descriptions` | Variable-length |
-| Compound | `/records` | Struct-like data |
+| Type         | Example Dataset | Notes                  |
+| ------------ | --------------- | ---------------------- |
+| int32        | `/counts`       | Signed 32-bit integers |
+| int64        | `/timestamps`   | Signed 64-bit integers |
+| float32      | `/measurements` | Single precision       |
+| float64      | `/data`         | Double precision       |
+| Fixed string | `/names`        | Fixed-length strings   |
+| VLen string  | `/descriptions` | Variable-length        |
+| Compound     | `/records`      | Struct-like data       |
 
 ## Production Readiness Metrics
 
 ### Test Coverage
+
 - **76.3%** overall coverage
 - **57** reference test files
 - **200+** test cases
 - **0** lint issues (34+ linters)
 
 ### Compatibility
+
 - ✅ HDF5 1.0 - 1.14+ files
 - ✅ Python h5py-created files
 - ✅ MATLAB v7.3 files
 - ✅ NASA/climate data files
 
 ### Performance
+
 - **2-3x slower** than C library (acceptable)
 - **~30-50 MB/s** reading speed
 - **Efficient** memory management
 
 ### Limitations
+
 - ⚠️ Dense attributes partial support (<10% impact)
 - ⚠️ Some advanced types (arrays, enums)
 - ⚠️ Read-only (write in v0.11.0+)
@@ -275,6 +289,7 @@ fmt.Printf("Processed in %v\n", elapsed)
 ### 4. Debug Issues
 
 The comprehensive output helps identify:
+
 - Which features your file uses
 - Where reading might fail
 - What's supported vs not
@@ -333,5 +348,5 @@ After exploring all features:
 
 ---
 
-*Part of the HDF5 Go Library v0.10.0-beta*
-*Demonstrates ~98% production-ready implementation*
+_Part of the HDF5 Go Library v0.10.0-beta_
+_Demonstrates ~98% production-ready implementation_

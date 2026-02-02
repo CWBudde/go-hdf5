@@ -243,7 +243,8 @@ func writeAttribute(fw *FileWriter, objectAddr uint64, name string, value interf
 // writeCompactAttribute writes attribute to object header (compact storage).
 // This is the Phase 1 code, extracted into separate function.
 func writeCompactAttribute(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
-	name string, value interface{}, sb *core.Superblock) error {
+	name string, value any, sb *core.Superblock,
+) error {
 	// 1. Infer datatype and encode attribute
 	datatype, dataspace, err := inferDatatypeFromValue(value)
 	if err != nil {
@@ -302,7 +303,8 @@ func writeCompactAttribute(fw *FileWriter, objectAddr uint64, oh *core.ObjectHea
 // If attribute doesn't exist (existingIndex < 0), it adds a new message.
 // If object header is full, it triggers transition to dense storage.
 func upsertAttributeMessage(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
-	existingIndex int, attrMsg []byte, name string, value interface{}, sb *core.Superblock) error {
+	existingIndex int, attrMsg []byte, name string, value interface{}, sb *core.Superblock,
+) error {
 	if existingIndex >= 0 {
 		// Attribute exists → Replace (upsert semantics)
 		oh.Messages[existingIndex].Data = attrMsg
@@ -337,7 +339,8 @@ func upsertAttributeMessage(fw *FileWriter, objectAddr uint64, oh *core.ObjectHe
 //
 // Reference: Same as writeAttribute, but skips object header re-parsing.
 func writeAttributeWithCachedHeader(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
-	denseAttrInfo *core.AttributeInfoMessage, name string, value interface{}) error {
+	denseAttrInfo *core.AttributeInfoMessage, name string, value interface{},
+) error {
 	sb := fw.file.Superblock()
 
 	// If dense storage info is available, use it directly
@@ -371,7 +374,8 @@ func writeAttributeWithCachedHeader(fw *FileWriter, objectAddr uint64, oh *core.
 // This is similar to writeDenseAttribute but uses the cached AttributeInfoMessage
 // instead of searching for it in the object header.
 func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
-	attrInfo *core.AttributeInfoMessage, name string, value interface{}, sb *core.Superblock) error {
+	attrInfo *core.AttributeInfoMessage, name string, value interface{}, sb *core.Superblock,
+) error {
 	// Load existing fractal heap from file
 	heap := structures.NewWritableFractalHeap(64 * 1024)
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
@@ -497,7 +501,8 @@ func deleteAttribute(fw *FileWriter, objectAddr uint64, name string) error {
 //
 // This is used when DatasetWriter has cached object header and dense attr info.
 func deleteAttributeWithCachedHeader(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
-	denseAttrInfo *core.AttributeInfoMessage, name string) error {
+	denseAttrInfo *core.AttributeInfoMessage, name string,
+) error {
 	sb := fw.file.Superblock()
 
 	// If dense storage info is available, use it directly
@@ -532,7 +537,8 @@ func deleteAttributeWithCachedHeader(fw *FileWriter, objectAddr uint64, oh *core
 //
 // Reference: H5Adelete.c - H5A__delete(), H5O.c - H5O_msg_remove().
 func deleteCompactAttributeFromHeader(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
-	name string, sb *core.Superblock) error {
+	name string, sb *core.Superblock,
+) error {
 	// Find and remove attribute message
 	msgIndex := -1
 	for i, msg := range oh.Messages {
@@ -589,7 +595,8 @@ func deleteDenseAttributeFromHeader(fw *FileWriter, _ uint64, oh *core.ObjectHea
 // It deletes from heap and B-tree but does NOT update the Attribute Info count.
 // Callers are responsible for updating the count and writing back the object header.
 func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessage,
-	name string, sb *core.Superblock) error {
+	name string, sb *core.Superblock,
+) error {
 	// Load existing fractal heap from file
 	heap := structures.NewWritableFractalHeap(64 * 1024)
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
@@ -646,7 +653,8 @@ func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessag
 //
 //nolint:gocognit,gocyclo,cyclop // Complex RMW logic with multiple verification steps
 func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
-	name string, value interface{}, sb *core.Superblock) error {
+	name string, value interface{}, sb *core.Superblock,
+) error {
 	// Step 1: Find Attribute Info Message
 	var attrInfo *core.AttributeInfoMessage
 	for _, msg := range oh.Messages {
@@ -771,7 +779,8 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 //
 //nolint:gocognit,gocyclo,cyclop // Complex but necessary business logic for compact→dense transition
 func transitionToDenseAttributes(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
-	name string, value interface{}, sb *core.Superblock) error {
+	name string, value interface{}, sb *core.Superblock,
+) error {
 	// 1. Read all existing compact attributes
 	var compactAttrs []*core.Attribute
 	for _, msg := range oh.Messages {

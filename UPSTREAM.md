@@ -6,16 +6,18 @@ that this Pure Go implementation is based on.
 ## Primary References
 
 ### HDF5 Format Specification
-URL:        https://docs.hdfgroup.org/hdf5/latest/_f_m_t3.html
-Version:    Format Specification v4.0 (HDF5 Library 2.0.0)
-Date:       2025-05-01
-Status:     Fully supported (superblock v0, v2, v3)
+
+URL: https://docs.hdfgroup.org/hdf5/latest/_f_m_t3.html
+Version: Format Specification v4.0 (HDF5 Library 2.0.0)
+Date: 2025-05-01
+Status: Fully supported (superblock v0, v2, v3)
 
 ### HDF5 C Library (Reference Implementation)
+
 Repository: https://github.com/HDFGroup/hdf5
-Branch:     develop
-Commit:     [`bc8f6bb02a`](https://github.com/HDFGroup/hdf5/commit/bc8f6bb02aaa8b162bf04b42f2b59bcbbbfcf9f8)
-Date:       2025-12-19 (local sync)
+Branch: develop
+Commit: [`bc8f6bb02a`](https://github.com/HDFGroup/hdf5/commit/bc8f6bb02aaa8b162bf04b42f2b59bcbbbfcf9f8)
+Date: 2025-12-19 (local sync)
 Local Copy: Clone repository for development reference
 
 ## Upstream Sync History
@@ -27,17 +29,19 @@ Local Copy: Clone repository for development reference
 
 #### New CVEs Identified
 
-| CVE | Severity | File | Status |
-|-----|----------|------|--------|
-| [CVE-2025-2308](https://github.com/HDFGroup/hdf5/pull/5960) | HIGH | H5Zscaleoffset.c | ✅ Not affected (filter not implemented) |
-| [CVE-2025-2309](https://github.com/HDFGroup/hdf5/pull/5963) | HIGH | H5Odtype.c | ✅ Not affected (bitfield data conversion not implemented) |
+| CVE                                                         | Severity | File             | Status                                                     |
+| ----------------------------------------------------------- | -------- | ---------------- | ---------------------------------------------------------- |
+| [CVE-2025-2308](https://github.com/HDFGroup/hdf5/pull/5960) | HIGH     | H5Zscaleoffset.c | ✅ Not affected (filter not implemented)                   |
+| [CVE-2025-2309](https://github.com/HDFGroup/hdf5/pull/5963) | HIGH     | H5Odtype.c       | ✅ Not affected (bitfield data conversion not implemented) |
 
 #### Other Notable Changes
+
 - R-tree optimizations ([#6039](https://github.com/HDFGroup/hdf5/pull/6039))
 - Zero-element reads on virtual datasets fix ([#6083](https://github.com/HDFGroup/hdf5/pull/6083))
 - HDF5 2.0.0 HISTORY files updated
 
 #### Tasks Created
+
 - **TASK-034**: CVE-2025-2309 bitfield datatype security review (MEDIUM) ✅ DONE - Not affected
 - **TASK-035**: CVE-2025-2308 documentation (N/A - not affected) ✅ DONE
 - **TASK-036**: R-tree optimizations review (LOW)
@@ -51,12 +55,14 @@ Local Copy: Clone repository for development reference
 **Commits Analyzed**: 54 commits
 
 #### CVEs Incorporated (v0.13.0)
+
 - CVE-2025-7067: Buffer overflow in chunk reading (HIGH) ✅
 - CVE-2025-6269: Heap overflow in fractal heap (MEDIUM) ✅
 - CVE-2025-2926: Stack overflow in B-tree recursion (MEDIUM) ✅
 - CVE-2025-44905: Integer overflow in dataspace (MEDIUM) ✅
 
 #### Features Added
+
 - 64-bit chunk dimensions (breaking change, internal API)
 - FP8 (E4M3, E5M2) and bfloat16 datatypes
 
@@ -67,12 +73,14 @@ Local Copy: Clone repository for development reference
 This is a **Pure Go implementation**, not a CGo wrapper or line-by-line port.
 
 ### Approach
+
 - Format Spec v4.0 as primary reference for binary format
 - C library source code consulted for edge cases and validation
 - Go idioms preferred over C patterns
 - Independent test suite with round-trip validation
 
 ### Key Differences from C Library
+
 1. **Memory Management**: Go GC vs manual malloc/free
 2. **Error Handling**: Go errors vs C return codes + errno
 3. **Threading**: User responsibility vs built-in thread safety
@@ -80,21 +88,22 @@ This is a **Pure Go implementation**, not a CGo wrapper or line-by-line port.
 5. **No MPI Support**: Single-process only (parallel I/O planned)
 
 ### Feature Parity Status
-| Feature              | C Library | Go Library | Notes |
-|---------------------|-----------|------------|-------|
-| Superblock v0,v2,v3 | ✅        | ✅         | Full support |
-| Object Header v1,v2 | ✅        | ✅         | With continuations |
-| All Datatypes       | ✅        | ✅         | Including FP8, bfloat16 |
+
+| Feature             | C Library | Go Library | Notes                              |
+| ------------------- | --------- | ---------- | ---------------------------------- |
+| Superblock v0,v2,v3 | ✅        | ✅         | Full support                       |
+| Object Header v1,v2 | ✅        | ✅         | With continuations                 |
+| All Datatypes       | ✅        | ✅         | Including FP8, bfloat16            |
 | Bitfield Datatype   | ✅        | ❌         | Not supported (explicit rejection) |
-| Chunked + Filters   | ✅        | ✅         | GZIP, Shuffle, Fletcher32, LZF |
-| BZIP2 Filter        | ✅        | ⚠️         | Read only (stdlib) |
-| Scale-Offset Filter | ✅        | ❌         | Not implemented |
-| Dense Attributes    | ✅        | ✅         | Fractal heap + B-tree v2 |
-| Soft/External Links | ✅        | ✅         | Full support |
-| SWMR Mode           | ✅        | ❌         | Planned v0.14.0+ |
-| Parallel I/O (MPI)  | ✅        | ❌         | Planned v0.14.0+ |
-| SZIP Compression    | ✅        | ❌         | Stub only (requires libaec) |
-| Virtual Datasets    | ✅        | ❌         | Planned v0.14.0+ |
+| Chunked + Filters   | ✅        | ✅         | GZIP, Shuffle, Fletcher32, LZF     |
+| BZIP2 Filter        | ✅        | ⚠️         | Read only (stdlib)                 |
+| Scale-Offset Filter | ✅        | ❌         | Not implemented                    |
+| Dense Attributes    | ✅        | ✅         | Fractal heap + B-tree v2           |
+| Soft/External Links | ✅        | ✅         | Full support                       |
+| SWMR Mode           | ✅        | ❌         | Planned v0.14.0+                   |
+| Parallel I/O (MPI)  | ✅        | ❌         | Planned v0.14.0+                   |
+| SZIP Compression    | ✅        | ❌         | Stub only (requires libaec)        |
+| Virtual Datasets    | ✅        | ❌         | Planned v0.14.0+                   |
 
 ## Sync Workflow
 
@@ -108,6 +117,7 @@ When syncing with upstream changes:
 6. **Create tasks**: Add implementation tasks to docs/dev/backlog/
 
 ### Files to Monitor in C Library
+
 ```
 src/H5Fsuper.c          # Superblock parsing
 src/H5Oattribute.c      # Attribute handling
@@ -122,16 +132,19 @@ src/H5Zscaleoffset.c    # Scale-offset filter (not implemented)
 ## Quality Validation
 
 ### Official HDF5 Test Suite
+
 - Files tested: 433
 - Pass rate: 98.2%
 - Source: Various HDF5 test files and real-world datasets
 
 ### Interoperability Verified
+
 - ✅ h5py (Python)
 - ✅ HDFView (Java)
 - ✅ h5dump (C library CLI)
 - ✅ MATLAB HDF5 functions
 
 ---
+
 Last Updated: 2025-12-19
 Maintainer: Claude (Autonomous Developer)

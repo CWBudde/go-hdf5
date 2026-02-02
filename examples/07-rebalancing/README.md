@@ -13,6 +13,7 @@ go run ./default
 ```
 
 **What it demonstrates**:
+
 - Default behavior (no rebalancing, like HDF5 C library)
 - Fastest deletion (0% overhead)
 - B-tree may become sparse after many deletions
@@ -28,6 +29,7 @@ go run ./lazy
 ```
 
 **What it demonstrates**:
+
 - Lazy (batch) rebalancing mode
 - 10-100x faster than immediate rebalancing
 - Occasional pauses (100-500ms) during batch processing
@@ -44,6 +46,7 @@ go run ./incremental
 ```
 
 **What it demonstrates**:
+
 - Incremental (background) rebalancing mode
 - ZERO user-visible pause (all rebalancing in background)
 - Progress monitoring via callback
@@ -60,6 +63,7 @@ go run ./smart
 ```
 
 **What it demonstrates**:
+
 - Smart (auto-tuning) rebalancing mode
 - Automatic workload pattern detection
 - Automatic mode selection and switching
@@ -69,12 +73,12 @@ go run ./smart
 
 ## Quick Comparison
 
-| Example | Mode | Overhead | Pause Time | Use Case |
-|---------|------|----------|------------|----------|
-| **default/** | None | 0% | None | Append-only, small files |
-| **lazy/** | Lazy (batch) | ~2% | 100-500ms batches | Batch deletions |
-| **incremental/** | Incremental (background) | ~4% | None (background) | Large files, continuous ops |
-| **smart/** | Smart (auto) | ~6% | Varies | Unknown workloads |
+| Example          | Mode                     | Overhead | Pause Time        | Use Case                    |
+| ---------------- | ------------------------ | -------- | ----------------- | --------------------------- |
+| **default/**     | None                     | 0%       | None              | Append-only, small files    |
+| **lazy/**        | Lazy (batch)             | ~2%      | 100-500ms batches | Batch deletions             |
+| **incremental/** | Incremental (background) | ~4%      | None (background) | Large files, continuous ops |
+| **smart/**       | Smart (auto)             | ~6%      | Varies            | Unknown workloads           |
 
 ---
 
@@ -99,12 +103,14 @@ done
 ```
 
 **Output Files**:
+
 - `default-output.h5` - File with no rebalancing
 - `lazy-output.h5` - File with lazy rebalancing
 - `incremental-output.h5` - File with incremental rebalancing
 - `smart-output.h5` - File with smart rebalancing
 
 All files are valid HDF5 and can be opened with:
+
 - `h5dump` (C library tool)
 - Python `h5py`
 - This library's `hdf5.Open()`

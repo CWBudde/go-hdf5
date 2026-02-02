@@ -247,7 +247,6 @@ func TestDenseGroup_Integration_DuplicateLinkError(t *testing.T) {
 		"link1": "/dataset1",
 		"link2": "/dataset2",
 	})
-
 	if err != nil {
 		t.Fatalf("CreateDenseGroup failed: %v", err)
 	}

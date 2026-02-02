@@ -82,6 +82,7 @@ github.com/meko-christian/go-hdf5/
 ### Layer 1: Public API (Read + Write)
 
 **Read API**:
+
 ```go
 // Open existing HDF5 file (read-only)
 type File struct {
@@ -98,6 +99,7 @@ func (f *File) Walk(fn func(path string, obj Object))
 ```
 
 **Write API**:
+
 ```go
 // Create new HDF5 file (write mode)
 type FileWriter struct {
@@ -122,6 +124,7 @@ func (dw *DatasetWriter) DeleteAttribute(name string) error  // 🚧 In progress
 ```
 
 **Responsibilities**:
+
 - File lifecycle management (read + write)
 - High-level navigation
 - User-friendly error messages
@@ -161,6 +164,7 @@ type Attribute struct {
 ```
 
 **Responsibilities**:
+
 - Object hierarchy representation
 - Group/dataset abstraction
 - Attribute management (compact 0-7, dense 8+)
@@ -195,6 +199,7 @@ type ObjectHeader struct {
 ```
 
 **Responsibilities**:
+
 - Binary format parsing
 - Version-specific handling (v0, v2, v3 superblocks)
 - Metadata extraction and encoding
@@ -203,6 +208,7 @@ type ObjectHeader struct {
 ### Layer 4: Data Structures (Read + Write)
 
 **Read Support**:
+
 ```go
 // SymbolTable: Traditional group implementation
 // BTree v1: Index structure for groups
@@ -211,6 +217,7 @@ type ObjectHeader struct {
 ```
 
 **Write Support** (NEW):
+
 ```go
 // BTree v2: Modern index structure (dense storage)
 type BTreeV2 struct {
@@ -235,6 +242,7 @@ type SpaceAllocator struct {
 ```
 
 **Responsibilities**:
+
 - Low-level HDF5 structures
 - Index and storage management (B-tree v2, fractal heap)
 - String handling
@@ -351,6 +359,7 @@ func (dw *DatasetWriter) WriteAttribute(name string, value interface{}) error {
 ```
 
 **Benefits**:
+
 - Simpler API (one method, not two)
 - Less error-prone (no "already exists" errors)
 - Matches Python h5py intuitive behavior
@@ -382,6 +391,7 @@ func TestDenseStorageRMW(t *testing.T) {
 ```
 
 **Implementation**:
+
 - B-tree v2 header/leaf parsing
 - Fractal heap header + direct block reading
 - Variable-length heap ID parsing (1 byte flags + offset + length)
@@ -401,6 +411,7 @@ var bufferPool = sync.Pool{
 ```
 
 **Benefits**:
+
 - Reduced GC pressure
 - Better memory locality
 - Improved performance
@@ -462,47 +473,47 @@ const (
 
 ### Superblock Versions
 
-| Version | Read | Write | Features |
-|---------|------|-------|----------|
-| 0 | ✅ | ✅ | Original format (HDF5 1.0-1.6) |
-| 1 | ❌ | ❌ | Same as v0 with B-tree K values |
-| 2 | ✅ | ✅ | Streamlined format (HDF5 1.8+) |
-| 3 | ✅ | ✅ | HDF5 2.0.0 format (48-byte, CRC32 checksum) |
+| Version | Read | Write | Features                                    |
+| ------- | ---- | ----- | ------------------------------------------- |
+| 0       | ✅   | ✅    | Original format (HDF5 1.0-1.6)              |
+| 1       | ❌   | ❌    | Same as v0 with B-tree K values             |
+| 2       | ✅   | ✅    | Streamlined format (HDF5 1.8+)              |
+| 3       | ✅   | ✅    | HDF5 2.0.0 format (48-byte, CRC32 checksum) |
 
 ### Object Header Versions
 
-| Version | Read | Write | Notes |
-|---------|------|-------|-------|
-| 1 | ✅ | ✅ | Legacy format (HDF5 < 1.8) with continuations |
-| 2 | ✅ | ✅ | Modern format (HDF5 1.8+) |
+| Version | Read | Write | Notes                                         |
+| ------- | ---- | ----- | --------------------------------------------- |
+| 1       | ✅   | ✅    | Legacy format (HDF5 < 1.8) with continuations |
+| 2       | ✅   | ✅    | Modern format (HDF5 1.8+)                     |
 
 ### Attribute Storage
 
-| Storage | Trigger | Read | Write | Modify |
-|---------|---------|------|-------|--------|
-| Compact | 0-7 attrs | ✅ | ✅ | 🚧 Phase 1 complete |
-| Dense | 8+ attrs | ✅ | ✅ | 🚧 Phase 2 in progress |
+| Storage | Trigger   | Read | Write | Modify                 |
+| ------- | --------- | ---- | ----- | ---------------------- |
+| Compact | 0-7 attrs | ✅   | ✅    | 🚧 Phase 1 complete    |
+| Dense   | 8+ attrs  | ✅   | ✅    | 🚧 Phase 2 in progress |
 
 ### Dataset Layouts
 
-| Layout | Read | Write | Notes |
-|--------|------|-------|-------|
-| Compact | ✅ | ⚠️ | Small datasets (<64KB) - write deferred |
-| Contiguous | ✅ | ✅ | Simple flat layout |
-| Chunked | ✅ | ✅ | With GZIP/Shuffle filters |
+| Layout     | Read | Write | Notes                                   |
+| ---------- | ---- | ----- | --------------------------------------- |
+| Compact    | ✅   | ⚠️    | Small datasets (<64KB) - write deferred |
+| Contiguous | ✅   | ✅    | Simple flat layout                      |
+| Chunked    | ✅   | ✅    | With GZIP/Shuffle filters               |
 
 ### Datatypes
 
-| Type | Read | Write | Examples |
-|------|------|-------|----------|
-| Integer | ✅ | ✅ | int8, int16, int32, int64, uint* |
-| Float | ✅ | ✅ | float32, float64 |
-| String | ✅ | ✅ | Fixed-length, variable-length |
-| Array | ✅ | ✅ | [3]float64, [2][2]int32 |
-| Enum | ✅ | ✅ | Named integer constants |
-| Reference | ✅ | ✅ | Object references |
-| Opaque | ✅ | ✅ | Binary blobs with tag |
-| Compound | ✅ | ✅ | Struct-like with nested members |
+| Type      | Read | Write | Examples                          |
+| --------- | ---- | ----- | --------------------------------- |
+| Integer   | ✅   | ✅    | int8, int16, int32, int64, uint\* |
+| Float     | ✅   | ✅    | float32, float64                  |
+| String    | ✅   | ✅    | Fixed-length, variable-length     |
+| Array     | ✅   | ✅    | [3]float64, [2][2]int32           |
+| Enum      | ✅   | ✅    | Named integer constants           |
+| Reference | ✅   | ✅    | Object references                 |
+| Opaque    | ✅   | ✅    | Binary blobs with tag             |
+| Compound  | ✅   | ✅    | Struct-like with nested members   |
 
 ---
 
@@ -511,6 +522,7 @@ const (
 ### 1. **Progressive Disclosure**
 
 Simple operations are simple:
+
 ```go
 // Reading (simple)
 file, _ := hdf5.Open("data.h5")
@@ -530,6 +542,7 @@ ds.WriteAttribute("units", "meters")  // ✨ Upsert semantics!
 ```
 
 Complex operations are possible:
+
 ```go
 // Advanced: Chunked dataset with compression
 fw.CreateDataset("/bigdata", hdf5.Float64, []uint64{1000, 1000},
@@ -542,6 +555,7 @@ fw.CreateDataset("/bigdata", hdf5.Float64, []uint64{1000, 1000},
 ### 2. **Fail Fast**
 
 All errors are detected early:
+
 - Invalid signature → immediate error
 - Out-of-bounds address → immediate error
 - Unsupported version → immediate error
@@ -550,6 +564,7 @@ All errors are detected early:
 ### 3. **Resource Safety**
 
 All resources are properly managed:
+
 ```go
 func CreateForWrite(filename string, mode CreateMode) (*FileWriter, error) {
     f, err := os.OpenFile(filename, flags, 0644)
@@ -573,11 +588,13 @@ func CreateForWrite(filename string, mode CreateMode) (*FileWriter, error) {
 ## 🚀 Performance Considerations
 
 ### Memory Management
+
 - ✅ Buffer pooling reduces allocations
 - ✅ Pooled buffers are size-flexible
 - ✅ Streaming large dataset writes (chunked layout)
 
 ### I/O Patterns
+
 - ✅ Sequential reads for superblock
 - ✅ Random access for objects
 - ✅ Atomic writes (write-back on Close())
@@ -585,6 +602,7 @@ func CreateForWrite(filename string, mode CreateMode) (*FileWriter, error) {
 - ⚠️ No parallel chunk reading/writing (future)
 
 ### Concurrency
+
 - ⚠️ Current implementation is not thread-safe
 - 📋 Future: concurrent reader support
 - 📋 Future: SWMR mode implementation
@@ -594,6 +612,7 @@ func CreateForWrite(filename string, mode CreateMode) (*FileWriter, error) {
 ## 📊 Current Status
 
 ### Read Support: 100% ✅
+
 - All HDF5 formats (superblock v0, v2, v3)
 - All datatypes
 - All layouts (compact, contiguous, chunked)
@@ -603,6 +622,7 @@ func CreateForWrite(filename string, mode CreateMode) (*FileWriter, error) {
 - Attributes (compact, dense)
 
 ### Write Support: 100% ✅
+
 - File creation (Truncate/Exclusive modes)
 - Superblock v0, v2, and v3 writing
 - Object Header v1 and v2 writing
@@ -616,6 +636,7 @@ func CreateForWrite(filename string, mode CreateMode) (*FileWriter, error) {
 - Soft/external links (full support)
 
 ### Quality Metrics: Excellent ✅
+
 - **Coverage**: 86.1% (target: >70%)
 - **Linter**: 0 issues (34+ linters)
 - **Tests**: 100% passing
@@ -631,4 +652,4 @@ func CreateForWrite(filename string, mode CreateMode) (*FileWriter, error) {
 
 ---
 
-*Last Updated: 2025-11-13*
+_Last Updated: 2025-11-13_

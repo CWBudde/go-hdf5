@@ -26,6 +26,7 @@ This guide explains B-tree rebalancing strategies for optimal HDF5 performance, 
 HDF5 uses **B-tree v2** data structures to store dense attribute collections (8+ attributes) and other metadata. When you delete attributes, records are removed from B-tree nodes, potentially leaving them **underutilized** (sparse).
 
 **Rebalancing** is the process of reorganizing B-tree nodes after deletions to:
+
 - **Maintain balance**: Keep all leaf nodes at the same depth
 - **Optimize space**: Merge underfull nodes to reduce overhead
 - **Improve performance**: Speed up searches by reducing tree depth
@@ -43,6 +44,7 @@ For scientific workloads processing **TB-scale files** with thousands of dataset
 ### When to Use Each Mode
 
 **Quick Decision Tree**:
+
 ```
 Are you doing deletions?
 ├─ No → Use default (no rebalancing)
@@ -61,11 +63,13 @@ Are you doing deletions?
 ### B-tree Basics
 
 A **B-tree v2** is a self-balancing tree structure used by HDF5 for:
+
 - Dense attribute storage (8+ attributes per object)
 - Link name index in groups
 - Other metadata collections
 
 **Key Properties**:
+
 - All leaf nodes at same depth (balanced)
 - Each node ≥50% full (except root)
 - Records sorted by hash for fast lookup
@@ -74,6 +78,7 @@ A **B-tree v2** is a self-balancing tree structure used by HDF5 for:
 ### What Happens During Deletion
 
 **Without Rebalancing**:
+
 ```
 Initial B-tree (3 nodes, well-balanced):
     [Node A: 80% full]
@@ -89,6 +94,7 @@ Problem: Sparse tree, wasted space, slower searches
 ```
 
 **With Rebalancing**:
+
 ```
 After 50% deletion + rebalancing:
     [Node A: 75% full]
@@ -101,11 +107,13 @@ Result: Compact tree, efficient searches
 ### The Performance Dilemma
 
 **Immediate Rebalancing** (traditional approach):
+
 - ✅ Keeps B-tree always optimal
 - ❌ **Very expensive**: Each deletion triggers node merging, parent updates, disk writes
 - ❌ **10-100x slower** for batch deletion workloads
 
 **No Rebalancing** (this library's default, like C library):
+
 - ✅ **Fast deletions**: Just remove record, no restructuring
 - ❌ B-tree becomes sparse over time
 - ❌ Wastes disk space, slower subsequent operations
@@ -123,18 +131,21 @@ This library offers **4 rebalancing modes**, from simplest to most sophisticated
 **What it does**: Never rebalances automatically. B-trees can become sparse.
 
 **When to use**:
+
 - Append-only workloads (no deletions)
 - Small files (<100MB)
 - Read-heavy workloads where write performance is critical
 - You want **identical behavior to HDF5 C library**
 
 **Performance**:
+
 - ✅ **Fastest deletion**: 0% overhead
 - ✅ Zero CPU cost for rebalancing
 - ❌ B-tree becomes sparse if many deletions occur
 - ❌ May waste disk space
 
 **Example**:
+
 ```go
 // No options = no rebalancing (default, like C library)
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate)
@@ -156,18 +167,21 @@ ds.DeleteAttribute("attr1")  // Fast! No rebalancing
 **What it does**: Accumulates deletions and rebalances in batches when threshold is reached.
 
 **How it works**:
+
 1. Track deletions (counts underflow nodes)
 2. When `(underflow_nodes / total_nodes) ≥ threshold`, trigger batch rebalancing
 3. Process multiple nodes in single operation
 4. Also triggers after `MaxDelay` time to prevent indefinite delay
 
 **When to use**:
+
 - **Batch deletion workloads**: Delete many attributes, then continue working
 - Medium to large files (100-500MB)
 - Moderate delete ratios (5-20% of operations)
 - You can tolerate occasional 100-500ms pauses for rebalancing
 
 **Performance**:
+
 - ✅ **10-100x faster than immediate rebalancing**
 - ✅ Batching amortizes restructuring cost
 - ✅ Minimal overhead between batches (~1-2%)
@@ -175,6 +189,7 @@ ds.DeleteAttribute("attr1")  // Fast! No rebalancing
 - ✅ B-tree stays reasonably compact
 
 **Example**:
+
 ```go
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
     hdf5.WithLazyRebalancing(
@@ -203,13 +218,14 @@ for i := 0; i < 100; i++ {
 
 **Tuning Parameters**:
 
-| Parameter | Default | Range | Effect |
-|-----------|---------|-------|--------|
-| `LazyThreshold` | 0.05 (5%) | 0.01-0.20 | Lower = more frequent rebalancing, tighter tree |
-| `LazyMaxDelay` | 5 minutes | 1s-1h | Forces rebalance even if threshold not met |
-| `LazyBatchSize` | 100 nodes | 10-1000 | Larger = fewer rebalancing events, longer pauses |
+| Parameter       | Default   | Range     | Effect                                           |
+| --------------- | --------- | --------- | ------------------------------------------------ |
+| `LazyThreshold` | 0.05 (5%) | 0.01-0.20 | Lower = more frequent rebalancing, tighter tree  |
+| `LazyMaxDelay`  | 5 minutes | 1s-1h     | Forces rebalance even if threshold not met       |
+| `LazyBatchSize` | 100 nodes | 10-1000   | Larger = fewer rebalancing events, longer pauses |
 
 **Recommendations**:
+
 - **Aggressive batching**: `Threshold(0.10), BatchSize(200)` → fewer, longer pauses
 - **Tight tree**: `Threshold(0.02), BatchSize(50)` → more frequent, shorter rebalancing
 - **Write-heavy**: `MaxDelay(10*time.Minute)` → avoid interrupting long write sessions
@@ -221,6 +237,7 @@ for i := 0; i < 100; i++ {
 **What it does**: Rebalances B-trees in the **background** using a goroutine with time budgets.
 
 **How it works**:
+
 1. Requires lazy rebalancing as prerequisite (tracks underflow nodes)
 2. Background goroutine wakes up every `Interval` (default: 5 seconds)
 3. Rebalances for `Budget` time (default: 100ms), then pauses
@@ -228,12 +245,14 @@ for i := 0; i < 100; i++ {
 5. **Zero user-visible pause** - rebalancing happens between operations
 
 **When to use**:
+
 - **Large files (>500MB)** where lazy rebalancing pauses are noticeable
 - High delete ratios (>20% of operations)
 - Continuous operation workloads (can't afford pauses)
 - **TB-scale scientific data** with strict latency requirements
 
 **Performance**:
+
 - ✅ **Zero user-visible pause**: All rebalancing in background
 - ✅ Eventual consistency: B-tree optimized over time
 - ✅ Tunable CPU impact (adjust Budget and Interval)
@@ -241,6 +260,7 @@ for i := 0; i < 100; i++ {
 - ⚠️ ~100MB memory overhead for background processing (configurable)
 
 **Example**:
+
 ```go
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
     hdf5.WithLazyRebalancing(),  // Prerequisite!
@@ -272,21 +292,22 @@ for i := 0; i < 5000; i++ {
 
 **Tuning Parameters**:
 
-| Parameter | Default | Range | Effect |
-|-----------|---------|-------|--------|
-| `IncrementalBudget` | 100ms | 10ms-1s | Time spent rebalancing per session |
-| `IncrementalInterval` | 5 seconds | 1s-1min | How often to run rebalancing session |
-| `ProgressCallback` | nil | func | Optional callback for progress monitoring |
+| Parameter             | Default   | Range   | Effect                                    |
+| --------------------- | --------- | ------- | ----------------------------------------- |
+| `IncrementalBudget`   | 100ms     | 10ms-1s | Time spent rebalancing per session        |
+| `IncrementalInterval` | 5 seconds | 1s-1min | How often to run rebalancing session      |
+| `ProgressCallback`    | nil       | func    | Optional callback for progress monitoring |
 
 **Budget vs Interval Trade-offs**:
 
-| Configuration | CPU Impact | Rebalancing Speed | Use Case |
-|---------------|-----------|------------------|----------|
-| Budget: 50ms, Interval: 10s | Very low (~1%) | Slow (gradual) | Low-priority background cleanup |
-| Budget: 100ms, Interval: 5s | Low (~2-3%) | Moderate | **Default: balanced** |
-| Budget: 200ms, Interval: 2s | Medium (~5%) | Fast | Aggressive rebalancing |
+| Configuration               | CPU Impact     | Rebalancing Speed | Use Case                        |
+| --------------------------- | -------------- | ----------------- | ------------------------------- |
+| Budget: 50ms, Interval: 10s | Very low (~1%) | Slow (gradual)    | Low-priority background cleanup |
+| Budget: 100ms, Interval: 5s | Low (~2-3%)    | Moderate          | **Default: balanced**           |
+| Budget: 200ms, Interval: 2s | Medium (~5%)   | Fast              | Aggressive rebalancing          |
 
 **Recommendations**:
+
 - **Low CPU impact**: `Budget(50ms), Interval(10s)` → minimal overhead
 - **Fast rebalancing**: `Budget(200ms), Interval(2s)` → aggressive cleanup
 - **Monitoring**: Always set `ProgressCallback` to track rebalancing progress
@@ -298,6 +319,7 @@ for i := 0; i < 5000; i++ {
 **What it does**: Automatically **detects workload patterns** and selects optimal rebalancing mode.
 
 **How it works**:
+
 1. **Workload Detection**: Tracks operation patterns (inserts, deletes, reads)
 2. **Feature Extraction**: Computes metrics (delete ratio, batch size, operation rate)
 3. **Mode Selection**: Uses decision rules to choose: none, lazy, or incremental
@@ -305,12 +327,14 @@ for i := 0; i < 5000; i++ {
 5. **Explainability**: Provides confidence scores and reasoning for decisions
 
 **When to use**:
+
 - **Unknown workload patterns**: Don't know access patterns in advance
 - **Mixed workloads**: Combination of batch and continuous operations
 - **Auto-pilot mode**: Want library to optimize automatically
 - Research/experimental setups with varying workloads
 
 **Performance**:
+
 - ✅ Adapts to workload automatically
 - ✅ No manual tuning required
 - ⚠️ ~3-7% overhead (detection + evaluation)
@@ -318,6 +342,7 @@ for i := 0; i < 5000; i++ {
 - ⚠️ Decision overhead every `ReevalInterval` (default: 5 minutes)
 
 **Example**:
+
 ```go
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
     hdf5.WithSmartRebalancing(
@@ -373,15 +398,16 @@ The smart rebalancer considers:
 
 **Tuning Parameters**:
 
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `SmartAutoDetect` | true | Enable workload pattern detection |
-| `SmartAutoSwitch` | true | Allow mode switching |
-| `SmartMinFileSize` | 10MB | Minimum file size for auto-rebalancing |
-| `SmartAllowedModes` | all | Restrict which modes can be selected |
-| `SmartOnModeChange` | nil | Callback when mode changes |
+| Parameter           | Default | Effect                                 |
+| ------------------- | ------- | -------------------------------------- |
+| `SmartAutoDetect`   | true    | Enable workload pattern detection      |
+| `SmartAutoSwitch`   | true    | Allow mode switching                   |
+| `SmartMinFileSize`  | 10MB    | Minimum file size for auto-rebalancing |
+| `SmartAllowedModes` | all     | Restrict which modes can be selected   |
+| `SmartOnModeChange` | nil     | Callback when mode changes             |
 
 **When NOT to Use**:
+
 - Known, stable workload (manual mode selection is faster)
 - Very small files (<10MB) where overhead isn't worth it
 - Need deterministic performance (smart mode adds variability)
@@ -393,18 +419,20 @@ The smart rebalancer considers:
 ### Benchmark Comparison
 
 **Test Setup**:
+
 - 1000 attributes created, then 500 deleted
 - Measured on modern desktop (AMD Ryzen 7, NVMe SSD)
 - Results averaged over 10 runs
 
-| Rebalancing Mode | Deletion Speed | Space Efficiency | CPU Overhead | Pause Time |
-|------------------|----------------|------------------|--------------|------------|
-| **None** (default) | **100%** (baseline) | 60% (sparse tree) | 0% | None |
-| **Lazy** (5% threshold) | 95% (5% slower) | 95% (tight tree) | ~2% | 100-500ms batches |
-| **Incremental** (100ms budget) | 92% (8% slower) | 95% (tight tree) | ~4% | None (background) |
-| **Smart** (auto) | 88% (12% slower) | 90-95% (adapts) | ~6% | Varies |
+| Rebalancing Mode               | Deletion Speed      | Space Efficiency  | CPU Overhead | Pause Time        |
+| ------------------------------ | ------------------- | ----------------- | ------------ | ----------------- |
+| **None** (default)             | **100%** (baseline) | 60% (sparse tree) | 0%           | None              |
+| **Lazy** (5% threshold)        | 95% (5% slower)     | 95% (tight tree)  | ~2%          | 100-500ms batches |
+| **Incremental** (100ms budget) | 92% (8% slower)     | 95% (tight tree)  | ~4%          | None (background) |
+| **Smart** (auto)               | 88% (12% slower)    | 90-95% (adapts)   | ~6%          | Varies            |
 
 **Key Takeaways**:
+
 - **Lazy is 10-100x faster than immediate rebalancing** (not shown: immediate = 1-5% baseline speed)
 - **Incremental has zero user-visible pause** (critical for TB-scale data)
 - **Smart mode trades 6% overhead for automatic optimization**
@@ -414,21 +442,21 @@ The smart rebalancer considers:
 
 **Deletion Throughput** (higher is better):
 
-| Mode | Small Files (<100MB) | Large Files (>500MB) | Notes |
-|------|----------------------|----------------------|-------|
-| None | **10,000 ops/sec** | **10,000 ops/sec** | No rebalancing overhead |
-| Lazy | 9,500 ops/sec | 9,200 ops/sec | Occasional batch pauses |
-| Incremental | 9,000 ops/sec | 8,800 ops/sec | Background goroutine sync |
-| Smart | 8,500 ops/sec | 8,300 ops/sec | Detection overhead |
+| Mode        | Small Files (<100MB) | Large Files (>500MB) | Notes                     |
+| ----------- | -------------------- | -------------------- | ------------------------- |
+| None        | **10,000 ops/sec**   | **10,000 ops/sec**   | No rebalancing overhead   |
+| Lazy        | 9,500 ops/sec        | 9,200 ops/sec        | Occasional batch pauses   |
+| Incremental | 9,000 ops/sec        | 8,800 ops/sec        | Background goroutine sync |
+| Smart       | 8,500 ops/sec        | 8,300 ops/sec        | Detection overhead        |
 
 **Memory Usage**:
 
-| Mode | Overhead | Notes |
-|------|----------|-------|
-| None | 0 MB | Just operation counters |
-| Lazy | <1 MB | Underflow node tracking |
-| Incremental | ~100 MB | Background processing buffers |
-| Smart | ~1-2 MB | Operation history (10K ops) |
+| Mode        | Overhead | Notes                         |
+| ----------- | -------- | ----------------------------- |
+| None        | 0 MB     | Just operation counters       |
+| Lazy        | <1 MB    | Underflow node tracking       |
+| Incremental | ~100 MB  | Background processing buffers |
+| Smart       | ~1-2 MB  | Operation history (10K ops)   |
 
 ---
 
@@ -437,6 +465,7 @@ The smart rebalancer considers:
 ### Append-Only Workloads
 
 **Characteristics**:
+
 - Only inserts, no deletions
 - Examples: Logging, sensor data collection, append-only time series
 
@@ -448,6 +477,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate)
 ```
 
 **Why**:
+
 - No deletions → B-tree never becomes sparse
 - Rebalancing has zero benefit, only overhead
 - Matches HDF5 C library behavior (users expect this)
@@ -457,6 +487,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate)
 ### Batch Deletion Workloads
 
 **Characteristics**:
+
 - Write many attributes/objects
 - Delete many in batch
 - Continue working (can tolerate brief pauses)
@@ -475,12 +506,14 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ```
 
 **Why**:
+
 - **10-100x faster than immediate rebalancing**
 - Batching amortizes restructuring cost
 - 100-500ms pauses are acceptable for batch jobs
 - B-tree stays reasonably compact
 
 **Tuning Tips**:
+
 - **For aggressive batching**: Increase `LazyBatchSize(200)` and `LazyThreshold(0.10)`
 - **For tighter tree**: Decrease `LazyThreshold(0.02)` and `LazyBatchSize(50)`
 
@@ -489,6 +522,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ### Large Files with Moderate Deletes
 
 **Characteristics**:
+
 - File size >500MB
 - 10-20% of operations are deletes
 - Can afford small overhead for optimization
@@ -508,12 +542,14 @@ defer fw.Close()  // Stops background goroutine
 ```
 
 **Why**:
+
 - **Zero user-visible pause** (all rebalancing in background)
 - Critical for TB-scale files where lazy rebalancing pauses would be noticeable
 - ~2-5% overhead is acceptable for large files
 - B-tree stays optimized without blocking operations
 
 **Tuning Tips**:
+
 - **For low CPU impact**: `IncrementalBudget(50ms), Interval(10s)`
 - **For faster rebalancing**: `IncrementalBudget(200ms), Interval(2s)`
 - **Always monitor**: Set `ProgressCallback` to track rebalancing
@@ -523,6 +559,7 @@ defer fw.Close()  // Stops background goroutine
 ### Continuous Heavy-Delete Workloads
 
 **Characteristics**:
+
 - High delete ratio (>20%)
 - Continuous operations (no natural pause points)
 - Cannot tolerate any pause
@@ -549,11 +586,13 @@ defer fw.Close()
 ```
 
 **Why**:
+
 - Must use incremental (lazy pauses unacceptable)
 - Aggressive settings prevent backlog buildup
 - Monitoring callback alerts if rebalancing can't keep up
 
 **Warning**: If deletes far exceed rebalancing capacity, consider:
+
 1. Increase `IncrementalBudget` further
 2. Decrease `IncrementalInterval`
 3. Dedicate more CPU to rebalancing (may impact main workload)
@@ -563,6 +602,7 @@ defer fw.Close()
 ### Mixed/Unknown Workloads
 
 **Characteristics**:
+
 - Workload pattern unknown or varies over time
 - Research environment, exploratory analysis
 - Want "auto-pilot" optimization
@@ -586,6 +626,7 @@ defer fw.Close()
 ```
 
 **Why**:
+
 - Library adapts to changing workload automatically
 - No manual tuning required
 - Callback provides transparency (know why mode was selected)
@@ -622,6 +663,7 @@ hdf5.LazyThreshold(0.10)  // Trigger at 10% underflow
 ```
 
 **When to adjust**:
+
 - **Decrease (0.02)** if: Disk space is limited, search performance critical
 - **Increase (0.10)** if: Write performance is critical, disk space abundant
 
@@ -651,6 +693,7 @@ hdf5.LazyMaxDelay(30*time.Minute)
 ```
 
 **When to adjust**:
+
 - **Decrease (1 min)** if: Want predictable rebalancing, file size growth is concern
 - **Increase (30 min)** if: Long write sessions, can't afford interruptions
 
@@ -680,11 +723,13 @@ hdf5.LazyBatchSize(200)
 ```
 
 **Pause time estimate** (approximate):
+
 - 50 nodes: ~50-100ms pause
 - 100 nodes: ~100-200ms pause
 - 200 nodes: ~200-500ms pause
 
 **When to adjust**:
+
 - **Decrease (50)** if: Very latency-sensitive, can tolerate more frequent pauses
 - **Increase (200)** if: Batch jobs, want fewer interruptions
 
@@ -716,11 +761,13 @@ hdf5.IncrementalBudget(200*time.Millisecond)
 ```
 
 **CPU overhead estimate**:
+
 - 50ms budget, 10s interval: ~0.5% CPU
 - 100ms budget, 5s interval: ~2% CPU
 - 200ms budget, 2s interval: ~10% CPU
 
 **When to adjust**:
+
 - **Decrease (50ms)** if: CPU constrained, rebalancing is low priority
 - **Increase (200ms)** if: Need aggressive rebalancing, CPU available
 
@@ -750,6 +797,7 @@ hdf5.IncrementalInterval(2*time.Second)
 ```
 
 **When to adjust**:
+
 - **Decrease (2s)** if: High delete rate, need to prevent backlog
 - **Increase (10s)** if: Low delete rate, minimize overhead
 
@@ -780,6 +828,7 @@ hdf5.IncrementalProgressCallback(func(p hdf5.RebalancingProgress) {
 ```
 
 **Best Practices**:
+
 - **Always set callback** for production systems (visibility into rebalancing)
 - **Alert on large backlogs** (may need to adjust Budget/Interval)
 - **Log progress periodically** (helps debug performance issues)
@@ -879,6 +928,7 @@ hdf5.SmartOnModeChange(func(d hdf5.ModeDecision) {
 ```
 
 **Best Practices**:
+
 - **Always set callback** to understand auto-tuning decisions
 - **Log decisions** for debugging performance issues
 - **Record metrics** for monitoring system health
@@ -894,6 +944,7 @@ hdf5.SmartOnModeChange(func(d hdf5.ModeDecision) {
 **Likely Cause**: Immediate rebalancing enabled (not offered by this library, but possible with custom B-tree implementation)
 
 **Solution**:
+
 1. Check if using default mode (no rebalancing) - should be fast
 2. If using lazy/incremental, verify configuration:
    ```go
@@ -925,6 +976,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ```
 
 **Verify B-tree is compact**:
+
 ```go
 // After deletions, check file size
 info, _ := os.Stat("data.h5")
@@ -942,6 +994,7 @@ log.Printf("File size: %d MB", info.Size()/1024/1024)
 **Likely Cause**: Batch size too large or threshold too high
 
 **Solution 1**: Decrease batch size:
+
 ```go
 hdf5.WithLazyRebalancing(
     hdf5.LazyBatchSize(50),  // Smaller batches = shorter pauses
@@ -949,6 +1002,7 @@ hdf5.WithLazyRebalancing(
 ```
 
 **Solution 2**: Switch to incremental rebalancing:
+
 ```go
 hdf5.WithLazyRebalancing(),
 hdf5.WithIncrementalRebalancing(
@@ -976,6 +1030,7 @@ hdf5.WithIncrementalRebalancing(
 ```
 
 **Verify CPU usage**:
+
 ```bash
 # Linux: Monitor CPU usage
 top -p $(pgrep -f your_program)
@@ -1007,6 +1062,7 @@ hdf5.WithIncrementalRebalancing(
 ```
 
 **Alternative**: Switch to lazy rebalancing (batch processing):
+
 ```go
 hdf5.WithLazyRebalancing(
     hdf5.LazyThreshold(0.05),  // Will batch-process periodically
@@ -1031,6 +1087,7 @@ hdf5.WithSmartRebalancing(
 ```
 
 **Verify detection**:
+
 ```go
 hdf5.SmartOnModeChange(func(d hdf5.ModeDecision) {
     log.Printf("Mode: %s, Confidence: %.1f%%, Reason: %s",
@@ -1059,6 +1116,7 @@ hdf5.WithSmartRebalancing(
 ```
 
 **Interpret factors**:
+
 - `delete_ratio`: Higher → more likely to choose lazy/incremental
 - `batch_size`: Larger → more likely to choose lazy
 - `operation_rate`: Higher → more likely to choose incremental
@@ -1091,6 +1149,7 @@ fw, err := hdf5.CreateForWrite("simulation.h5", hdf5.CreateTruncate,
 ```
 
 **Why this works**:
+
 - Low threshold (3%) → B-tree stays very compact (saves disk space)
 - Short MaxDelay (2 min) → Regular rebalancing (prevents excessive sparsity)
 - Large BatchSize (200) → Amortizes cost of rebalancing large trees
@@ -1131,6 +1190,7 @@ defer fw.Close()
 ```
 
 **Key Points**:
+
 - Lazy handles bulk deletions quickly (batching amortizes cost)
 - Incremental cleans up gradually in background
 - Close monitoring essential (callback tracks backlog)
@@ -1143,6 +1203,7 @@ defer fw.Close()
 **Incremental Rebalancing Memory Cost**:
 
 Incremental rebalancing requires ~100MB for background processing:
+
 - Node buffers for rebalancing operations
 - Work queue for pending nodes
 - Progress tracking structures
@@ -1166,6 +1227,7 @@ hdf5.WithIncrementalRebalancing(
 ```
 
 **When Memory Matters**:
+
 - Embedded systems → Use lazy rebalancing (minimal memory overhead)
 - HPC clusters → Use high-memory incremental (maximize throughput)
 - Cloud environments → Balance cost (memory pricing) vs. performance
@@ -1223,6 +1285,7 @@ go func() {
 ```
 
 **Key Metrics to Track**:
+
 1. **Backlog size**: Should stay <1000 nodes typically
 2. **Rebalancing frequency**: Should match `Interval` configuration
 3. **Pause time** (lazy): Should be <500ms per batch
@@ -1233,16 +1296,19 @@ go func() {
 ### Comparison with HDF5 C Library
 
 **C Library Behavior**:
+
 - **Default**: No automatic rebalancing (same as this library's default)
 - **Manual API**: `H5Ocompact()` to trigger manual compaction
 - **Trade-off**: Users responsible for rebalancing
 
 **This Library's Advantage**:
+
 - **Lazy mode**: Automatic batch rebalancing (10-100x faster than naive approach)
 - **Incremental mode**: Background rebalancing (zero pause, unique to this library)
 - **Smart mode**: Auto-tuning (not available in C library)
 
 **Compatibility**:
+
 - Default mode (no rebalancing) → **100% compatible** with C library
 - Lazy/incremental modes → Files readable by C library (standard HDF5 format)
 - File format unchanged → Interoperability guaranteed
@@ -1253,13 +1319,13 @@ go func() {
 
 ### Quick Reference Card
 
-| Workload | Recommended Mode | Key Parameters | Expected Overhead |
-|----------|------------------|----------------|-------------------|
-| **Append-only** | None (default) | None | 0% |
-| **Batch deletes** | Lazy | `Threshold(0.05)`, `BatchSize(100)` | ~2%, 100-500ms pauses |
-| **Large files, moderate deletes** | Incremental | `Budget(100ms)`, `Interval(5s)` | ~4%, no pauses |
-| **Continuous heavy deletes** | Incremental (aggressive) | `Budget(200ms)`, `Interval(2s)` | ~5%, no pauses |
-| **Unknown/mixed** | Smart | `AutoDetect(true)`, `AutoSwitch(true)` | ~6%, varies |
+| Workload                          | Recommended Mode         | Key Parameters                         | Expected Overhead     |
+| --------------------------------- | ------------------------ | -------------------------------------- | --------------------- |
+| **Append-only**                   | None (default)           | None                                   | 0%                    |
+| **Batch deletes**                 | Lazy                     | `Threshold(0.05)`, `BatchSize(100)`    | ~2%, 100-500ms pauses |
+| **Large files, moderate deletes** | Incremental              | `Budget(100ms)`, `Interval(5s)`        | ~4%, no pauses        |
+| **Continuous heavy deletes**      | Incremental (aggressive) | `Budget(200ms)`, `Interval(2s)`        | ~5%, no pauses        |
+| **Unknown/mixed**                 | Smart                    | `AutoDetect(true)`, `AutoSwitch(true)` | ~6%, varies           |
 
 ### Best Practices
 
@@ -1281,6 +1347,7 @@ go func() {
 ### When to Ask for Help
 
 Contact library maintainers if:
+
 - Rebalancing backlog continuously grows (may indicate bug)
 - CPU usage >10% from rebalancing (unexpected overhead)
 - File size doesn't decrease after lazy rebalancing (possible issue)

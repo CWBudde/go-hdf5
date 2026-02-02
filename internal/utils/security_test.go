@@ -56,7 +56,6 @@ func TestCVE_2025_6269_AttributeOverflow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			totalBytes, err := SafeMultiply(tt.elements, tt.elementSize)
-
 			// Check for overflow first
 			if err != nil {
 				if !tt.shouldFail {
@@ -351,7 +350,6 @@ func TestCVE_2025_7067_ChunkOverflow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			totalBytes, err := CalculateChunkSize(tt.dimensions, tt.elementSize)
-
 			// Check for overflow first
 			if err != nil {
 				if !tt.shouldFail {

@@ -755,7 +755,7 @@ func readFractalHeapHeaderRaw(r io.ReaderAt, addr uint64, sb *Superblock) (*frac
 	offset += sizeofSize
 
 	// Max Direct Block Size (sizeofSize bytes)
-	var maxDirBlockSizeBytes = buf[offset : offset+sizeofSize]
+	maxDirBlockSizeBytes := buf[offset : offset+sizeofSize]
 	header.MaxDirectBlockSize = 0
 	for i := 0; i < sizeofSize; i++ {
 		header.MaxDirectBlockSize |= uint64(maxDirBlockSizeBytes[i]) << (8 * i)

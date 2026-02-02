@@ -29,6 +29,7 @@ fw, err := hdf5.CreateForWrite(filename, mode, ...options)
 ```
 
 **Benefits**:
+
 - Optional configuration (sensible defaults)
 - Composable (combine multiple options)
 - Backward compatible (add new options without breaking API)
@@ -36,12 +37,12 @@ fw, err := hdf5.CreateForWrite(filename, mode, ...options)
 
 ### Three Rebalancing Modes
 
-| Mode | Function | Use Case |
-|------|----------|----------|
-| **Default** | (no options) | Append-only, small files |
-| **Lazy** | `WithLazyRebalancing()` | Batch deletions |
-| **Incremental** | `WithIncrementalRebalancing()` | Large files, continuous ops |
-| **Smart** | `WithSmartRebalancing()` | Auto-tuning, unknown workloads |
+| Mode            | Function                       | Use Case                       |
+| --------------- | ------------------------------ | ------------------------------ |
+| **Default**     | (no options)                   | Append-only, small files       |
+| **Lazy**        | `WithLazyRebalancing()`        | Batch deletions                |
+| **Incremental** | `WithIncrementalRebalancing()` | Large files, continuous ops    |
+| **Smart**       | `WithSmartRebalancing()`       | Auto-tuning, unknown workloads |
 
 **Import**:
 
@@ -64,9 +65,11 @@ func WithLazyRebalancing(opts ...LazyOption) FileWriterOption
 Lazy rebalancing accumulates deletions and triggers batch rebalancing when a threshold is reached. This is **10-100x faster** than immediate rebalancing for deletion-heavy workloads.
 
 **Parameters**:
+
 - `opts ...LazyOption`: Optional configuration (defaults used if omitted)
 
 **Default Configuration** (if no options provided):
+
 - Threshold: 0.05 (5% underflow)
 - MaxDelay: 5 minutes
 - BatchSize: 100 nodes
@@ -104,6 +107,7 @@ func LazyThreshold(threshold float64) LazyOption
 When `(underflow_nodes / total_nodes) ≥ threshold`, batch rebalancing is triggered.
 
 **Parameters**:
+
 - `threshold`: Ratio of underflow nodes to total nodes
 
 **Range**: 0.01 (1%) to 0.20 (20%)
@@ -124,6 +128,7 @@ hdf5.LazyThreshold(0.10)
 ```
 
 **Use Cases**:
+
 - **Lower (0.02)**: Disk space limited, search performance critical
 - **Higher (0.10)**: Write performance critical, disk space abundant
 
@@ -140,6 +145,7 @@ func LazyMaxDelay(delay time.Duration) LazyOption
 Even if threshold is not reached, rebalancing will trigger after this duration. This prevents indefinite delay in write-only workloads.
 
 **Parameters**:
+
 - `delay`: Maximum duration before forced rebalancing
 
 **Range**: 1 second to 1 hour (practical range)
@@ -160,6 +166,7 @@ hdf5.LazyMaxDelay(30*time.Minute)
 ```
 
 **Use Cases**:
+
 - **Shorter (1 min)**: Predictable rebalancing, file size growth is concern
 - **Longer (30 min)**: Long write sessions, can't afford frequent interruptions
 
@@ -176,6 +183,7 @@ func LazyBatchSize(size int) LazyOption
 Larger batches = more work per rebalancing, but fewer total operations.
 
 **Parameters**:
+
 - `size`: Number of nodes per batch
 
 **Range**: 10 to 1000 nodes (practical range)
@@ -196,11 +204,13 @@ hdf5.LazyBatchSize(200)
 ```
 
 **Pause Time Estimates**:
+
 - 50 nodes: ~50-100ms pause
 - 100 nodes: ~100-200ms pause
 - 200 nodes: ~200-500ms pause
 
 **Use Cases**:
+
 - **Smaller (50)**: Latency-sensitive applications
 - **Larger (200)**: Batch processing jobs
 
@@ -221,9 +231,11 @@ Incremental rebalancing processes underflow nodes in the **background** using a 
 **IMPORTANT**: Requires lazy rebalancing to be enabled first (prerequisite).
 
 **Parameters**:
+
 - `opts ...IncrementalOption`: Optional configuration (defaults used if omitted)
 
 **Default Configuration** (if no options provided):
+
 - Budget: 100ms per session
 - Interval: 5 seconds between sessions
 - ProgressCallback: nil (no callback)
@@ -264,6 +276,7 @@ func IncrementalBudget(budget time.Duration) IncrementalOption
 The background goroutine will rebalance for this duration, then pause until the next interval.
 
 **Parameters**:
+
 - `budget`: Time budget per session
 
 **Range**: 10ms to 1 second (practical range)
@@ -284,11 +297,13 @@ hdf5.IncrementalBudget(200*time.Millisecond)
 ```
 
 **CPU Overhead Estimates**:
+
 - 50ms budget, 10s interval: ~0.5% CPU
 - 100ms budget, 5s interval: ~2% CPU
 - 200ms budget, 2s interval: ~10% CPU
 
 **Use Cases**:
+
 - **Smaller (50ms)**: CPU constrained environments
 - **Larger (200ms)**: Need aggressive rebalancing, CPU available
 
@@ -305,6 +320,7 @@ func IncrementalInterval(interval time.Duration) IncrementalOption
 The background goroutine wakes up every `interval` and rebalances for `budget` time.
 
 **Parameters**:
+
 - `interval`: Time between rebalancing sessions
 
 **Range**: 1 second to 1 minute (practical range)
@@ -325,10 +341,12 @@ hdf5.IncrementalInterval(2*time.Second)
 ```
 
 **Trade-off**:
+
 - **Shorter interval**: More responsive rebalancing, higher overhead
 - **Longer interval**: Lower overhead, more batching (may build backlog)
 
 **Use Cases**:
+
 - **Shorter (2s)**: High delete rate, need to prevent backlog
 - **Longer (10s)**: Low delete rate, minimize overhead
 
@@ -345,6 +363,7 @@ func IncrementalProgressCallback(callback func(RebalancingProgress)) Incremental
 The callback is called after each rebalancing session with progress information. Optional: can be `nil` for no progress reporting.
 
 **Parameters**:
+
 - `callback`: Function called with progress updates
 
 **Callback Signature**:
@@ -375,6 +394,7 @@ hdf5.IncrementalProgressCallback(func(p hdf5.RebalancingProgress) {
 ```
 
 **Best Practices**:
+
 - **Always set callback** for production systems (visibility)
 - **Alert on large backlogs** (may need to tune Budget/Interval)
 - **Log progress periodically** (debugging performance issues)
@@ -392,6 +412,7 @@ func WithSmartRebalancing(opts ...SmartOption) FileWriterOption
 **Description**: Enables smart (auto-tuning) rebalancing mode.
 
 Smart rebalancing automatically detects workload patterns and selects the optimal rebalancing mode (none, lazy, or incremental) based on:
+
 - File size
 - Operation patterns (delete ratio, batch size)
 - Resource constraints (CPU, memory limits)
@@ -401,9 +422,11 @@ This is the **"auto-pilot" mode** for scientific data workflows.
 **IMPORTANT**: This is **OPTIONAL** and must be explicitly enabled. By default (no options), NO rebalancing is performed (like C library).
 
 **Parameters**:
+
 - `opts ...SmartOption`: Optional configuration (defaults used if omitted)
 
 **Default Configuration** (if no options provided):
+
 - AutoDetect: true (enabled)
 - AutoSwitch: true (enabled)
 - MinFileSize: 10 MB
@@ -448,6 +471,7 @@ func SmartAutoDetect(enabled bool) SmartOption
 When enabled, the library tracks operations and extracts features to classify workload type.
 
 **Parameters**:
+
 - `enabled`: true to enable detection, false to disable
 
 **Default**: true
@@ -474,6 +498,7 @@ func SmartAutoSwitch(enabled bool) SmartOption
 When enabled, the library can switch rebalancing modes as workload changes.
 
 **Parameters**:
+
 - `enabled`: true to allow switching, false for initial selection only
 
 **Default**: true
@@ -500,9 +525,11 @@ func SmartMinFileSize(size uint64) SmartOption
 Files smaller than this size will not trigger automatic rebalancing (overhead not worth it).
 
 **Parameters**:
+
 - `size`: Minimum file size in bytes
 
 **Constants Available**:
+
 - `hdf5.KB = 1024`
 - `hdf5.MB = 1024 * KB`
 - `hdf5.GB = 1024 * MB`
@@ -518,6 +545,7 @@ hdf5.SmartMinFileSize(100*hdf5.MB) // Conservative (only large files)
 ```
 
 **Use Cases**:
+
 - **Lower (1 MB)**: Optimize even small files
 - **Higher (100 MB)**: Only large files benefit from rebalancing
 
@@ -532,9 +560,11 @@ func SmartAllowedModes(modes ...string) SmartOption
 **Description**: Restricts which rebalancing modes can be auto-selected.
 
 **Parameters**:
+
 - `modes`: List of allowed mode names
 
 **Valid Mode Names**:
+
 - `"none"`: No rebalancing
 - `"lazy"`: Lazy (batch) rebalancing
 - `"incremental"`: Incremental (background) rebalancing
@@ -555,6 +585,7 @@ hdf5.SmartAllowedModes("none", "lazy", "incremental")
 ```
 
 **Use Cases**:
+
 - **Policy enforcement**: Force specific modes for organizational standards
 - **Performance guarantee**: Ensure rebalancing always enabled
 
@@ -571,6 +602,7 @@ func SmartOnModeChange(callback func(ModeDecision)) SmartOption
 The callback receives a `ModeDecision` explaining why a mode was selected or changed.
 
 **Parameters**:
+
 - `callback`: Function called when mode changes
 
 **Callback Signature**:
@@ -612,6 +644,7 @@ hdf5.SmartOnModeChange(func(d hdf5.ModeDecision) {
 ```
 
 **Best Practices**:
+
 - **Always set callback** to understand auto-tuning decisions
 - **Log decisions** for debugging
 - **Record metrics** for monitoring
@@ -634,11 +667,11 @@ type RebalancingProgress struct {
 
 **Fields**:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `NodesRebalanced` | `int` | Number of nodes rebalanced in current session |
-| `NodesRemaining` | `int` | Number of underflow nodes still waiting |
-| `EstimatedRemaining` | `time.Duration` | Estimated time to complete rebalancing |
+| Field                | Type            | Description                                   |
+| -------------------- | --------------- | --------------------------------------------- |
+| `NodesRebalanced`    | `int`           | Number of nodes rebalanced in current session |
+| `NodesRemaining`     | `int`           | Number of underflow nodes still waiting       |
+| `EstimatedRemaining` | `time.Duration` | Estimated time to complete rebalancing        |
 
 **Usage Example**:
 
@@ -676,13 +709,13 @@ type ModeDecision struct {
 
 **Fields**:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `SelectedMode` | `string` | Mode selected: "none", "lazy", "incremental" |
-| `Reason` | `string` | Human-readable explanation |
-| `Confidence` | `float64` | Confidence level (0.0 = uncertain, 1.0 = certain) |
-| `Factors` | `map[string]float64` | Metrics that influenced decision |
-| `Timestamp` | `time.Time` | When decision was made |
+| Field          | Type                 | Description                                       |
+| -------------- | -------------------- | ------------------------------------------------- |
+| `SelectedMode` | `string`             | Mode selected: "none", "lazy", "incremental"      |
+| `Reason`       | `string`             | Human-readable explanation                        |
+| `Confidence`   | `float64`            | Confidence level (0.0 = uncertain, 1.0 = certain) |
+| `Factors`      | `map[string]float64` | Metrics that influenced decision                  |
+| `Timestamp`    | `time.Time`          | When decision was made                            |
 
 **Example Values**:
 
@@ -918,11 +951,13 @@ func main() {
 ### From Default (No Rebalancing) to Lazy
 
 **Before**:
+
 ```go
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate)
 ```
 
 **After**:
+
 ```go
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
     hdf5.WithLazyRebalancing(),  // Use defaults
@@ -930,6 +965,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ```
 
 **Impact**:
+
 - ~2% overhead
 - Occasional 100-500ms pauses for batch rebalancing
 - B-tree stays compact (disk space savings)
@@ -939,6 +975,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ### From Lazy to Incremental
 
 **Before**:
+
 ```go
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
     hdf5.WithLazyRebalancing(),
@@ -946,6 +983,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ```
 
 **After**:
+
 ```go
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
     hdf5.WithLazyRebalancing(),  // Still required!
@@ -955,6 +993,7 @@ defer fw.Close()  // IMPORTANT: stops background goroutine
 ```
 
 **Impact**:
+
 - Zero user-visible pause (all rebalancing in background)
 - ~4% overhead (background goroutine)
 - Must call `Close()` to stop background goroutine
@@ -964,6 +1003,7 @@ defer fw.Close()  // IMPORTANT: stops background goroutine
 ### From Manual Configuration to Smart
 
 **Before**:
+
 ```go
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
     hdf5.WithLazyRebalancing(
@@ -974,6 +1014,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ```
 
 **After**:
+
 ```go
 fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
     hdf5.WithSmartRebalancing(),  // Auto-tuning!
@@ -981,6 +1022,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ```
 
 **Impact**:
+
 - ~6% overhead (detection + evaluation)
 - Library adapts to workload automatically
 - No manual tuning required
@@ -991,11 +1033,13 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ## API Stability
 
 **Stability Guarantee**:
+
 - ✅ All APIs documented here are **stable** and production-ready
 - ✅ Option names, signatures, and semantics will not change (backward compatible)
 - ✅ New options may be added (won't break existing code)
 
 **Deprecation Policy**:
+
 - If an option needs to change, it will be deprecated first (1 major version)
 - Deprecated options will continue to work (warnings only)
 - Migration path will be clearly documented

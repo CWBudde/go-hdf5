@@ -24,6 +24,7 @@ This is a **pure Go implementation** of the HDF5 file format for reading and wri
 ### Why use this instead of existing Go HDF5 libraries?
 
 **Advantages**:
+
 - ✅ **Pure Go** - No CGo, no C dependencies
 - ✅ **Cross-platform** - Works on any Go-supported platform (Windows, Linux, macOS, ARM, etc.)
 - ✅ **Easy deployment** - Single binary, no library dependencies
@@ -31,6 +32,7 @@ This is a **pure Go implementation** of the HDF5 file format for reading and wri
 - ✅ **Actively maintained** - Regular updates and improvements
 
 **Trade-offs**:
+
 - ⚠️ **Write support advancing**
 - ⚠️ **Some advanced features missing** - Virtual datasets, parallel I/O, SWMR (planned for future releases)
 - ⚠️ **Slightly slower** - Pure Go is 2-3x slower than C for some operations (but fast enough for most use cases)
@@ -38,6 +40,7 @@ This is a **pure Go implementation** of the HDF5 file format for reading and wri
 ### Why pure Go? Why not use CGo?
 
 **Pure Go Benefits**:
+
 1. **Cross-compilation** - Compile for any platform from any platform
 2. **No dependencies** - Users don't need HDF5 C library installed
 3. **Easier deployment** - Single static binary
@@ -46,6 +49,7 @@ This is a **pure Go implementation** of the HDF5 file format for reading and wri
 6. **Simpler build** - Just `go build`, no complex makefiles
 
 **CGo Drawbacks**:
+
 - Requires HDF5 C library installation
 - Complex cross-compilation
 - Potential memory leaks at Go/C boundary
@@ -61,6 +65,7 @@ This is a **pure Go implementation** of the HDF5 file format for reading and wri
 **For writing**: **Advancing rapidly!** ✅
 
 **Read Support**:
+
 - ✅ All datatypes (integers, floats, strings, compounds, arrays, enums, references, opaque)
 - ✅ All dataset layouts (compact, contiguous, chunked)
 - ✅ GZIP compression
@@ -69,6 +74,7 @@ This is a **pure Go implementation** of the HDF5 file format for reading and wri
 - ✅ Both old (pre-1.8) and modern (1.8+) HDF5 files
 
 **Write Support**:
+
 - ✅ Datasets (contiguous/chunked/compact layouts, all datatypes)
 - ✅ Dataset resizing with unlimited dimensions
 - ✅ Variable-length datatypes (strings, ragged arrays)
@@ -79,9 +85,11 @@ This is a **pure Go implementation** of the HDF5 file format for reading and wri
 - ✅ Links (hard links full, soft/external MVP)
 
 **Read Enhancements**:
+
 - ✅ Hyperslab selection (efficient data slicing) - 10-250x faster!
 
 **Quality metrics**:
+
 - Test coverage: 86.1%
 - Lint issues: 0 (34+ linters)
 - 57 reference test files
@@ -90,6 +98,7 @@ This is a **pure Go implementation** of the HDF5 file format for reading and wri
 ### Who is this library for?
 
 **Perfect for**:
+
 - 📊 **Data scientists** reading HDF5 datasets in Go
 - 🔬 **Researchers** processing scientific data (astronomy, climate, physics)
 - 🏢 **Developers** building data analysis tools
@@ -97,6 +106,7 @@ This is a **pure Go implementation** of the HDF5 file format for reading and wri
 - 🐳 **Docker users** wanting minimal container dependencies
 
 **Not ideal for** (yet):
+
 - Applications requiring all advanced HDF5 features (virtual datasets, parallel I/O, SWMR)
 - Performance-critical loops requiring C-level speed
 - Attribute modification/deletion (write-once only for now)
@@ -131,6 +141,7 @@ See [Reading Data Guide](READING_DATA.md) for details.
 **Yes! Write support advancing rapidly .** ✅
 
 **What's supported**:
+
 ```go
 // Create new HDF5 file
 fw, err := hdf5.CreateForWrite("output.h5", hdf5.CreateTruncate)
@@ -155,6 +166,7 @@ enumDs, _ := fw.CreateDataset("/status", hdf5.EnumInt8, []uint64{5},
 ```
 
 **Current limitations**:
+
 - Some advanced filters
 
 **Quality**: Feature complete write support with 100% HDF5 test suite pass rate!
@@ -184,6 +196,7 @@ for _, attr := range attrs {
 ```
 
 **Supported**:
+
 - ✅ Compact attributes (in object header)
 - ✅ Dense attributes (fractal heap direct blocks)
 - ✅ All datatypes including variable-length strings (v0.13.4+)
@@ -194,19 +207,20 @@ for _, attr := range attrs {
 
 **Fully Supported (Read + Write)**:
 
-| HDF5 Type | Go Type | Read | Write |
-|-----------|---------|------|-------|
-| H5T_INTEGER | int8-64, uint8-64 | ✅ | ✅ |
-| H5T_FLOAT | float32, float64 | ✅ | ✅ |
-| H5T_STRING | string | ✅ | ✅ |
-| H5T_ARRAY | fixed arrays | ✅ | ✅ |
-| H5T_ENUM | named integers | ✅ | ✅ |
-| H5T_REFERENCE | object/region refs | ✅ | ✅ |
-| H5T_OPAQUE | binary blobs | ✅ | ✅ |
-| H5T_COMPOUND | struct-like | ✅ | ✅ |
-| H5T_VLEN | variable-length | ✅ | ✅ |
+| HDF5 Type     | Go Type            | Read | Write |
+| ------------- | ------------------ | ---- | ----- |
+| H5T_INTEGER   | int8-64, uint8-64  | ✅   | ✅    |
+| H5T_FLOAT     | float32, float64   | ✅   | ✅    |
+| H5T_STRING    | string             | ✅   | ✅    |
+| H5T_ARRAY     | fixed arrays       | ✅   | ✅    |
+| H5T_ENUM      | named integers     | ✅   | ✅    |
+| H5T_REFERENCE | object/region refs | ✅   | ✅    |
+| H5T_OPAQUE    | binary blobs       | ✅   | ✅    |
+| H5T_COMPOUND  | struct-like        | ✅   | ✅    |
+| H5T_VLEN      | variable-length    | ✅   | ✅    |
 
 **Not Supported**:
+
 - H5T_TIME - deprecated in HDF5 since v1.4, never fully implemented
 
 See [Datatypes Guide](DATATYPES.md) for detailed type mapping.
@@ -214,9 +228,11 @@ See [Datatypes Guide](DATATYPES.md) for detailed type mapping.
 ### What compression formats work?
 
 **Supported**:
+
 - ✅ **GZIP/Deflate** (filter ID 1) - Covers 95%+ of files
 
 **Not Yet Supported**:
+
 - ❌ SZIP (filter ID 2)
 - ❌ LZF (filter ID 32000)
 - ❌ BZIP2 (filter ID 307)
@@ -233,16 +249,19 @@ GZIP compression fully supported (both reading and writing).
 ### What HDF5 versions are supported?
 
 **Superblock Versions**:
+
 - ✅ **Version 0** (HDF5 1.0 - 1.6)
 - ❌ Version 1 (rare, not needed)
 - ✅ **Version 2** (HDF5 1.8+)
 - ✅ **Version 3** (HDF5 2.0.0 with checksums)
 
 **Object Header Versions**:
+
 - ✅ **Version 1** (pre-HDF5 1.8)
 - ✅ **Version 2** (HDF5 1.8+)
 
 **File Formats**:
+
 - ✅ Traditional groups (symbol tables)
 - ✅ Modern groups (object headers)
 - ✅ Both old and new B-tree formats
@@ -254,20 +273,24 @@ GZIP compression fully supported (both reading and writing).
 **Yes**, with some considerations:
 
 **File Size**:
+
 - ✅ Files up to several GB work well
 - ✅ Files up to 100+ GB can be read (not all loaded into memory at once)
 - ⚠️ Memory usage scales with number of objects, not file size
 
 **Large Datasets**:
+
 - ✅ Chunked datasets can be any size (read chunk-by-chunk)
 - ⚠️ Entire dataset loaded into memory on `Read()` (streaming API planned for future releases)
 
 **Best Practices**:
+
 - Process datasets one at a time
 - Use `Walk()` efficiently (don't repeat)
 - Close files promptly
 
 **Example**:
+
 ```go
 // Good: Process incrementally
 file.Walk(func(path string, obj hdf5.Object) {
@@ -288,21 +311,25 @@ file.Walk(func(path string, obj hdf5.Object) {
 **Reading Speed**: Typically **2-3x slower** than C library for raw I/O.
 
 **Why acceptable**:
+
 1. For most applications, I/O is not the bottleneck
 2. Decompression (GZIP) is already fast in Go
 3. Easier deployment and maintenance worth the trade-off
 4. Sufficient for scientific data analysis workflows
 
 **Performance**:
+
 - C-based libraries (gonum/hdf5, Python h5py): Fast (native C implementation)
 - This library: Slower (pure Go implementation)
 
 **Expected trade-off**:
+
 - Pure Go is typically 2-3x slower than C for I/O-heavy operations
 - For most scientific data analysis, file I/O is not the bottleneck
 - Decompression (GZIP) and computation dominate processing time
 
 **Why pure Go is still worth it**:
+
 - Cross-platform deployment (single binary, no dependencies)
 - Easier to build, maintain, and distribute
 - Sufficient for typical scientific workflows
@@ -375,6 +402,7 @@ if /* size < threshold */ {
 ### Which operating systems are supported?
 
 **All Go-supported platforms**:
+
 - ✅ **Windows** (7, 10, 11, Server)
 - ✅ **Linux** (Ubuntu, Debian, CentOS, Fedora, Arch, etc.)
 - ✅ **macOS** (Intel and Apple Silicon)
@@ -382,6 +410,7 @@ if /* size < threshold */ {
 - ✅ **Solaris, AIX**
 
 **Architectures**:
+
 - ✅ amd64 (x86_64)
 - ✅ arm64 (Apple Silicon, ARM servers)
 - ✅ 386 (32-bit x86)
@@ -395,6 +424,7 @@ Pure Go = runs anywhere Go runs!
 **Yes!** Perfect for Docker due to no C dependencies.
 
 **Minimal Dockerfile**:
+
 ```dockerfile
 FROM golang:1.25-alpine
 
@@ -408,6 +438,7 @@ CMD ["./myapp"]
 ```
 
 **Benefits**:
+
 - No need for HDF5 C library in image
 - Smaller image size
 - Faster builds
@@ -418,11 +449,13 @@ CMD ["./myapp"]
 **Yes!** Fully compatible with files created by Python h5py.
 
 **Tested with**:
+
 - h5py versions 2.x and 3.x
 - NumPy arrays
 - Pandas DataFrames (via to_hdf)
 
 **Example**:
+
 ```python
 # Create file with Python
 import h5py
@@ -448,12 +481,14 @@ file.Walk(func(path string, obj hdf5.Object) {
 **Usually yes**, if they follow HDF5 standard format.
 
 **Tested with**:
+
 - ✅ MATLAB (save with '-v7.3' flag)
 - ✅ IDL (HDF5 format)
 - ✅ NASA HDF5 files
 - ✅ Climate/weather model outputs (NetCDF4-based HDF5)
 
 **MATLAB Example**:
+
 ```matlab
 % Save as HDF5 format
 data = rand(100, 100);
@@ -492,6 +527,7 @@ if err == nil {
 ### How can I contribute?
 
 **Ways to contribute**:
+
 1. 🐛 **Report bugs** - Open issues with detailed reproduction
 2. 💡 **Suggest features** - Request features via issues or discussions
 3. 📝 **Improve documentation** - Fix typos, add examples
@@ -500,6 +536,7 @@ if err == nil {
 6. 📢 **Spread the word** - Tell others about the library
 
 **Getting started**:
+
 1. Read [CONTRIBUTING.md](../../CONTRIBUTING.md)
 2. Check [open issues](https://github.com/meko-christian/go-hdf5/issues)
 3. Join discussions on GitHub
@@ -507,12 +544,14 @@ if err == nil {
 ### What's the development workflow?
 
 **Git Flow**:
+
 - `main` branch: Stable releases only
 - `develop` branch: Active development (default)
 - Feature branches: `feature/object-header-v1`
 - Release branches: `release/vX.Y.Z`
 
 **Process**:
+
 1. Fork repository
 2. Create feature branch from `develop`
 3. Implement with tests
@@ -525,15 +564,18 @@ if err == nil {
 **Test Coverage**: 76.3% (target: >70%)
 
 **Types of tests**:
+
 1. **Unit tests**: Test individual functions
 2. **Integration tests**: Test with real HDF5 files
 3. **Reference tests**: Compare with `h5dump` output
 
 **Test files**:
+
 - 57 reference HDF5 files covering various formats
 - Generated with Python h5py for reproducibility
 
 **Quality checks**:
+
 - 34+ linters (golangci-lint)
 - Race detector (`go test -race`)
 - Cross-platform testing (Windows, Linux, macOS)
@@ -541,6 +583,7 @@ if err == nil {
 ### How is the library documented?
 
 **Multiple levels**:
+
 1. **User guides**: docs/guides/ (Installation, Reading Data, etc.)
 2. **Architecture docs**: docs/architecture/ (How it works)
 3. **API reference**: GoDoc (pkg.go.dev)
@@ -548,6 +591,7 @@ if err == nil {
 5. **Development docs**: docs/dev/ (for contributors, private)
 
 **Documentation principles**:
+
 - Clear examples
 - Explain "why" not just "how"
 - Keep up-to-date with code changes
@@ -559,6 +603,7 @@ if err == nil {
 ### What's the current write support status?
 
 **Already Available**:
+
 - ✅ File creation with multiple superblock formats (v0, v2, v3)
 - ✅ Dataset writing: contiguous and chunked layouts
 - ✅ **Dataset resizing** with unlimited dimensions (NEW!)
@@ -572,6 +617,7 @@ if err == nil {
 - ✅ Legacy format support (v0 superblock + Object Header v1)
 
 **Read Enhancements**:
+
 - ✅ **Hyperslab selection** (data slicing) - 10-250x faster!
 
 See [ROADMAP.md](../../ROADMAP.md) for complete roadmap.
@@ -579,6 +625,7 @@ See [ROADMAP.md](../../ROADMAP.md) for complete roadmap.
 ### What features are planned?
 
 **Completed **:
+
 - ✅ MVP write support
 - ✅ Chunked datasets + compression
 - ✅ Dense groups and attributes
@@ -592,6 +639,7 @@ See [ROADMAP.md](../../ROADMAP.md) for complete roadmap.
 - ✅ Compound datatype writing
 
 **Future Enhancements**:
+
 - Thread-safety with mutexes
 - SWMR (Single Writer Multiple Reader)
 - Streaming API for large datasets
@@ -604,11 +652,13 @@ See [ROADMAP.md](../../ROADMAP.md) for complete roadmap.
 **Goal**: Minimal breaking changes.
 
 **Promise**:
+
 - Current reading API will remain stable
 - Only additions and optional features
 - Deprecations will be announced in advance
 
 **Version strategy**:
+
 - v0.x.x (current): Stable API, production-ready
 - v1.0.0 (future): LTS release with long-term support guarantee
 - v0.14.0+ (future): Community-driven enhancements (compression filters, parallel I/O, SWMR mode)
@@ -625,12 +675,14 @@ See [ROADMAP.md](../../ROADMAP.md) for versioning strategy.
 ### How can I stay updated?
 
 **Follow development**:
+
 - ⭐ **Star the repo**: https://github.com/meko-christian/go-hdf5
 - 👁️ **Watch releases**: Get notified of new versions
 - 📖 **Read CHANGELOG**: See what's new
 - 💬 **Join discussions**: Share ideas and feedback
 
 **Communication channels**:
+
 - GitHub Issues: Bug reports and feature requests
 - GitHub Discussions: Q&A and community (coming soon)
 - Release notes: Detailed changelog with each version
@@ -656,4 +708,4 @@ See [ROADMAP.md](../../ROADMAP.md) for versioning strategy.
 
 ---
 
-*Last Updated: 2025-11-13*
+_Last Updated: 2025-11-13_

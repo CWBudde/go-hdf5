@@ -69,6 +69,7 @@ func main() {
 ```
 
 **Output**:
+
 ```
 📁 / (2 children)
 📊 /temperature
@@ -82,17 +83,20 @@ func main() {
 ## 📚 Documentation
 
 ### Getting Started
+
 - **[Installation Guide](docs/guides/INSTALLATION.md)** - Install and verify the library
 - **[Quick Start Guide](docs/guides/QUICKSTART.md)** - Get started in 5 minutes
 - **[Reading Data](docs/guides/READING_DATA.md)** - Comprehensive guide to reading datasets and attributes
 
 ### Reference
+
 - **[Datatypes Guide](docs/guides/DATATYPES.md)** - HDF5 to Go type mapping
 - **[Troubleshooting](docs/guides/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[FAQ](docs/guides/FAQ.md)** - Frequently asked questions
 - **[API Reference](https://pkg.go.dev/github.com/meko-christian/go-hdf5)** - GoDoc documentation
 
 ### Advanced
+
 - **[Architecture Overview](docs/architecture/OVERVIEW.md)** - How it works internally
 - **[Performance Tuning](docs/guides/PERFORMANCE_TUNING.md)** - B-tree rebalancing strategies for optimal performance
 - **[Rebalancing API](docs/guides/REBALANCING_API.md)** - Complete API reference for rebalancing options
@@ -178,14 +182,15 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 
 ### Performance Comparison
 
-| Mode | Deletion Speed | Pause Time | Use Case |
-|------|----------------|------------|----------|
-| **Default** | 100% (baseline) | None | Append-only, small files |
-| **Lazy** | 95% (10-100x faster than immediate!) | 100-500ms batches | Batch deletions |
-| **Incremental** | 92% | None (background) | Large files, continuous ops |
-| **Smart** | 88% | Varies | Unknown workloads |
+| Mode            | Deletion Speed                       | Pause Time        | Use Case                    |
+| --------------- | ------------------------------------ | ----------------- | --------------------------- |
+| **Default**     | 100% (baseline)                      | None              | Append-only, small files    |
+| **Lazy**        | 95% (10-100x faster than immediate!) | 100-500ms batches | Batch deletions             |
+| **Incremental** | 92%                                  | None (background) | Large files, continuous ops |
+| **Smart**       | 88%                                  | Varies            | Unknown workloads           |
 
 **Learn more**:
+
 - **[Performance Tuning Guide](docs/guides/PERFORMANCE_TUNING.md)**: Comprehensive guide with benchmarks, recommendations, troubleshooting
 - **[Rebalancing API Reference](docs/guides/REBALANCING_API.md)**: Complete API documentation
 - **[Examples](examples/07-rebalancing/)**: 4 working examples demonstrating each mode
@@ -199,6 +204,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 **HDF5 2.0.0 Ready: Security-hardened with AI/ML datatypes, Format Spec v4.0 compliance, and 86.1% coverage!** 🎉
 
 ### ✅ Fully Implemented
+
 - **File Structure**:
   - Superblock parsing (v0, v2, v3) with checksum validation (CRC32)
   - Object headers v1 (legacy HDF5 < 1.8) with continuations
@@ -245,9 +251,11 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
   - 39 security test cases, all passing ✅
 
 ### ✍️ Write Support - Feature Complete!
+
 **Production-ready write support with all features!** ✅
 
 **Dataset Operations**:
+
 - ✅ Create datasets (all layouts: contiguous, chunked, compact)
 - ✅ Write data (all datatypes including compound)
 - ✅ Dataset resizing with unlimited dimensions
@@ -259,11 +267,13 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 - ✅ Attribute modification/deletion
 
 **Links**:
+
 - ✅ Hard links (full support)
 - ✅ Soft links (symbolic references - full support)
 - ✅ External links (cross-file references - full support)
 
 **Read Enhancements**:
+
 - ✅ Hyperslab selection (data slicing) - 10-250x faster!
 - ✅ Efficient partial dataset reading
 - ✅ Stride and block support
@@ -271,10 +281,12 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 - ✅ **ChunkIterator API** - Memory-efficient iteration over large datasets
 
 **Validation**:
+
 - ✅ Official HDF5 Test Suite: 100% pass rate (378/378 files)
 - ✅ Production quality confirmed
 
 **Future Enhancements**:
+
 - ✅ LZF filter (read + write, Pure Go) ✨ NEW
 - ✅ BZIP2 filter (read only, stdlib)
 - ⚠️ SZIP filter (stub - requires libaec)
@@ -290,6 +302,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 ## 🔧 Development
 
 ### Requirements
+
 - Go 1.25 or later
 - No external dependencies for the library
 
@@ -331,11 +344,13 @@ go tool cover -html=coverage.out
 Contributions are welcome! This is an early-stage project and we'd love your help.
 
 **Before contributing**:
+
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md) - Git workflow and development guidelines
 2. Check [open issues](https://github.com/meko-christian/go-hdf5/issues)
 3. Review the [Architecture Overview](docs/architecture/OVERVIEW.md)
 
 **Ways to contribute**:
+
 - 🐛 Report bugs
 - 💡 Suggest features
 - 📝 Improve documentation
@@ -346,16 +361,16 @@ Contributions are welcome! This is an early-stage project and we'd love your hel
 
 ## 🗺️ Comparison with Other Libraries
 
-| Feature | This Library | gonum/hdf5 | go-hdf5/hdf5 |
-|---------|-------------|------------|--------------|
-| Pure Go | ✅ Yes | ❌ CGo wrapper | ✅ Yes |
-| Reading | ✅ Full | ✅ Full | ❌ Limited |
-| Writing | ✅ Full | ✅ Full | ❌ No |
-| HDF5 1.8+ | ✅ Yes | ⚠️ Limited | ❌ No |
-| Advanced Datatypes | ✅ All | ✅ Yes | ❌ No |
-| Test Suite Validation | ✅ 100% (378/378) | ⚠️ Unknown | ❌ No |
-| Maintained | ✅ Active | ⚠️ Slow | ❌ Inactive |
-| Thread-safe | ⚠️ User must sync* | ⚠️ Conditional | ❌ No |
+| Feature               | This Library        | gonum/hdf5     | go-hdf5/hdf5 |
+| --------------------- | ------------------- | -------------- | ------------ |
+| Pure Go               | ✅ Yes              | ❌ CGo wrapper | ✅ Yes       |
+| Reading               | ✅ Full             | ✅ Full        | ❌ Limited   |
+| Writing               | ✅ Full             | ✅ Full        | ❌ No        |
+| HDF5 1.8+             | ✅ Yes              | ⚠️ Limited     | ❌ No        |
+| Advanced Datatypes    | ✅ All              | ✅ Yes         | ❌ No        |
+| Test Suite Validation | ✅ 100% (378/378)   | ⚠️ Unknown     | ❌ No        |
+| Maintained            | ✅ Active           | ⚠️ Slow        | ❌ Inactive  |
+| Thread-safe           | ⚠️ User must sync\* | ⚠️ Conditional | ❌ No        |
 
 \* Different `File` instances are independent. Concurrent access to same `File` requires user synchronization (standard Go practice). Full thread-safety with mutexes + SWMR mode planned for future releases.
 
@@ -403,5 +418,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-*Built with ❤️ by the HDF5 Go community*
-*Recognized by [HDF Group Forum](https://forum.hdfgroup.org/t/pure-go-hdf5-library-production-release-with-hdf5-2-0-0-compatibility/13584)* ⭐
+_Built with ❤️ by the HDF5 Go community_
+_Recognized by [HDF Group Forum](https://forum.hdfgroup.org/t/pure-go-hdf5-library-production-release-with-hdf5-2-0-0-compatibility/13584)_ ⭐

@@ -19,7 +19,6 @@ func TestCreateDatasetWithUnlimitedDimension(t *testing.T) {
 	_, err = fw.CreateDataset("/data", hdf5.Float64, []uint64{10},
 		hdf5.WithChunkDims([]uint64{5}),
 		hdf5.WithMaxDims([]uint64{hdf5.Unlimited}))
-
 	if err != nil {
 		t.Errorf("create dataset with unlimited: %v", err)
 	}
@@ -91,7 +90,6 @@ func TestMaxDims2D(t *testing.T) {
 	_, err = fw.CreateDataset("/matrix", hdf5.Float64, []uint64{10, 20},
 		hdf5.WithChunkDims([]uint64{5, 10}),
 		hdf5.WithMaxDims([]uint64{hdf5.Unlimited, 20}))
-
 	if err != nil {
 		t.Errorf("create 2D dataset with mixed maxdims: %v", err)
 	}
@@ -109,7 +107,6 @@ func TestMaxDimsAllFixed(t *testing.T) {
 	_, err = fw.CreateDataset("/data", hdf5.Int32, []uint64{10},
 		hdf5.WithChunkDims([]uint64{5}),
 		hdf5.WithMaxDims([]uint64{100})) // Fixed max
-
 	if err != nil {
 		t.Errorf("create dataset with fixed maxdims: %v", err)
 	}

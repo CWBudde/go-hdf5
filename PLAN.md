@@ -9,11 +9,11 @@ the HDF5 foundation for our projects (notably
 
 ## Prior Art & Key Resources
 
-| Resource | Notes |
-|----------|-------|
-| `../PasHdf/Source/HdfFile.pas` | Our own HDF5 reader (~2 000 LOC Pascal). Read-only, superblock v0-v3, fractal heaps, chunked+compressed datasets. |
-| [meko-christian/go-hdf5](https://github.com/meko-christian/go-hdf5) (upstream) | Pure-Go HDF5 v0.13. Read+write, all layouts, gzip/lzf, hyperslab, 86 % coverage. |
-| [HDF5 Format Spec v3.0](https://docs.hdfgroup.org/archive/support/HDF5/doc/H5.format.html) | Official binary layout reference. |
+| Resource                                                                                   | Notes                                                                                                             |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `../PasHdf/Source/HdfFile.pas`                                                             | Our own HDF5 reader (~2 000 LOC Pascal). Read-only, superblock v0-v3, fractal heaps, chunked+compressed datasets. |
+| [meko-christian/go-hdf5](https://github.com/meko-christian/go-hdf5) (upstream)             | Pure-Go HDF5 v0.13. Read+write, all layouts, gzip/lzf, hyperslab, 86 % coverage.                                  |
+| [HDF5 Format Spec v3.0](https://docs.hdfgroup.org/archive/support/HDF5/doc/H5.format.html) | Official binary layout reference.                                                                                 |
 
 ## Repository Setup
 
@@ -32,14 +32,12 @@ rename to `github.com/MeKo-Christian/go-hdf5` once we diverge enough).
 **Goal:** Understand the fork's existing API, ensure everything builds
 and passes tests.
 
-- [ ] Run `go build ./...` and `go test ./...` — fix anything broken.
+- [x] Run `go build ./...` and `go test ./...` — fix anything broken.
+- [x] Decide whether to rename the Go module now or keep
+      `github.com/meko-christian/go-hdf5` temporarily.
 - [ ] Read through `file.go`, `group.go`, key exported types (`File`,
       `Group`, `Dataset`, `Attribute`) to understand the public API.
 - [ ] Inventory existing `cmd/dump_hdf5` tool.
-- [ ] Decide whether to rename the Go module now or keep
-      `github.com/meko-christian/go-hdf5` temporarily.
-- [ ] Document the upstream sync strategy (how/when to pull from
-      scigolib).
 
 ---
 
@@ -78,7 +76,7 @@ and passes tests.
 
 ## Risk Register
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Upstream API changes | Medium | Pin to known good commit; periodic controlled sync. |
-| Module path rename friction | Low | Delay rename until truly needed. |
+| Risk                        | Impact | Mitigation                                          |
+| --------------------------- | ------ | --------------------------------------------------- |
+| Upstream API changes        | Medium | Pin to known good commit; periodic controlled sync. |
+| Module path rename friction | Low    | Delay rename until truly needed.                    |

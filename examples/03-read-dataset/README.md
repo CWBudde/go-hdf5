@@ -69,6 +69,7 @@ fmt.Printf("Dataset info: %s\n", info)
 ```
 
 **Info Output**:
+
 - Datatype (int32, float64, etc.)
 - Layout (compact, contiguous, chunked)
 - Dimensions
@@ -106,12 +107,12 @@ for i, v := range values {
 
 ## Supported Data Types
 
-| HDF5 Type | Go Read Type | Example |
-|-----------|--------------|---------|
-| int32 | float64 | `[1, 2, 3]` |
-| int64 | float64 | `[100, 200, 300]` |
-| float32 | float64 | `[1.1, 2.2, 3.3]` |
-| float64 | float64 | `[1.23, 4.56, 7.89]` |
+| HDF5 Type | Go Read Type | Example              |
+| --------- | ------------ | -------------------- |
+| int32     | float64      | `[1, 2, 3]`          |
+| int64     | float64      | `[100, 200, 300]`    |
+| float32   | float64      | `[1.1, 2.2, 3.3]`    |
+| float64   | float64      | `[1.23, 4.56, 7.89]` |
 
 All numeric types are converted to `float64` for convenience.
 
@@ -177,6 +178,7 @@ if ds, ok := datasets["temperature"]; ok {
 **Cause**: Dataset might be empty or use unsupported layout.
 
 **Solution**: Check with `Info()`:
+
 ```go
 info, _ := ds.Info()
 fmt.Println(info)  // Check dimensions and size
@@ -205,4 +207,4 @@ if /* size is ok */ {
 
 ---
 
-*Part of the HDF5 Go Library v0.10.0-beta*
+_Part of the HDF5 Go Library v0.10.0-beta_

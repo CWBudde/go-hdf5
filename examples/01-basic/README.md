@@ -23,6 +23,7 @@ go run examples/01-basic/main.go
 ## What You'll See
 
 The example will:
+
 1. Generate test HDF5 files (if Python/h5py available)
 2. Open each test file
 3. Display superblock version
@@ -30,6 +31,7 @@ The example will:
 5. Show object hierarchy
 
 **Example Output**:
+
 ```
 Creating test HDF5 files...
 Created: testdata/v0.h5
@@ -104,10 +106,10 @@ file.Walk(func(path string, obj hdf5.Object) {
 
 The library provides two main object types:
 
-| Type | Description | Example Path |
-|------|-------------|--------------|
-| `*hdf5.Group` | Container for other objects | `/`, `/experiments/` |
-| `*hdf5.Dataset` | Array data storage | `/temperature`, `/data` |
+| Type            | Description                 | Example Path            |
+| --------------- | --------------------------- | ----------------------- |
+| `*hdf5.Group`   | Container for other objects | `/`, `/experiments/`    |
+| `*hdf5.Dataset` | Array data storage          | `/temperature`, `/data` |
 
 ### File Structure
 
@@ -148,6 +150,7 @@ func createTestFiles() error {
 ```
 
 **Requirements**:
+
 - Python 3
 - h5py: `pip install h5py`
 - numpy: `pip install numpy`
@@ -223,6 +226,7 @@ func printTree(file *hdf5.File) {
 **Cause**: File doesn't exist or path is incorrect.
 
 **Solution**:
+
 ```go
 import "os"
 
@@ -243,6 +247,7 @@ if _, err := os.Stat("data.h5"); os.IsNotExist(err) {
 **Cause**: Python or h5py not installed.
 
 **Solution**:
+
 ```bash
 # Install Python dependencies
 pip install h5py numpy
@@ -266,4 +271,4 @@ After understanding basic usage:
 
 ---
 
-*Part of the HDF5 Go Library v0.10.0-beta*
+_Part of the HDF5 Go Library v0.10.0-beta_
