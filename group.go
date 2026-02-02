@@ -267,6 +267,25 @@ func loadModernGroup(file *File, address uint64) (*Group, error) {
 			}
 		}
 
+		// If no inline link messages, check for dense link storage (LinkInfo → fractal heap + B-tree v2).
+		if !hasLinkMessages {
+			for _, msg := range header.Messages {
+				if msg.Type == core.MsgLinkInfo {
+					linkInfo, err := core.ParseLinkInfoMessage(msg.Data, sb)
+					if err != nil {
+						return nil, utils.WrapError("link info parse failed", err)
+					}
+					if linkInfo.HasFractalHeap() && linkInfo.HasNameBTree() {
+						if err := loadDenseGroupChildren(file, group, linkInfo, sb); err != nil {
+							return nil, utils.WrapError("dense group load failed", err)
+						}
+						hasLinkMessages = true
+						break
+					}
+				}
+			}
+		}
+
 		// Fallback to symbol table if no link messages found (older format).
 		if !hasLinkMessages {
 			// First check for Symbol Table message in object header
@@ -382,6 +401,54 @@ func loadTraditionalGroup(file *File, address uint64) (*Group, error) {
 	}
 
 	return group, nil
+}
+
+// loadDenseGroupChildren reads children from dense link storage (fractal heap + B-tree v2).
+// This is used by groups that store links in a fractal heap indexed by a B-tree v2,
+// rather than inline Link messages or old-style symbol tables.
+func loadDenseGroupChildren(file *File, group *Group, linkInfo *core.LinkInfoMessage, sb *core.Superblock) error {
+	r := file.osFile
+
+	// Open fractal heap for reading link data.
+	fh, err := structures.OpenFractalHeap(r, linkInfo.FractalHeapAddress,
+		sb.LengthSize, sb.OffsetSize, sb.Endianness)
+	// Note: sizeofSize = LengthSize, sizeofAddr = OffsetSize per HDF5 spec
+	if err != nil {
+		return fmt.Errorf("open fractal heap: %w", err)
+	}
+
+	// Load B-tree v2 to get all link name records.
+	bt := structures.NewWritableBTreeV2(0)
+	if err := bt.LoadFromFile(r, linkInfo.NameBTreeAddress, sb); err != nil {
+		return fmt.Errorf("load B-tree v2: %w", err)
+	}
+
+	// Iterate all records and load each linked object.
+	for _, rec := range bt.GetRecords() {
+		// Read the link message data from the fractal heap.
+		// Use spec-compliant read: official HDF5 files encode heap offsets
+		// from the start of the direct block (including header).
+		linkData, err := fh.ReadObjectSpecCompliant(rec.HeapID[:])
+		if err != nil {
+			continue
+		}
+
+		// Parse as a link message.
+		linkMsg, err := structures.ParseLinkMessage(linkData, sb)
+		if err != nil {
+			continue
+		}
+
+		if linkMsg.IsHardLink() {
+			child, err := loadObject(file, linkMsg.ObjectAddress, linkMsg.Name)
+			if err != nil {
+				continue
+			}
+			group.children = append(group.children, child)
+		}
+	}
+
+	return nil
 }
 
 func (g *Group) loadChildren() error {

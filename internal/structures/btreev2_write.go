@@ -7,10 +7,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 
 	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // writeUint64 writes a uint64 value to buffer with specified size and endianness.
@@ -523,7 +523,7 @@ func (bt *WritableBTreeV2) encodeHeader(sb *core.Superblock) ([]byte, error) {
 	offset += 8
 
 	// Checksum (CRC32, 4 bytes)
-	checksum := crc32.ChecksumIEEE(buf[:offset])
+	checksum := utils.JenkinsChecksum(buf[:offset])
 	binary.LittleEndian.PutUint32(buf[offset:], checksum)
 
 	return buf, nil
@@ -568,7 +568,7 @@ func (bt *WritableBTreeV2) encodeLeafNode(sb *core.Superblock) ([]byte, error) {
 	}
 
 	// Checksum (CRC32, 4 bytes)
-	checksum := crc32.ChecksumIEEE(buf[:offset])
+	checksum := utils.JenkinsChecksum(buf[:offset])
 	binary.LittleEndian.PutUint32(buf[offset:], checksum)
 
 	return buf, nil
@@ -795,9 +795,9 @@ func readBTreeV2Header(r io.ReaderAt, address uint64, sb *core.Superblock) (*BTr
 	totalRecords := binary.LittleEndian.Uint64(buf[offset : offset+8])
 	offset += 8
 
-	// Checksum (CRC32, 4 bytes)
+	// Checksum (Jenkins lookup3, 4 bytes)
 	storedChecksum := binary.LittleEndian.Uint32(buf[offset : offset+4])
-	expectedChecksum := crc32.ChecksumIEEE(buf[:offset])
+	expectedChecksum := utils.JenkinsChecksum(buf[:offset])
 	if storedChecksum != expectedChecksum {
 		return nil, fmt.Errorf("b-tree header checksum mismatch: got 0x%X, want 0x%X", storedChecksum, expectedChecksum)
 	}
@@ -879,9 +879,9 @@ func readBTreeV2LeafNode(r io.ReaderAt, address uint64, numRecords int, _ *core.
 		}
 	}
 
-	// Checksum (CRC32, 4 bytes)
+	// Checksum (Jenkins lookup3, 4 bytes)
 	storedChecksum := binary.LittleEndian.Uint32(buf[offset : offset+4])
-	expectedChecksum := crc32.ChecksumIEEE(buf[:offset])
+	expectedChecksum := utils.JenkinsChecksum(buf[:offset])
 	if storedChecksum != expectedChecksum {
 		return nil, nil, fmt.Errorf("b-tree leaf checksum mismatch: got 0x%X, want 0x%X", storedChecksum, expectedChecksum)
 	}

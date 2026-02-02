@@ -54,14 +54,14 @@ func (lim *LinkInfoMessage) HasCreationOrderIndex() bool {
 	return (lim.Flags & LinkInfoIndexCreationOrder) != 0
 }
 
-// HasFractalHeap returns true if fractal heap address is set.
+// HasFractalHeap returns true if fractal heap address is valid (not undefined).
 func (lim *LinkInfoMessage) HasFractalHeap() bool {
-	return lim.FractalHeapAddress != 0
+	return lim.FractalHeapAddress != 0 && lim.FractalHeapAddress != ^uint64(0)
 }
 
-// HasNameBTree returns true if name B-tree address is set.
+// HasNameBTree returns true if name B-tree address is valid (not undefined).
 func (lim *LinkInfoMessage) HasNameBTree() bool {
-	return lim.NameBTreeAddress != 0
+	return lim.NameBTreeAddress != 0 && lim.NameBTreeAddress != ^uint64(0)
 }
 
 // HasCreationOrderBTree returns true if creation order B-tree address is set.

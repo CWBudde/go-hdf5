@@ -7,10 +7,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 
 	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // Fractal heap write constants.
@@ -179,7 +179,7 @@ func NewWritableFractalHeap(blockSize uint64) *WritableFractalHeap {
 		BlockOffset:       0, // First block at offset 0
 		Size:              blockSize,
 		Objects:           make([]byte, 0, blockSize),
-		FreeOffset:        0,     // Next insert at 0
+		FreeOffset:        0,     // Offset within Objects slice (data-relative, header added at encode time)
 		ChecksumEnabled:   false, // No checksum for MVP
 	}
 
@@ -688,7 +688,7 @@ func (fh *WritableFractalHeap) writeHeaderAt(writer Writer, addr uint64, sb *cor
 	offset += 2
 
 	// Checksum (CRC32 of header without checksum field)
-	checksum := crc32.ChecksumIEEE(buf[:offset])
+	checksum := utils.JenkinsChecksum(buf[:offset])
 	binary.LittleEndian.PutUint32(buf[offset:], checksum)
 
 	// Write to file at pre-allocated address
@@ -734,7 +734,7 @@ func (fh *WritableFractalHeap) writeDirectBlockAt(writer Writer, addr uint64, sb
 
 	// Checksum at END of block (last 4 bytes)
 	checksumOffset := totalSize - checksumSize
-	checksum := crc32.ChecksumIEEE(buf[:checksumOffset])
+	checksum := utils.JenkinsChecksum(buf[:checksumOffset])
 	binary.LittleEndian.PutUint32(buf[checksumOffset:], checksum)
 
 	// Write to file at pre-allocated address

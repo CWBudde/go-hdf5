@@ -6,10 +6,10 @@ package structures
 import (
 	"encoding/binary"
 	"fmt"
-	"hash/crc32"
 	"io"
 
 	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // IndirectBlock represents a fractal heap indirect block (read-only).
@@ -284,7 +284,7 @@ func (wb *WritableIndirectBlock) writeAt(writer Writer, address uint64, sb *core
 
 	// Checksum (if enabled)
 	if wb.Header.ChecksumEnabled {
-		checksum := crc32.ChecksumIEEE(buf[:offset])
+		checksum := utils.JenkinsChecksum(buf[:offset])
 		binary.LittleEndian.PutUint32(buf[offset:], checksum)
 	}
 

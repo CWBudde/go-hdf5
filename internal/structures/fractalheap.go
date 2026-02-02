@@ -113,6 +113,7 @@ type DirectBlock struct {
 	Version        uint8
 	HeapHeaderAddr uint64 // Address of heap header
 	BlockOffset    uint64 // Offset of block within heap
+	HeaderSize     uint64 // Size of block header (for offset correction)
 	Checksum       uint32 // Optional checksum
 	Data           []byte // Block data (after header)
 }
@@ -150,6 +151,12 @@ func OpenFractalHeap(r io.ReaderAt, address uint64, sizeofSize, sizeofAddr uint8
 	}
 
 	return heap, nil
+}
+
+// DirectBlockHeaderSize returns the size of a direct block header in bytes.
+// HDF5 spec: sig(4) + version(1) + heap_header_addr(sizeofAddr) + block_offset(HeapOffsetSize).
+func (fh *FractalHeap) DirectBlockHeaderSize() uint64 {
+	return 5 + uint64(fh.sizeofAddr) + uint64(fh.Header.HeapOffsetSize)
 }
 
 // parseFractalHeapHeader reads and parses the fractal heap header.
@@ -316,10 +323,27 @@ func parseFractalHeapHeader(r io.ReaderAt, address uint64, sizeofSize, sizeofAdd
 // - []byte: Object data
 // - error: Any read errors or unsupported features.
 func (fh *FractalHeap) ReadObject(heapID []byte) ([]byte, error) {
+	return fh.readObjectInternal(heapID, false)
+}
+
+// ReadObjectSpecCompliant reads an object using HDF5-spec-compliant heap ID offsets.
+// Official HDF5 files encode managed object offsets from the start of the direct block
+// (including the block header), while go-hdf5's write path uses offsets from the data start.
+// Use this method when reading heap IDs from official HDF5 files (e.g., dense group links).
+func (fh *FractalHeap) ReadObjectSpecCompliant(heapID []byte) ([]byte, error) {
+	return fh.readObjectInternal(heapID, true)
+}
+
+func (fh *FractalHeap) readObjectInternal(heapID []byte, specCompliant bool) ([]byte, error) {
 	// Parse heap ID
 	id, err := fh.parseHeapID(heapID)
 	if err != nil {
 		return nil, utils.WrapError("failed to parse heap ID", err)
+	}
+
+	// For spec-compliant reads, adjust the offset by subtracting the direct block header size.
+	if specCompliant && id.Type == HeapIDTypeManaged && id.Offset >= fh.DirectBlockHeaderSize() {
+		id.Offset -= fh.DirectBlockHeaderSize()
 	}
 
 	// Handle different ID types
@@ -405,24 +429,26 @@ func (fh *FractalHeap) readManagedObject(id *HeapID) ([]byte, error) {
 		return nil, utils.WrapError("failed to read direct block", err)
 	}
 
-	// Extract object from block data
-	// Offset is relative to heap space, need to account for direct block offset
+	// Extract object from block data.
 	if id.Offset < dblock.BlockOffset {
 		return nil, fmt.Errorf("object offset 0x%X before block offset 0x%X", id.Offset, dblock.BlockOffset)
 	}
 
 	relativeOffset := id.Offset - dblock.BlockOffset
+	dataLen := uint64(len(dblock.Data))
 
-	if relativeOffset > uint64(len(dblock.Data)) {
-		return nil, fmt.Errorf("object offset 0x%X beyond block data (size: %d)", relativeOffset, len(dblock.Data))
+	// HDF5 spec: heap ID offsets are from block start (including header).
+	// go-hdf5's write path uses offsets from data start (after header).
+	// If offset exceeds data bounds, adjust by subtracting the header size.
+	if relativeOffset+id.Length > dataLen && relativeOffset >= dblock.HeaderSize {
+		relativeOffset -= dblock.HeaderSize
 	}
 
-	if relativeOffset+id.Length > uint64(len(dblock.Data)) {
+	if relativeOffset+id.Length > dataLen {
 		return nil, fmt.Errorf("object extends beyond block data (offset: 0x%X, length: %d, block size: %d)",
 			relativeOffset, id.Length, len(dblock.Data))
 	}
 
-	// Extract and return object data
 	objData := make([]byte, id.Length)
 	copy(objData, dblock.Data[relativeOffset:relativeOffset+id.Length])
 
@@ -504,6 +530,10 @@ func (fh *FractalHeap) readDirectBlock(address, blockSize uint64) (*DirectBlock,
 	// For production use, rely on file system integrity or external validation.
 	// Target version: v0.11.0-RC (comprehensive data integrity features)
 	// dblock.Checksum = fh.endianness.Uint32(buf[totalSize-4 : totalSize])
+
+	// Store header size for heap ID offset correction (HDF5 spec: heap IDs use
+	// offsets from block start including header, not from data start).
+	dblock.HeaderSize = uint64(offset)
 
 	// Data (remaining bytes, excluding checksum if present)
 	dataEnd := totalSize

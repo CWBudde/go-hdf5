@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"hash/crc32"
 	"os"
 	"testing"
+
+	"github.com/meko-christian/go-hdf5/internal/utils"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -294,7 +295,7 @@ func TestSuperblockWrite(t *testing.T) {
 		require.Equal(t, 48, n)
 
 		// Verify checksum
-		expectedChecksum := crc32.ChecksumIEEE(buf[0:44])
+		expectedChecksum := utils.JenkinsChecksum(buf[0:44])
 		actualChecksum := binary.LittleEndian.Uint32(buf[44:48])
 		assert.Equal(t, expectedChecksum, actualChecksum,
 			"superblock checksum mismatch")
