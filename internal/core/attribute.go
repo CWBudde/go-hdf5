@@ -8,7 +8,7 @@ import (
 	"io"
 	"unsafe"
 
-	"github.com/scigolib/hdf5/internal/utils"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // Attribute represents an HDF5 attribute with metadata and data.

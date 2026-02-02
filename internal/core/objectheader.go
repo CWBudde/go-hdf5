@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/scigolib/hdf5/internal/utils"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // ObjectType identifies the type of HDF5 object (group, dataset, datatype).

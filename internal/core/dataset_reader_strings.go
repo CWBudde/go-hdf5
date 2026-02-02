@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/scigolib/hdf5/internal/utils"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // ReadDatasetStrings reads a string dataset and returns values as string array.

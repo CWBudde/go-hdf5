@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	mocktesting "github.com/scigolib/hdf5/internal/testing"
+	mocktesting "github.com/meko-christian/go-hdf5/internal/testing"
 	"github.com/stretchr/testify/require"
 )
 

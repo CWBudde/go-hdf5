@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/scigolib/hdf5/internal/structures"
+	"github.com/meko-christian/go-hdf5/internal/structures"
 )
 
 // TestMetricsCollector_NewMetricsCollector verifies initialization.

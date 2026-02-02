@@ -401,7 +401,7 @@ FROM golang:1.25-alpine
 WORKDIR /app
 COPY . .
 
-RUN go get github.com/scigolib/hdf5
+RUN go get github.com/meko-christian/go-hdf5
 RUN go build -o myapp .
 
 CMD ["./myapp"]
@@ -501,7 +501,7 @@ if err == nil {
 
 **Getting started**:
 1. Read [CONTRIBUTING.md](../../CONTRIBUTING.md)
-2. Check [open issues](https://github.com/scigolib/hdf5/issues)
+2. Check [open issues](https://github.com/meko-christian/go-hdf5/issues)
 3. Join discussions on GitHub
 
 ### What's the development workflow?
@@ -625,7 +625,7 @@ See [ROADMAP.md](../../ROADMAP.md) for versioning strategy.
 ### How can I stay updated?
 
 **Follow development**:
-- ⭐ **Star the repo**: https://github.com/scigolib/hdf5
+- ⭐ **Star the repo**: https://github.com/meko-christian/go-hdf5
 - 👁️ **Watch releases**: Get notified of new versions
 - 📖 **Read CHANGELOG**: See what's new
 - 💬 **Join discussions**: Share ideas and feedback
@@ -650,9 +650,9 @@ See [ROADMAP.md](../../ROADMAP.md) for versioning strategy.
 
 ### Get help:
 
-- **GitHub Issues**: https://github.com/scigolib/hdf5/issues
-- **GitHub Discussions**: https://github.com/scigolib/hdf5/discussions
-- **Documentation**: https://github.com/scigolib/hdf5/tree/main/docs
+- **GitHub Issues**: https://github.com/meko-christian/go-hdf5/issues
+- **GitHub Discussions**: https://github.com/meko-christian/go-hdf5/discussions
+- **Documentation**: https://github.com/meko-christian/go-hdf5/tree/main/docs
 
 ---
 

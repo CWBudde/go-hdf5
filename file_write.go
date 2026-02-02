@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/scigolib/hdf5/internal/core"
-	"github.com/scigolib/hdf5/internal/writer"
+	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/writer"
 )
 
 // CreateMode specifies how to create a new HDF5 file.

@@ -7,7 +7,7 @@ Get started with the HDF5 Go library in minutes.
 ## 📦 Installation
 
 ```bash
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 ```
 
 **Requirements**:
@@ -28,7 +28,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -54,7 +54,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -100,7 +100,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -134,7 +134,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -208,7 +208,7 @@ import (
     "log"
     "os"
 
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -296,7 +296,7 @@ package main
 
 import (
     "log"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -402,7 +402,7 @@ Not supported: H5T_TIME (deprecated in HDF5 spec)
   - `04-vlen-strings/` - Variable-length strings
   - `05-comprehensive/` - Complete file analysis
 
-- **[API Reference](https://pkg.go.dev/github.com/scigolib/hdf5)** - Full GoDoc documentation
+- **[API Reference](https://pkg.go.dev/github.com/meko-christian/go-hdf5)** - Full GoDoc documentation
 
 ---
 
@@ -425,7 +425,7 @@ if err != nil {
 
 ### "unsupported superblock version" error
 
-**Solution**: Your HDF5 file uses a format version we don't support yet (v1). Please file an issue at https://github.com/scigolib/hdf5/issues with:
+**Solution**: Your HDF5 file uses a format version we don't support yet (v1). Please file an issue at https://github.com/meko-christian/go-hdf5/issues with:
 - HDF5 file (if shareable)
 - Output of `h5dump -H yourfile.h5`
 - How the file was created (tool/library used)

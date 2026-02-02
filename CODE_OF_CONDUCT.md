@@ -58,7 +58,7 @@ representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at:
 
-**GitHub Issues**: https://github.com/scigolib/hdf5/issues
+**GitHub Issues**: https://github.com/meko-christian/go-hdf5/issues
 
 All complaints will be reviewed and investigated promptly and fairly.
 

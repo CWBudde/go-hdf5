@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/scigolib/hdf5/internal/core"
-	"github.com/scigolib/hdf5/internal/utils"
+	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // ReadGroupBTreeEntries reads entries from a "TREE" format B-tree (type 0 - group symbol table).

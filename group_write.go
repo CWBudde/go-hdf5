@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/scigolib/hdf5/internal/core"
-	"github.com/scigolib/hdf5/internal/structures"
-	"github.com/scigolib/hdf5/internal/writer"
+	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/structures"
+	"github.com/meko-christian/go-hdf5/internal/writer"
 )
 
 // GroupWriter represents an HDF5 group opened for writing.

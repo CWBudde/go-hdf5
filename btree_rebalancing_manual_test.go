@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/scigolib/hdf5"
+	"github.com/meko-christian/go-hdf5"
 )
 
 // TestDatasetWriter_RebalanceAttributeBTree_CompactStorage tests rebalancing on compact storage.

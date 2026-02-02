@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/scigolib/hdf5/internal/core"
-	"github.com/scigolib/hdf5/internal/utils"
+	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // SymbolTableNode represents a Symbol Table Node (SNOD structure).

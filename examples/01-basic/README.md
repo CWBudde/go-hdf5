@@ -262,7 +262,7 @@ After understanding basic usage:
 
 - **[Installation Guide](../../docs/guides/INSTALLATION.md)** - Setup instructions
 - **[Quick Start Guide](../../docs/guides/QUICKSTART.md)** - 5-minute intro
-- **[API Reference](https://pkg.go.dev/github.com/scigolib/hdf5)** - GoDoc
+- **[API Reference](https://pkg.go.dev/github.com/meko-christian/go-hdf5)** - GoDoc
 
 ---
 

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/scigolib/hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/core"
 )
 
 // ChunkIterator provides memory-efficient iteration over dataset chunks.

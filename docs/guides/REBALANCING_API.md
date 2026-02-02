@@ -46,7 +46,7 @@ fw, err := hdf5.CreateForWrite(filename, mode, ...options)
 **Import**:
 
 ```go
-import "github.com/scigolib/hdf5"
+import "github.com/meko-christian/go-hdf5"
 ```
 
 ---
@@ -712,7 +712,7 @@ package main
 
 import (
     "log"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -748,7 +748,7 @@ import (
     "fmt"
     "log"
     "time"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -798,7 +798,7 @@ import (
     "fmt"
     "log"
     "time"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -855,7 +855,7 @@ package main
 import (
     "fmt"
     "log"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {

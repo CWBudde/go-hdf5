@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/scigolib/hdf5"
+	"github.com/meko-christian/go-hdf5"
 )
 
 func TestMain(m *testing.M) {

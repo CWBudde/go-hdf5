@@ -2,15 +2,15 @@
 
 > **Pure Go implementation of the HDF5 file format** - No CGo required
 
-[![Release](https://img.shields.io/github/v/release/scigolib/hdf5?include_prereleases&style=flat-square&logo=github&color=blue&label=version)](https://github.com/scigolib/hdf5/releases)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/scigolib/hdf5?style=flat-square&logo=go)](https://go.dev)
-[![Go Report Card](https://goreportcard.com/badge/github.com/scigolib/hdf5?style=flat-square)](https://goreportcard.com/report/github.com/scigolib/hdf5)
-[![GoDoc](https://img.shields.io/badge/godoc-reference-blue?style=flat-square&logo=go)](https://pkg.go.dev/github.com/scigolib/hdf5)
-[![CI](https://img.shields.io/github/actions/workflow/status/scigolib/hdf5/test.yml?branch=main&style=flat-square&logo=github&label=tests)](https://github.com/scigolib/hdf5/actions)
-[![codecov](https://codecov.io/gh/scigolib/hdf5/graph/badge.svg)](https://codecov.io/gh/scigolib/hdf5)
-[![License](https://img.shields.io/github/license/scigolib/hdf5?style=flat-square&color=blue)](https://github.com/scigolib/hdf5/blob/main/LICENSE)
-[![Stars](https://img.shields.io/github/stars/scigolib/hdf5?style=flat-square&logo=github)](https://github.com/scigolib/hdf5/stargazers)
-[![Discussions](https://img.shields.io/github/discussions/scigolib/hdf5?style=flat-square&logo=github&label=discussions)](https://github.com/scigolib/hdf5/discussions)
+[![Release](https://img.shields.io/github/v/release/meko-christian/go-hdf5?include_prereleases&style=flat-square&logo=github&color=blue&label=version)](https://github.com/meko-christian/go-hdf5/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/meko-christian/go-hdf5?style=flat-square&logo=go)](https://go.dev)
+[![Go Report Card](https://goreportcard.com/badge/github.com/meko-christian/go-hdf5?style=flat-square)](https://goreportcard.com/report/github.com/meko-christian/go-hdf5)
+[![GoDoc](https://img.shields.io/badge/godoc-reference-blue?style=flat-square&logo=go)](https://pkg.go.dev/github.com/meko-christian/go-hdf5)
+[![CI](https://img.shields.io/github/actions/workflow/status/meko-christian/go-hdf5/test.yml?branch=main&style=flat-square&logo=github&label=tests)](https://github.com/meko-christian/go-hdf5/actions)
+[![codecov](https://codecov.io/gh/meko-christian/go-hdf5/graph/badge.svg)](https://codecov.io/gh/meko-christian/go-hdf5)
+[![License](https://img.shields.io/github/license/meko-christian/go-hdf5?style=flat-square&color=blue)](https://github.com/meko-christian/go-hdf5/blob/main/LICENSE)
+[![Stars](https://img.shields.io/github/stars/meko-christian/go-hdf5?style=flat-square&logo=github)](https://github.com/meko-christian/go-hdf5/stargazers)
+[![Discussions](https://img.shields.io/github/discussions/meko-christian/go-hdf5?style=flat-square&logo=github&label=discussions)](https://github.com/meko-christian/go-hdf5/discussions)
 
 A modern, pure Go library for reading and writing HDF5 files without CGo dependencies. **v0.13.4: 100% HDF5 test suite pass rate, full attribute support including variable-length strings!**
 
@@ -34,7 +34,7 @@ A modern, pure Go library for reading and writing HDF5 files without CGo depende
 ### Installation
 
 ```bash
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 ```
 
 ### Basic Usage
@@ -45,7 +45,7 @@ package main
 import (
     "fmt"
     "log"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -90,7 +90,7 @@ func main() {
 - **[Datatypes Guide](docs/guides/DATATYPES.md)** - HDF5 to Go type mapping
 - **[Troubleshooting](docs/guides/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[FAQ](docs/guides/FAQ.md)** - Frequently asked questions
-- **[API Reference](https://pkg.go.dev/github.com/scigolib/hdf5)** - GoDoc documentation
+- **[API Reference](https://pkg.go.dev/github.com/meko-christian/go-hdf5)** - GoDoc documentation
 
 ### Advanced
 - **[Architecture Overview](docs/architecture/OVERVIEW.md)** - How it works internally
@@ -297,7 +297,7 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 
 ```bash
 # Clone repository
-git clone https://github.com/scigolib/hdf5.git
+git clone https://github.com/meko-christian/go-hdf5.git
 cd hdf5
 
 # Run tests
@@ -332,7 +332,7 @@ Contributions are welcome! This is an early-stage project and we'd love your hel
 
 **Before contributing**:
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md) - Git workflow and development guidelines
-2. Check [open issues](https://github.com/scigolib/hdf5/issues)
+2. Check [open issues](https://github.com/meko-christian/go-hdf5/issues)
 3. Review the [Architecture Overview](docs/architecture/OVERVIEW.md)
 
 **Ways to contribute**:
@@ -377,6 +377,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
+- This project is a fork of [scigolib/hdf5](https://github.com/scigolib/hdf5), a pure Go HDF5 implementation
 - The HDF Group for the HDF5 format specification
 - gonum/hdf5 for inspiration
 - All contributors to this project
@@ -390,8 +391,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 - 📖 [Documentation](docs/) - Architecture and guides
-- 🐛 [Issue Tracker](https://github.com/scigolib/hdf5/issues)
-- 💬 [Discussions](https://github.com/scigolib/hdf5/discussions) - Community Q&A and announcements
+- 🐛 [Issue Tracker](https://github.com/meko-christian/go-hdf5/issues)
+- 💬 [Discussions](https://github.com/meko-christian/go-hdf5/discussions) - Community Q&A and announcements
 - 🌐 [HDF Group Forum](https://forum.hdfgroup.org/t/pure-go-hdf5-library-production-release-with-hdf5-2-0-0-compatibility/13584) - Official HDF5 community discussion
 
 ---

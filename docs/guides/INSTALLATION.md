@@ -25,7 +25,7 @@
 The simplest way to install the library:
 
 ```bash
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 ```
 
 This will:
@@ -42,7 +42,7 @@ Add the library to your project's `go.mod`:
 go mod init myproject
 
 # Add the library
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 ```
 
 Or manually add to `go.mod`:
@@ -53,7 +53,7 @@ module myproject
 go 1.25
 
 require (
-    github.com/scigolib/hdf5
+    github.com/meko-christian/go-hdf5
 )
 ```
 
@@ -68,7 +68,7 @@ If you want to contribute or modify the library:
 
 ```bash
 # Clone the repository
-git clone https://github.com/scigolib/hdf5.git
+git clone https://github.com/meko-christian/go-hdf5.git
 cd hdf5
 
 # Verify installation
@@ -88,7 +88,7 @@ package main
 
 import (
     "fmt"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -118,7 +118,7 @@ package main
 import (
     "fmt"
     "log"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -158,7 +158,7 @@ func main() {
 
 ```powershell
 # PowerShell
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 
 # Verify
 go version  # Should show Go 1.25+
@@ -178,7 +178,7 @@ go version  # Should show Go 1.25+
 go version  # Should show Go 1.25+
 
 # Install library
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 ```
 
 **Tested on**:
@@ -197,7 +197,7 @@ go get github.com/scigolib/hdf5
 go version  # Should show Go 1.25+
 
 # Install library
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 ```
 
 **Tested on**:
@@ -216,7 +216,7 @@ If you're contributing to the library:
 
 ```bash
 # Clone repository
-git clone https://github.com/scigolib/hdf5.git
+git clone https://github.com/meko-christian/go-hdf5.git
 cd hdf5
 
 # Install development tools
@@ -261,7 +261,7 @@ WORKDIR /app
 COPY . .
 
 # Install the library
-RUN go get github.com/scigolib/hdf5
+RUN go get github.com/meko-christian/go-hdf5
 
 # Build your application
 RUN go build -o myapp .
@@ -282,19 +282,19 @@ docker run myapp
 ### Update to Latest Version
 
 ```bash
-go get -u github.com/scigolib/hdf5
+go get -u github.com/meko-christian/go-hdf5
 ```
 
 ### Update to Specific Version
 
 ```bash
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 ```
 
 ### Check Current Version
 
 ```bash
-go list -m github.com/scigolib/hdf5
+go list -m github.com/meko-christian/go-hdf5
 ```
 
 ---
@@ -305,23 +305,23 @@ go list -m github.com/scigolib/hdf5
 
 **Problem**:
 ```
-go: github.com/scigolib/hdf5@vX.Y.Z: reading github.com/scigolib/hdf5/go.mod at revision vX.Y.Z: unknown revision vX.Y.Z
+go: github.com/meko-christian/go-hdf5@vX.Y.Z: reading github.com/meko-christian/go-hdf5/go.mod at revision vX.Y.Z: unknown revision vX.Y.Z
 ```
 
 **Solution**:
 ```bash
 # Use latest version (recommended)
-go get github.com/scigolib/hdf5@latest
+go get github.com/meko-christian/go-hdf5@latest
 
 # Or without version tag
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 ```
 
 ### "Go version too old" Error
 
 **Problem**:
 ```
-go: github.com/scigolib/hdf5 requires go >= 1.25
+go: github.com/meko-christian/go-hdf5 requires go >= 1.25
 ```
 
 **Solution**:
@@ -335,7 +335,7 @@ Update Go to version 1.25 or later:
 
 **Problem**:
 ```
-package github.com/scigolib/hdf5: cannot find package
+package github.com/meko-christian/go-hdf5: cannot find package
 ```
 
 **Solution**:
@@ -363,7 +363,7 @@ export GOPROXY=https://proxy.golang.org,direct
 export GOPROXY=https://goproxy.cn,direct
 
 # Then try again
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 ```
 
 ---
@@ -375,15 +375,15 @@ After installation, explore:
 1. **[Quick Start Guide](QUICKSTART.md)** - Your first HDF5 program in 5 minutes
 2. **[Reading Data](READING_DATA.md)** - Learn to read datasets and attributes
 3. **[Examples](../../examples/)** - 5 comprehensive examples
-4. **[API Reference](https://pkg.go.dev/github.com/scigolib/hdf5)** - Complete GoDoc documentation
+4. **[API Reference](https://pkg.go.dev/github.com/meko-christian/go-hdf5)** - Complete GoDoc documentation
 
 ---
 
 ## 📞 Getting Help
 
-- **Documentation**: https://github.com/scigolib/hdf5/tree/main/docs
-- **Issues**: https://github.com/scigolib/hdf5/issues
-- **Discussions**: https://github.com/scigolib/hdf5/discussions
+- **Documentation**: https://github.com/meko-christian/go-hdf5/tree/main/docs
+- **Issues**: https://github.com/meko-christian/go-hdf5/issues
+- **Discussions**: https://github.com/meko-christian/go-hdf5/discussions
 
 ---
 

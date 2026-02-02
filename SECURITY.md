@@ -22,7 +22,7 @@ We take security seriously. If you discover a security vulnerability in HDF5 Go 
 Instead, please report security issues by:
 
 1. **Private Security Advisory** (preferred):
-   https://github.com/scigolib/hdf5/security/advisories/new
+   https://github.com/meko-christian/go-hdf5/security/advisories/new
 
 2. **Email** to maintainers:
    Create a private GitHub issue or contact via discussions
@@ -319,9 +319,9 @@ When vulnerabilities are addressed, they will be listed here with:
 
 ## Security Contact
 
-- **GitHub Security Advisory**: https://github.com/scigolib/hdf5/security/advisories/new
-- **Public Issues** (for non-sensitive bugs): https://github.com/scigolib/hdf5/issues
-- **Discussions**: https://github.com/scigolib/hdf5/discussions
+- **GitHub Security Advisory**: https://github.com/meko-christian/go-hdf5/security/advisories/new
+- **Public Issues** (for non-sensitive bugs): https://github.com/meko-christian/go-hdf5/issues
+- **Discussions**: https://github.com/meko-christian/go-hdf5/discussions
 
 ## Bug Bounty Program
 

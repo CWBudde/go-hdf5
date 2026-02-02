@@ -483,7 +483,7 @@ package main
 
 import (
     "log"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {

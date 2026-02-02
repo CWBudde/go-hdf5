@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/scigolib/hdf5/internal/structures"
+	"github.com/meko-christian/go-hdf5/internal/structures"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -168,7 +168,7 @@ This builds all examples to verify they compile correctly.
 ### Reference
 - **[Main README](../README.md)** - Library overview
 - **[ROADMAP](../ROADMAP.md)** - Future plans
-- **[API Documentation](https://pkg.go.dev/github.com/scigolib/hdf5)** - GoDoc
+- **[API Documentation](https://pkg.go.dev/github.com/meko-christian/go-hdf5)** - GoDoc
 - **[Architecture Overview](../docs/architecture/OVERVIEW.md)** - How it works
 
 ---

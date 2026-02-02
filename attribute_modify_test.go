@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/scigolib/hdf5"
+	"github.com/meko-christian/go-hdf5"
 )
 
 // TestAttributeModification_CompactUpsert tests upsert semantics for compact attributes.

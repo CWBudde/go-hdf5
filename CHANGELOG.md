@@ -1338,11 +1338,11 @@ See [ROADMAP.md](ROADMAP.md) for detailed future plans:
 
 ## Links
 
-- **Repository**: https://github.com/scigolib/hdf5
-- **Documentation**: https://github.com/scigolib/hdf5/tree/main/docs
-- **API Reference**: https://pkg.go.dev/github.com/scigolib/hdf5
-- **Issues**: https://github.com/scigolib/hdf5/issues
-- **Roadmap**: https://github.com/scigolib/hdf5/blob/main/ROADMAP.md
+- **Repository**: https://github.com/meko-christian/go-hdf5
+- **Documentation**: https://github.com/meko-christian/go-hdf5/tree/main/docs
+- **API Reference**: https://pkg.go.dev/github.com/meko-christian/go-hdf5
+- **Issues**: https://github.com/meko-christian/go-hdf5/issues
+- **Roadmap**: https://github.com/meko-christian/go-hdf5/blob/main/ROADMAP.md
 
 ---
 

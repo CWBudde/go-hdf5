@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/scigolib/hdf5"
-	"github.com/scigolib/hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5"
+	"github.com/meko-christian/go-hdf5/internal/core"
 )
 
 func main() {

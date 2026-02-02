@@ -10,7 +10,7 @@ import (
 	"hash/crc32"
 	"io"
 
-	"github.com/scigolib/hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/core"
 )
 
 // writeUint64 writes a uint64 value to buffer with specified size and endianness.

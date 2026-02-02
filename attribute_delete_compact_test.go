@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/scigolib/hdf5"
+	"github.com/meko-christian/go-hdf5"
 )
 
 // TestAttributeDeletion_Compact tests deletion of attributes from compact storage.

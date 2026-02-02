@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/scigolib/hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/core"
 )
 
 // LinkType represents the type of link.

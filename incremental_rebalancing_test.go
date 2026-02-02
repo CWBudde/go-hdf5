@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/scigolib/hdf5"
-	"github.com/scigolib/hdf5/internal/structures"
+	"github.com/meko-christian/go-hdf5"
+	"github.com/meko-christian/go-hdf5/internal/structures"
 )
 
 // TestIncrementalRebalancing_WithDefer demonstrates BEST PRACTICE usage.

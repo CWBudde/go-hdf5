@@ -116,7 +116,7 @@ h5repack -f SHUF -f GZIP=6 oldfile.h5 newfile.h5
 # This creates a new file with modern format
 ```
 
-Or open an issue at https://github.com/scigolib/hdf5/issues with:
+Or open an issue at https://github.com/meko-christian/go-hdf5/issues with:
 - Your HDF5 file (if shareable)
 - Output of `h5dump -H yourfile.h5`
 - How the file was created
@@ -549,7 +549,7 @@ echo $PATH  # Should include Go bin directory
 
 **Error**:
 ```
-go: github.com/scigolib/hdf5: unknown revision
+go: github.com/meko-christian/go-hdf5: unknown revision
 ```
 
 **Solutions**:
@@ -565,7 +565,7 @@ export GOPROXY=https://proxy.golang.org,direct
 go clean -modcache
 
 # 4. Try again
-go get github.com/scigolib/hdf5@latest
+go get github.com/meko-christian/go-hdf5@latest
 ```
 
 ### Problem: Import Error in IDE
@@ -576,7 +576,7 @@ go get github.com/scigolib/hdf5@latest
 
 ```bash
 # 1. Ensure module is downloaded
-go get github.com/scigolib/hdf5
+go get github.com/meko-christian/go-hdf5
 
 # 2. Run go mod tidy
 go mod tidy
@@ -666,7 +666,7 @@ package main
 import (
     "fmt"
     "log"
-    "github.com/scigolib/hdf5"
+    "github.com/meko-christian/go-hdf5"
 )
 
 func main() {
@@ -695,16 +695,16 @@ func main() {
 ### Before Asking for Help
 
 1. **Check this guide** for common issues
-2. **Search existing issues**: https://github.com/scigolib/hdf5/issues
-3. **Read the documentation**: https://github.com/scigolib/hdf5/tree/main/docs
-4. **Try the examples**: https://github.com/scigolib/hdf5/tree/main/examples
+2. **Search existing issues**: https://github.com/meko-christian/go-hdf5/issues
+3. **Read the documentation**: https://github.com/meko-christian/go-hdf5/tree/main/docs
+4. **Try the examples**: https://github.com/meko-christian/go-hdf5/tree/main/examples
 
 ### When Reporting Issues
 
 Include:
 
 1. **Go version**: Output of `go version`
-2. **Library version**: `go list -m github.com/scigolib/hdf5`
+2. **Library version**: `go list -m github.com/meko-christian/go-hdf5`
 3. **Operating system**: Windows/Linux/macOS
 4. **Error message**: Full error output
 5. **Minimal code**: Smallest code that reproduces issue
@@ -714,7 +714,7 @@ Include:
 **Good issue report template**:
 
 **Go version**: go1.25.1 linux/amd64
-**Library version**: github.com/scigolib/hdf5 vX.Y.Z (use `go list -m github.com/scigolib/hdf5`)
+**Library version**: github.com/meko-christian/go-hdf5 vX.Y.Z (use `go list -m github.com/meko-christian/go-hdf5`)
 **OS**: Ubuntu 22.04
 
 **Problem**: Cannot read string dataset
@@ -756,9 +756,9 @@ GROUP "/" {
 
 ### Where to Get Help
 
-- **GitHub Issues**: https://github.com/scigolib/hdf5/issues (bugs, feature requests)
-- **GitHub Discussions**: https://github.com/scigolib/hdf5/discussions (questions, ideas)
-- **Documentation**: https://github.com/scigolib/hdf5/tree/main/docs
+- **GitHub Issues**: https://github.com/meko-christian/go-hdf5/issues (bugs, feature requests)
+- **GitHub Discussions**: https://github.com/meko-christian/go-hdf5/discussions (questions, ideas)
+- **Documentation**: https://github.com/meko-christian/go-hdf5/tree/main/docs
 
 ---
 

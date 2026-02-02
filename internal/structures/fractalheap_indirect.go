@@ -9,7 +9,7 @@ import (
 	"hash/crc32"
 	"io"
 
-	"github.com/scigolib/hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/core"
 )
 
 // IndirectBlock represents a fractal heap indirect block (read-only).

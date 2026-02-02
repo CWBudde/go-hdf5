@@ -9,7 +9,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/scigolib/hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/core"
 )
 
 // TestDenseGroupWriter_Creation tests basic creation.

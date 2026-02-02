@@ -9,8 +9,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/scigolib/hdf5/internal/core"
-	"github.com/scigolib/hdf5/internal/utils"
+	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // File represents an open HDF5 file with its metadata and root group.

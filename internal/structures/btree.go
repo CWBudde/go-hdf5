@@ -5,8 +5,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/scigolib/hdf5/internal/core"
-	"github.com/scigolib/hdf5/internal/utils"
+	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/meko-christian/go-hdf5/internal/utils"
 )
 
 // BTreeEntry represents a single entry in a B-tree node for symbol table indexing.
