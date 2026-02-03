@@ -41,17 +41,15 @@ func TestParseAttributeInfoMessage(t *testing.T) {
 		{
 			name: "with creation order tracking",
 			data: func() []byte {
-				d := make([]byte, 22) // 2 + 2 (max compact) + 2 (min dense) + 8 + 8
+				d := make([]byte, 20) // 2 + 2 (max creation index) + 8 + 8
 				d[0] = 0              // version
 				d[1] = 0x01           // flags: track creation order
-				// Max compact (2 bytes)
+				// Max creation index (2 bytes)
 				binary.LittleEndian.PutUint16(d[2:4], 42)
-				// Min dense (2 bytes)
-				binary.LittleEndian.PutUint16(d[4:6], 8)
 				// Fractal heap address
-				binary.LittleEndian.PutUint64(d[6:14], 0x3000)
+				binary.LittleEndian.PutUint64(d[4:12], 0x3000)
 				// B-tree name index address
-				binary.LittleEndian.PutUint64(d[14:22], 0x4000)
+				binary.LittleEndian.PutUint64(d[12:20], 0x4000)
 				return d
 			}(),
 			offsetSize:  8,
@@ -601,7 +599,7 @@ func TestEncodeAttributeInfoMessage(t *testing.T) {
 				BTreeNameIndexAddr: 0x4000,
 			},
 			offsetSize: 8,
-			wantSize:   22, // 2 + 4 (max/min) + 8 + 8
+			wantSize:   20, // 2 + 2 (max creation index) + 8 + 8
 			wantErr:    false,
 		},
 		{
@@ -628,7 +626,7 @@ func TestEncodeAttributeInfoMessage(t *testing.T) {
 				BTreeOrderIndexAddr: 0xA000,
 			},
 			offsetSize: 8,
-			wantSize:   30, // 2 + 4 + 8 + 8 + 8
+			wantSize:   28, // 2 + 2 (max creation index) + 8 + 8 + 8
 			wantErr:    false,
 		},
 		{

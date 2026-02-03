@@ -188,12 +188,98 @@ func (g *Group) Attributes() ([]*core.Attribute, error) {
 		return nil, fmt.Errorf("failed to read object header: %w", err)
 	}
 
-	// Ensure we return an empty slice instead of nil if no attributes exist.
-	if header.Attributes == nil {
+	// If core parsing already found attributes, return them.
+	if len(header.Attributes) > 0 {
+		return header.Attributes, nil
+	}
+
+	// Core parsing may fail for dense attributes stored in indirect fractal heap
+	// blocks. Fall back to reading them via the structures package which handles
+	// both direct and indirect blocks.
+	return g.readDenseAttributes(header)
+}
+
+// ReadAttribute reads a single attribute by name from this group.
+func (g *Group) ReadAttribute(name string) (interface{}, error) {
+	attrs, err := g.Attributes()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, attr := range attrs {
+		if attr.Name == name {
+			return attr.ReadValue()
+		}
+	}
+
+	return nil, fmt.Errorf("attribute %q not found", name)
+}
+
+// readDenseAttributes reads attributes from dense storage using the structures
+// package. This handles indirect fractal heap blocks that core.readDenseAttributes
+// cannot.
+func (g *Group) readDenseAttributes(header *core.ObjectHeader) ([]*core.Attribute, error) {
+	sb := g.file.sb
+	r := g.file.osFile
+
+	// Find AttributeInfo message in the header.
+	var attrInfo *core.AttributeInfoMessage
+	for _, msg := range header.Messages {
+		if msg.Type == core.MsgAttributeInfo {
+			var err error
+			attrInfo, err = core.ParseAttributeInfoMessage(msg.Data, sb)
+			if err != nil {
+				return []*core.Attribute{}, nil
+			}
+			break
+		}
+	}
+	if attrInfo == nil {
 		return []*core.Attribute{}, nil
 	}
 
-	return header.Attributes, nil
+	const undefinedAddr = 0xFFFFFFFFFFFFFFFF
+	if attrInfo.FractalHeapAddr == 0 || attrInfo.FractalHeapAddr == undefinedAddr ||
+		attrInfo.BTreeNameIndexAddr == 0 || attrInfo.BTreeNameIndexAddr == undefinedAddr {
+		return []*core.Attribute{}, nil
+	}
+
+	// Open fractal heap for reading attribute data.
+	fh, err := structures.OpenFractalHeap(r, attrInfo.FractalHeapAddr,
+		sb.LengthSize, sb.OffsetSize, sb.Endianness)
+	if err != nil {
+		return nil, fmt.Errorf("open fractal heap for attributes: %w", err)
+	}
+
+	// Read the B-tree v2 leaf to get attribute name records.
+	// Attribute name B-tree (type 8) has different record format than link name
+	// B-tree (type 5), so we read raw records and extract heap IDs.
+	heapIDs, err := structures.ReadBTreeV2AttrNameRecords(r, attrInfo.BTreeNameIndexAddr, sb)
+	if err != nil {
+		return nil, fmt.Errorf("read attribute B-tree v2: %w", err)
+	}
+
+	// Iterate all heap IDs and parse each attribute.
+	var attributes []*core.Attribute
+	for _, heapID := range heapIDs {
+		attrData, err := fh.ReadObjectSpecCompliant(heapID)
+		if err != nil {
+			continue
+		}
+
+		attr, err := core.ParseAttributeMessage(attrData, sb.Endianness)
+		if err != nil {
+			continue
+		}
+
+		attr.SetReader(r, int(sb.OffsetSize))
+		attributes = append(attributes, attr)
+	}
+
+	if attributes == nil {
+		return []*core.Attribute{}, nil
+	}
+	return attributes, nil
 }
 
 func loadGroup(file *File, address uint64) (*Group, error) {

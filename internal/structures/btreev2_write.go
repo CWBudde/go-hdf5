@@ -34,6 +34,7 @@ const (
 	BTreeV2LeafSignature   = "BTLF" // B-tree v2 leaf node signature
 
 	BTreeV2TypeLinkNameIndex = uint8(5) // Type 5 = Link Name Index for dense groups
+	BTreeV2TypeAttrNameIndex = uint8(8) // Type 8 = Attribute Name Index for dense attributes
 
 	DefaultBTreeV2NodeSize     = uint32(4096) // 4KB default node size
 	DefaultBTreeV2SplitPercent = uint8(100)   // Split at 100% full
@@ -672,9 +673,10 @@ func (bt *WritableBTreeV2) LoadFromFile(r io.ReaderAt, headerAddr uint64, sb *co
 		return fmt.Errorf("failed to read B-tree header: %w", err)
 	}
 
-	// 2. Validate header
-	if header.Type != BTreeV2TypeLinkNameIndex {
-		return fmt.Errorf("%w: expected type %d, got %d", ErrInvalidBTreeType, BTreeV2TypeLinkNameIndex, header.Type)
+	// 2. Validate header (accept both link name and attribute name index types)
+	if header.Type != BTreeV2TypeLinkNameIndex && header.Type != BTreeV2TypeAttrNameIndex {
+		return fmt.Errorf("%w: expected type %d or %d, got %d", ErrInvalidBTreeType,
+			BTreeV2TypeLinkNameIndex, BTreeV2TypeAttrNameIndex, header.Type)
 	}
 
 	if header.Depth != 0 {
@@ -695,7 +697,6 @@ func (bt *WritableBTreeV2) LoadFromFile(r io.ReaderAt, headerAddr uint64, sb *co
 		if err != nil {
 			return fmt.Errorf("failed to read leaf node: %w", err)
 		}
-
 		bt.leaf = leaf
 		bt.records = records
 	} else {
@@ -894,6 +895,79 @@ func readBTreeV2LeafNode(r io.ReaderAt, address uint64, numRecords int, _ *core.
 	}
 
 	return leaf, records, nil
+}
+
+// ReadBTreeV2AttrNameRecords reads a B-tree v2 for attribute name index (type 8)
+// and returns the heap IDs for all attribute records. This handles the different
+// record format used by attribute name index B-trees.
+func ReadBTreeV2AttrNameRecords(r io.ReaderAt, headerAddr uint64, sb *core.Superblock) ([][]byte, error) {
+	header, err := readBTreeV2Header(r, headerAddr, sb)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read B-tree header: %w", err)
+	}
+
+	if header.Type != BTreeV2TypeAttrNameIndex {
+		return nil, fmt.Errorf("expected attribute name B-tree (type %d), got type %d",
+			BTreeV2TypeAttrNameIndex, header.Type)
+	}
+
+	if header.Depth != 0 {
+		return nil, fmt.Errorf("only depth-0 B-trees supported, got depth %d", header.Depth)
+	}
+
+	if header.NumRecordsRoot == 0 {
+		return nil, nil
+	}
+
+	// Read leaf node raw data
+	recordSize := int(header.RecordSize)
+	numRecords := int(header.NumRecordsRoot)
+	leafSize := 4 + 1 + 1 + (numRecords * recordSize) + 4
+
+	buf := make([]byte, leafSize)
+	//nolint:gosec // G115: address conversion
+	n, err := r.ReadAt(buf, int64(header.RootNodeAddr))
+	if err != nil && err != io.EOF {
+		return nil, fmt.Errorf("failed to read leaf at 0x%X: %w", header.RootNodeAddr, err)
+	}
+	if n < leafSize {
+		return nil, fmt.Errorf("incomplete leaf read: got %d, want %d", n, leafSize)
+	}
+
+	// Validate signature
+	if string(buf[0:4]) != BTreeV2LeafSignature {
+		return nil, fmt.Errorf("invalid leaf signature: %q", buf[0:4])
+	}
+
+	// Validate checksum
+	checksumOffset := 4 + 1 + 1 + (numRecords * recordSize)
+	storedChecksum := binary.LittleEndian.Uint32(buf[checksumOffset : checksumOffset+4])
+	expectedChecksum := utils.JenkinsChecksum(buf[:checksumOffset])
+	if storedChecksum != expectedChecksum {
+		return nil, fmt.Errorf("leaf checksum mismatch: got 0x%X, want 0x%X",
+			storedChecksum, expectedChecksum)
+	}
+
+	// Extract heap IDs from each record.
+	// Type 8 record layout (empirically verified):
+	//   [heap_id(heapIDLen)] + [creation_order(4)] + [hash(4)] + [shared_flags(1)]
+	// The heap ID is at the START of the record.
+	heapIDSuffix := 4 + 4 + 1 // corder + hash + flags
+	heapIDLen := recordSize - heapIDSuffix
+	if heapIDLen <= 0 {
+		return nil, fmt.Errorf("record size %d too small for attribute name record", recordSize)
+	}
+
+	var heapIDs [][]byte
+	dataStart := 6 // after signature(4) + version(1) + type(1)
+	for i := range numRecords {
+		recStart := dataStart + (i * recordSize)
+		heapID := make([]byte, heapIDLen)
+		copy(heapID, buf[recStart:recStart+heapIDLen])
+		heapIDs = append(heapIDs, heapID)
+	}
+
+	return heapIDs, nil
 }
 
 // readUint64 reads a uint64 value from buffer with specified size and endianness.

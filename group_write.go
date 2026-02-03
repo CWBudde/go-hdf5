@@ -183,6 +183,28 @@ func (fw *FileWriter) createGroupStructures() (uint64, uint64, uint64, error) {
 //	nested, _ := fw.CreateGroup("/data/experiments")
 //	nested.WriteAttribute("MATLAB_class", "double")
 //
+// RootGroup returns a GroupWriter for the root "/" group.
+// This allows writing attributes to the file's root group, which is required
+// for formats like SOFA/netCDF that store global attributes at the root level.
+//
+// Example:
+//
+//	fw, _ := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate)
+//	defer fw.Close()
+//
+//	// Write global attributes to root
+//	root, _ := fw.RootGroup()
+//	root.WriteAttribute("Conventions", "SOFA")
+//	root.WriteAttribute("Version", "1.0")
+//	root.WriteAttribute("Title", "My HRTF Dataset")
+func (fw *FileWriter) RootGroup() (*GroupWriter, error) {
+	return &GroupWriter{
+		path:       "/",
+		headerAddr: fw.rootGroupAddr,
+		file:       fw,
+	}, nil
+}
+
 // Limitations for MVP (v0.11.0-beta):
 //   - Only symbol table structure (no indexed groups)
 //   - No link creation time tracking

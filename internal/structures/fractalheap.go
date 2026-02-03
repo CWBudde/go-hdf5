@@ -416,30 +416,81 @@ func (fh *FractalHeap) parseHeapID(heapID []byte) (*HeapID, error) {
 //
 // Reference: H5HF.c - H5HF_read(), H5HFdblock.c.
 func (fh *FractalHeap) readManagedObject(id *HeapID) ([]byte, error) {
-	// For minimal implementation, assume root block is a direct block
-	// (no indirect block support yet)
-	if fh.Header.CurrentRowCount != 0 {
-		return nil, fmt.Errorf("indirect blocks not supported in minimal implementation (root has %d rows)",
-			fh.Header.CurrentRowCount)
+	if fh.Header.CurrentRowCount == 0 {
+		// Root is a direct block.
+		return fh.readFromDirectBlock(id, fh.Header.RootBlockAddr, fh.Header.StartingBlockSize)
 	}
 
-	// Read the direct block at root address
-	dblock, err := fh.readDirectBlock(fh.Header.RootBlockAddr, fh.Header.StartingBlockSize)
+	// Root is an indirect block — parse it and find the correct direct block.
+	iblock, err := ParseIndirectBlock(fh.reader, fh.Header.RootBlockAddr,
+		fh.Header.CurrentRowCount, fh.Header.TableWidth,
+		fh.sizeofAddr, fh.Header.HeapOffsetSize, fh.endianness, fh.headerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read indirect block: %w", err)
+	}
+
+	// Walk the doubling table to find which direct block contains this offset.
+	// Each row's block size = StartingBlockSize * 2^max(0, row-1)
+	// (Rows 0 and 1 have the same size = StartingBlockSize)
+	var accumulatedOffset uint64
+	for row := 0; row < int(iblock.Header.NumRows); row++ {
+		var blockSize uint64
+		if row <= 1 {
+			blockSize = fh.Header.StartingBlockSize
+		} else {
+			blockSize = fh.Header.StartingBlockSize << (row - 1)
+		}
+
+		for col := 0; col < int(iblock.Header.TableWidth); col++ {
+			entryIdx := row*int(iblock.Header.TableWidth) + col
+			if entryIdx >= len(iblock.Entries) {
+				break
+			}
+
+			childAddr := iblock.Entries[entryIdx]
+			if childAddr == 0 || childAddr == ^uint64(0) {
+				accumulatedOffset += blockSize
+				continue
+			}
+
+			// Check if this direct block contains our offset.
+			// The offset in the heap ID is absolute within the heap's address space.
+			// readFromDirectBlock uses the direct block's BlockOffset field to compute
+			// the relative position within the block data.
+			if id.Offset >= accumulatedOffset && id.Offset < accumulatedOffset+blockSize {
+				return fh.readFromDirectBlock(id, childAddr, blockSize)
+			}
+
+			accumulatedOffset += blockSize
+		}
+	}
+
+	return nil, fmt.Errorf("object offset 0x%X not found in any direct block (heap size: 0x%X)",
+		id.Offset, accumulatedOffset)
+}
+
+// readFromDirectBlock reads an object from a specific direct block.
+func (fh *FractalHeap) readFromDirectBlock(id *HeapID, blockAddr, blockSize uint64) ([]byte, error) {
+	dblock, err := fh.readDirectBlock(blockAddr, blockSize)
 	if err != nil {
 		return nil, utils.WrapError("failed to read direct block", err)
 	}
 
-	// Extract object from block data.
-	if id.Offset < dblock.BlockOffset {
-		return nil, fmt.Errorf("object offset 0x%X before block offset 0x%X", id.Offset, dblock.BlockOffset)
+	relativeOffset := id.Offset
+	if relativeOffset < dblock.BlockOffset {
+		if relativeOffset+dblock.BlockOffset <= uint64(len(dblock.Data)) {
+			// offset might already be relative
+		} else {
+			return nil, fmt.Errorf("object offset 0x%X before block offset 0x%X", id.Offset, dblock.BlockOffset)
+		}
+	} else {
+		relativeOffset -= dblock.BlockOffset
 	}
 
-	relativeOffset := id.Offset - dblock.BlockOffset
 	dataLen := uint64(len(dblock.Data))
 
 	// HDF5 spec: heap ID offsets are from block start (including header).
 	// go-hdf5's write path uses offsets from data start (after header).
-	// If offset exceeds data bounds, adjust by subtracting the header size.
 	if relativeOffset+id.Length > dataLen && relativeOffset >= dblock.HeaderSize {
 		relativeOffset -= dblock.HeaderSize
 	}

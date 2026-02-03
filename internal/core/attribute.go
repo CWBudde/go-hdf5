@@ -24,6 +24,13 @@ type Attribute struct {
 	offsetSize int
 }
 
+// SetReader sets the file reader and offset size needed for resolving
+// variable-length type references in attribute values.
+func (a *Attribute) SetReader(r io.ReaderAt, offsetSize int) {
+	a.reader = r
+	a.offsetSize = offsetSize
+}
+
 // AttributeInfoMessage represents the Attribute Info Message (0x000F).
 // This message contains information about dense attribute storage.
 // Reference: H5Adense.c in C library.
@@ -439,7 +446,8 @@ func ParseAttributesFromMessages(r io.ReaderAt, messages []*HeaderMessage, sb *S
 	}
 
 	// If dense storage exists, read attributes from fractal heap
-	if attrInfo != nil && attrInfo.FractalHeapAddr != 0 {
+	const undefinedAddr = 0xFFFFFFFFFFFFFFFF
+	if attrInfo != nil && attrInfo.FractalHeapAddr != 0 && attrInfo.FractalHeapAddr != undefinedAddr {
 		denseAttrs, err := readDenseAttributes(r, attrInfo, sb)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read dense attributes: %w", err)
@@ -986,14 +994,12 @@ func ParseAttributeInfoMessage(data []byte, sb *Superblock) (*AttributeInfoMessa
 	trackCreationOrder := (msg.Flags & 0x01) != 0
 	indexCreationOrder := (msg.Flags & 0x02) != 0
 
-	// Max Compact and Min Dense (2 bytes each) - only if creation order tracked
+	// Maximum Creation Index (2 bytes) - only if creation order tracked
 	if trackCreationOrder {
-		if offset+4 > len(data) {
-			return nil, fmt.Errorf("attribute info message too short for max compact/min dense")
+		if offset+2 > len(data) {
+			return nil, fmt.Errorf("attribute info message too short for max creation index")
 		}
 		msg.MaxCreationIndex = uint64(sb.Endianness.Uint16(data[offset : offset+2]))
-		offset += 2
-		// Skip Min Dense (2 bytes) - not stored in struct
 		offset += 2
 	}
 
@@ -1056,9 +1062,9 @@ func EncodeAttributeInfoMessage(aim *AttributeInfoMessage, sb *Superblock) ([]by
 	trackCreationOrder := (aim.Flags & 0x01) != 0
 	indexCreationOrder := (aim.Flags & 0x02) != 0
 
-	// Max Compact/Min Dense (2 bytes each) if creation order tracked
+	// Maximum Creation Index (2 bytes) if creation order tracked
 	if trackCreationOrder {
-		size += 4 // 2 for max compact + 2 for min dense
+		size += 2
 	}
 
 	// Heap address (offsetSize bytes)
@@ -1085,13 +1091,9 @@ func EncodeAttributeInfoMessage(aim *AttributeInfoMessage, sb *Superblock) ([]by
 	offset++
 
 	// Max Compact/Min Dense if creation order tracked
+	// Maximum Creation Index (2 bytes) if creation order tracked
 	if trackCreationOrder {
-		// For MVP: these are not used (Flags = 0), but encoding should support them
 		sb.Endianness.PutUint16(buf[offset:], uint16(aim.MaxCreationIndex)) //nolint:gosec // Safe: validated range
-		offset += 2
-
-		// Min Dense (not stored in struct, use 0)
-		sb.Endianness.PutUint16(buf[offset:], 0)
 		offset += 2
 	}
 
