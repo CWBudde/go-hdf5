@@ -187,12 +187,15 @@ func (a *Attribute) ReadValue() (interface{}, error) {
 
 	switch a.Datatype.Class {
 	case DatatypeFixed:
+		// Check if signed or unsigned based on ClassBitField bit 3
+		isSigned := (a.Datatype.ClassBitField & 0x08) != 0
+
 		switch a.Datatype.Size {
-		case 4:
-			// CVE-2025-6269 fix: Check for multiplication overflow before processing.
-			totalBytes, err := utils.SafeMultiply(totalElements, 4)
+		case 1:
+			// int8 or uint8
+			totalBytes, err := utils.SafeMultiply(totalElements, 1)
 			if err != nil {
-				return nil, fmt.Errorf("attribute size overflow (int32): %w", err)
+				return nil, fmt.Errorf("attribute size overflow (int8/uint8): %w", err)
 			}
 
 			if totalBytes > uint64(len(a.Data)) {
@@ -200,21 +203,32 @@ func (a *Attribute) ReadValue() (interface{}, error) {
 					totalBytes, len(a.Data))
 			}
 
-			values := make([]int32, totalElements)
+			if isSigned {
+				values := make([]int8, totalElements)
+				for i := uint64(0); i < totalElements; i++ {
+					//nolint:gosec // G115: HDF5 binary format requires uint8 to int8 conversion
+					values[i] = int8(a.Data[i])
+				}
+				if isScalar {
+					return values[0], nil
+				}
+				return values, nil
+			}
+			// unsigned
+			values := make([]uint8, totalElements)
 			for i := uint64(0); i < totalElements; i++ {
-				offset := i * 4
-				//nolint:gosec // G115: HDF5 binary format requires uint32 to int32 conversion
-				values[i] = int32(binary.LittleEndian.Uint32(a.Data[offset : offset+4]))
+				values[i] = a.Data[i]
 			}
 			if isScalar {
 				return values[0], nil
 			}
 			return values, nil
-		case 8:
-			// CVE-2025-6269 fix: Check for multiplication overflow before processing.
-			totalBytes, err := utils.SafeMultiply(totalElements, 8)
+
+		case 2:
+			// int16 or uint16
+			totalBytes, err := utils.SafeMultiply(totalElements, 2)
 			if err != nil {
-				return nil, fmt.Errorf("attribute size overflow (int64): %w", err)
+				return nil, fmt.Errorf("attribute size overflow (int16/uint16): %w", err)
 			}
 
 			if totalBytes > uint64(len(a.Data)) {
@@ -222,11 +236,93 @@ func (a *Attribute) ReadValue() (interface{}, error) {
 					totalBytes, len(a.Data))
 			}
 
-			values := make([]int64, totalElements)
+			if isSigned {
+				values := make([]int16, totalElements)
+				for i := uint64(0); i < totalElements; i++ {
+					offset := i * 2
+					//nolint:gosec // G115: HDF5 binary format requires uint16 to int16 conversion
+					values[i] = int16(binary.LittleEndian.Uint16(a.Data[offset : offset+2]))
+				}
+				if isScalar {
+					return values[0], nil
+				}
+				return values, nil
+			}
+			// unsigned
+			values := make([]uint16, totalElements)
+			for i := uint64(0); i < totalElements; i++ {
+				offset := i * 2
+				values[i] = binary.LittleEndian.Uint16(a.Data[offset : offset+2])
+			}
+			if isScalar {
+				return values[0], nil
+			}
+			return values, nil
+
+		case 4:
+			// int32 or uint32
+			totalBytes, err := utils.SafeMultiply(totalElements, 4)
+			if err != nil {
+				return nil, fmt.Errorf("attribute size overflow (int32/uint32): %w", err)
+			}
+
+			if totalBytes > uint64(len(a.Data)) {
+				return nil, fmt.Errorf("attribute data size mismatch: need %d bytes, have %d",
+					totalBytes, len(a.Data))
+			}
+
+			if isSigned {
+				values := make([]int32, totalElements)
+				for i := uint64(0); i < totalElements; i++ {
+					offset := i * 4
+					//nolint:gosec // G115: HDF5 binary format requires uint32 to int32 conversion
+					values[i] = int32(binary.LittleEndian.Uint32(a.Data[offset : offset+4]))
+				}
+				if isScalar {
+					return values[0], nil
+				}
+				return values, nil
+			}
+			// unsigned
+			values := make([]uint32, totalElements)
+			for i := uint64(0); i < totalElements; i++ {
+				offset := i * 4
+				values[i] = binary.LittleEndian.Uint32(a.Data[offset : offset+4])
+			}
+			if isScalar {
+				return values[0], nil
+			}
+			return values, nil
+
+		case 8:
+			// int64 or uint64
+			totalBytes, err := utils.SafeMultiply(totalElements, 8)
+			if err != nil {
+				return nil, fmt.Errorf("attribute size overflow (int64/uint64): %w", err)
+			}
+
+			if totalBytes > uint64(len(a.Data)) {
+				return nil, fmt.Errorf("attribute data size mismatch: need %d bytes, have %d",
+					totalBytes, len(a.Data))
+			}
+
+			if isSigned {
+				values := make([]int64, totalElements)
+				for i := uint64(0); i < totalElements; i++ {
+					offset := i * 8
+					//nolint:gosec // G115: HDF5 binary format requires uint64 to int64 conversion
+					values[i] = int64(binary.LittleEndian.Uint64(a.Data[offset : offset+8]))
+				}
+				if isScalar {
+					return values[0], nil
+				}
+				return values, nil
+			}
+			// unsigned
+			values := make([]uint64, totalElements)
 			for i := uint64(0); i < totalElements; i++ {
 				offset := i * 8
-				//nolint:gosec // G115: HDF5 binary format requires uint64 to int64 conversion
-				values[i] = int64(binary.LittleEndian.Uint64(a.Data[offset : offset+8]))
+				values[i] = binary.LittleEndian.Uint64(a.Data[offset : offset+8])
 			}
 			if isScalar {
 				return values[0], nil

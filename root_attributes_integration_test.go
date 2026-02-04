@@ -90,11 +90,16 @@ func TestRootAttributeTypes(t *testing.T) {
 		expected interface{}
 	}{
 		{"string", "StringAttr", "test string", "test string"},
+		{"int8", "Int8Attr", int8(-120), int8(-120)},
+		{"uint8", "Uint8Attr", uint8(250), uint8(250)},
+		{"int16", "Int16Attr", int16(-30000), int16(-30000)},
+		{"uint16", "Uint16Attr", uint16(60000), uint16(60000)},
 		{"int32", "Int32Attr", int32(42), int32(42)},
+		{"uint32", "Uint32Attr", uint32(4000000000), uint32(4000000000)},
 		{"int64", "Int64Attr", int64(12345), int64(12345)},
+		{"uint64", "Uint64Attr", uint64(18446744073709551615), uint64(18446744073709551615)},
 		{"float32", "Float32Attr", float32(3.14), float32(3.14)},
 		{"float64", "Float64Attr", float64(2.718281828), float64(2.718281828)},
-		// Note: uint8, int16, and other non-standard sizes not yet supported
 	}
 
 	for _, tc := range testCases {
@@ -140,9 +145,16 @@ func TestRootAttributeTypes_Arrays(t *testing.T) {
 		attrName string
 		value    interface{}
 	}{
+		{"int8_array", "Int8Array", []int8{-128, 0, 127}},
+		{"uint8_array", "Uint8Array", []uint8{0, 128, 255}},
+		{"int16_array", "Int16Array", []int16{-32768, 0, 32767}},
+		{"uint16_array", "Uint16Array", []uint16{0, 32768, 65535}},
 		{"int32_array", "Int32Array", []int32{1, 2, 3, 4, 5}},
+		{"uint32_array", "Uint32Array", []uint32{1000000, 2000000, 3000000}},
+		{"int64_array", "Int64Array", []int64{-9223372036854775808, 0, 9223372036854775807}},
+		{"uint64_array", "Uint64Array", []uint64{0, 9223372036854775808, 18446744073709551615}},
+		{"float32_array", "Float32Array", []float32{1.1, 2.2, 3.3}},
 		{"float64_array", "Float64Array", []float64{1.1, 2.2, 3.3}},
-		// Note: uint8 arrays not yet supported
 	}
 
 	for _, tc := range testCases {

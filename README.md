@@ -231,13 +231,11 @@ fw, err := hdf5.CreateForWrite("measurement.sofa", hdf5.CreateTruncate,
 
 ### Supported Data Types
 
-Root attributes support common HDF5 datatypes:
+Root attributes support all standard HDF5 datatypes:
 
-- **Scalars**: `int32`, `int64`, `float32`, `float64`, `string`
-- **Slices**: `[]int32`, `[]int64`, `[]float32`, `[]float64`, etc.
+- **Scalars**: `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float32`, `float64`, `string`
+- **Slices**: `[]int8`, `[]uint8`, `[]int16`, `[]uint16`, `[]int32`, `[]uint32`, `[]int64`, `[]uint64`, `[]float32`, `[]float64`, etc.
 - **Arrays**: `[3]float64`, `[10]int32`, etc.
-
-_Note: Additional types (uint8, int16, etc.) can be added as needed._
 
 ### Storage Modes
 

@@ -1060,17 +1060,53 @@ func inferSlice(v reflect.Value) (*core.DatatypeMessage, *core.DataspaceMessage,
 	var dt *core.DatatypeMessage
 
 	switch elemKind {
+	case reflect.Int8:
+		dt = &core.DatatypeMessage{
+			Class:         core.DatatypeFixed,
+			Size:          1,
+			ClassBitField: 0x08, // Signed
+		}
+	case reflect.Uint8:
+		dt = &core.DatatypeMessage{
+			Class:         core.DatatypeFixed,
+			Size:          1,
+			ClassBitField: 0, // Unsigned
+		}
+	case reflect.Int16:
+		dt = &core.DatatypeMessage{
+			Class:         core.DatatypeFixed,
+			Size:          2,
+			ClassBitField: 0x08, // Signed
+		}
+	case reflect.Uint16:
+		dt = &core.DatatypeMessage{
+			Class:         core.DatatypeFixed,
+			Size:          2,
+			ClassBitField: 0, // Unsigned
+		}
 	case reflect.Int32:
 		dt = &core.DatatypeMessage{
 			Class:         core.DatatypeFixed,
 			Size:          4,
 			ClassBitField: 0x08, // Signed
 		}
+	case reflect.Uint32:
+		dt = &core.DatatypeMessage{
+			Class:         core.DatatypeFixed,
+			Size:          4,
+			ClassBitField: 0, // Unsigned
+		}
 	case reflect.Int64:
 		dt = &core.DatatypeMessage{
 			Class:         core.DatatypeFixed,
 			Size:          8,
 			ClassBitField: 0x08, // Signed
+		}
+	case reflect.Uint64:
+		dt = &core.DatatypeMessage{
+			Class:         core.DatatypeFixed,
+			Size:          8,
+			ClassBitField: 0, // Unsigned
 		}
 	case reflect.Float32:
 		dt = &core.DatatypeMessage{
@@ -1158,10 +1194,43 @@ func encodeSliceValue(v reflect.Value) ([]byte, error) {
 	length := v.Len()
 
 	switch elemKind {
+	case reflect.Int8:
+		buf := make([]byte, length)
+		for i := 0; i < length; i++ {
+			buf[i] = byte(v.Index(i).Int())
+		}
+		return buf, nil
+	case reflect.Uint8:
+		buf := make([]byte, length)
+		for i := 0; i < length; i++ {
+			buf[i] = byte(v.Index(i).Uint())
+		}
+		return buf, nil
+	case reflect.Int16:
+		buf := make([]byte, length*2)
+		for i := 0; i < length; i++ {
+			val := v.Index(i).Int()
+			binary.LittleEndian.PutUint16(buf[i*2:], uint16(val)) //nolint:gosec // Safe: validated data type
+		}
+		return buf, nil
+	case reflect.Uint16:
+		buf := make([]byte, length*2)
+		for i := 0; i < length; i++ {
+			val := v.Index(i).Uint()
+			binary.LittleEndian.PutUint16(buf[i*2:], uint16(val)) //nolint:gosec // Safe: validated data type
+		}
+		return buf, nil
 	case reflect.Int32:
 		buf := make([]byte, length*4)
 		for i := 0; i < length; i++ {
 			val := v.Index(i).Int()
+			binary.LittleEndian.PutUint32(buf[i*4:], uint32(val)) //nolint:gosec // Safe: validated data type
+		}
+		return buf, nil
+	case reflect.Uint32:
+		buf := make([]byte, length*4)
+		for i := 0; i < length; i++ {
+			val := v.Index(i).Uint()
 			binary.LittleEndian.PutUint32(buf[i*4:], uint32(val)) //nolint:gosec // Safe: validated data type
 		}
 		return buf, nil
@@ -1170,6 +1239,13 @@ func encodeSliceValue(v reflect.Value) ([]byte, error) {
 		for i := 0; i < length; i++ {
 			val := v.Index(i).Int()
 			binary.LittleEndian.PutUint64(buf[i*8:], uint64(val)) //nolint:gosec // Safe: validated data type
+		}
+		return buf, nil
+	case reflect.Uint64:
+		buf := make([]byte, length*8)
+		for i := 0; i < length; i++ {
+			val := v.Index(i).Uint()
+			binary.LittleEndian.PutUint64(buf[i*8:], val)
 		}
 		return buf, nil
 	case reflect.Float32:
