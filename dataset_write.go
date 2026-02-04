@@ -2916,22 +2916,73 @@ func writeRootGroupHeaderAt(fw *writer.FileWriter, addr, btreeAddr, heapAddr uin
 		{Type: core.MsgSymbolTable, Data: stMsg},
 	}
 
-	// Add attribute messages if any
-	if len(rootAttributes) > 0 {
+	// Add attribute messages - use dense storage if >8 attributes
+	if len(rootAttributes) > MaxCompactAttributes {
+		// Dense storage: Use Fractal Heap + B-tree v2
+		denseWriter := writer.NewDenseAttributeWriter(addr)
+
+		// Create superblock for encoding
+		sb := &core.Superblock{
+			Version:    core.Version2,
+			OffsetSize: uint8(offsetSize),
+			LengthSize: uint8(lengthSize),
+			Endianness: binary.LittleEndian,
+		}
+
+		// Add all attributes to dense writer
 		for name, value := range rootAttributes {
-			// Infer datatype and dataspace from value
 			datatype, dataspace, err := inferDatatypeFromValue(value)
 			if err != nil {
 				return 0, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
 			}
 
-			// Encode attribute value
 			data, err := encodeAttributeValue(value)
 			if err != nil {
 				return 0, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
 			}
 
-			// Encode attribute message
+			attr := &core.Attribute{
+				Name:      name,
+				Datatype:  datatype,
+				Dataspace: dataspace,
+				Data:      data,
+			}
+
+			if err := denseWriter.AddAttribute(attr, sb); err != nil {
+				return 0, fmt.Errorf("failed to add dense attribute %q: %w", name, err)
+			}
+		}
+
+		// Write dense storage to file
+		allocator := fw.Allocator()
+		attrInfoMsg, err := denseWriter.WriteToFile(fw, allocator, sb)
+		if err != nil {
+			return 0, fmt.Errorf("failed to write dense attributes: %w", err)
+		}
+
+		// Encode Attribute Info message
+		attrInfoData, err := core.EncodeAttributeInfoMessage(attrInfoMsg, sb)
+		if err != nil {
+			return 0, fmt.Errorf("failed to encode attribute info message: %w", err)
+		}
+
+		messages = append(messages, core.MessageWriter{
+			Type: core.MsgAttributeInfo,
+			Data: attrInfoData,
+		})
+	} else if len(rootAttributes) > 0 {
+		// Compact storage: inline attribute messages (≤8 attributes)
+		for name, value := range rootAttributes {
+			datatype, dataspace, err := inferDatatypeFromValue(value)
+			if err != nil {
+				return 0, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
+			}
+
+			data, err := encodeAttributeValue(value)
+			if err != nil {
+				return 0, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
+			}
+
 			attrMsg, err := core.EncodeAttributeMessage(name, datatype, dataspace, data)
 			if err != nil {
 				return 0, fmt.Errorf("failed to encode attribute message %q: %w", name, err)
@@ -2971,8 +3022,70 @@ func writeRootGroupHeader(fw *writer.FileWriter, btreeAddr, heapAddr uint64, off
 		{Type: core.MsgSymbolTable, Data: stMsg},
 	}
 
-	// Add attribute messages if any
-	if len(rootAttributes) > 0 {
+	// Add attribute messages - use dense storage if >8 attributes
+	if len(rootAttributes) > MaxCompactAttributes {
+		// Dense storage: Use Fractal Heap + B-tree v2
+		// Create a temporary root group address (will be updated after allocation)
+		tempRootAddr := uint64(48) // Placeholder, actual address determined after writing
+
+		denseWriter := writer.NewDenseAttributeWriter(tempRootAddr)
+
+		// Create superblock for encoding (minimal, just for dense attribute writer)
+		sb := &core.Superblock{
+			Version:    core.Version2,
+			OffsetSize: uint8(offsetSize),
+			LengthSize: uint8(lengthSize),
+			Endianness: binary.LittleEndian,
+		}
+
+		// Add all attributes to dense writer
+		for name, value := range rootAttributes {
+			// Infer datatype and dataspace from value
+			datatype, dataspace, err := inferDatatypeFromValue(value)
+			if err != nil {
+				return 0, 0, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
+			}
+
+			// Encode attribute value
+			data, err := encodeAttributeValue(value)
+			if err != nil {
+				return 0, 0, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
+			}
+
+			// Create attribute struct
+			attr := &core.Attribute{
+				Name:      name,
+				Datatype:  datatype,
+				Dataspace: dataspace,
+				Data:      data,
+			}
+
+			// Add to dense writer
+			if err := denseWriter.AddAttribute(attr, sb); err != nil {
+				return 0, 0, fmt.Errorf("failed to add dense attribute %q: %w", name, err)
+			}
+		}
+
+		// Write dense storage to file
+		allocator := fw.Allocator() // Get allocator from FileWriter
+		attrInfoMsg, err := denseWriter.WriteToFile(fw, allocator, sb)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to write dense attributes: %w", err)
+		}
+
+		// Encode Attribute Info message
+		attrInfoData, err := core.EncodeAttributeInfoMessage(attrInfoMsg, sb)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to encode attribute info message: %w", err)
+		}
+
+		// Add Attribute Info message to header
+		messages = append(messages, core.MessageWriter{
+			Type: core.MsgAttributeInfo,
+			Data: attrInfoData,
+		})
+	} else if len(rootAttributes) > 0 {
+		// Compact storage: inline attribute messages (≤8 attributes)
 		for name, value := range rootAttributes {
 			// Infer datatype and dataspace from value
 			datatype, dataspace, err := inferDatatypeFromValue(value)
