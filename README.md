@@ -197,6 +197,61 @@ fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 
 ---
 
+## 📝 Writing Root Attributes
+
+Add metadata to the root group during file creation using `WithRootAttribute()`. This is essential for format specifications like SOFA, netCDF-4, and other HDF5-based formats that require global attributes.
+
+### Basic Example
+
+```go
+fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
+    hdf5.WithRootAttribute("Conventions", "SOFA"),
+    hdf5.WithRootAttribute("Version", "1.0"),
+    hdf5.WithRootAttribute("DateCreated", "2025-02-03"))
+if err != nil {
+    log.Fatal(err)
+}
+defer fw.Close()
+```
+
+### SOFA File Example
+
+```go
+// Create a SOFA file with required global attributes
+fw, err := hdf5.CreateForWrite("measurement.sofa", hdf5.CreateTruncate,
+    hdf5.WithRootAttribute("Conventions", "SOFA"),
+    hdf5.WithRootAttribute("Version", "1.0"),
+    hdf5.WithRootAttribute("SOFAConventions", "SimpleFreeFieldHRIR"),
+    hdf5.WithRootAttribute("SOFAConventionsVersion", "1.0"),
+    hdf5.WithRootAttribute("DataType", "FIR"),
+    hdf5.WithRootAttribute("RoomType", "reverberant"),
+    hdf5.WithRootAttribute("DateCreated", time.Now().Format(time.RFC3339)),
+    hdf5.WithRootAttribute("Title", "HRTF Measurement"))
+```
+
+### Supported Data Types
+
+Root attributes support all HDF5 datatypes:
+
+- **Scalars**: `int8`-`int64`, `uint8`-`uint64`, `float32`, `float64`, `string`
+- **Slices**: `[]int32`, `[]float64`, `[]string`, etc.
+- **Arrays**: `[3]float64`, `[10]int32`, etc.
+
+### Storage Modes
+
+The library automatically selects optimal storage:
+
+- **≤8 attributes**: Compact storage (inline in object header)
+- **>8 attributes**: Dense storage (Fractal Heap + B-tree index)
+
+### Why Use This?
+
+**Problem**: Adding attributes after file creation can cause corruption due to fixed object header sizes.
+
+**Solution**: Specify attributes during `CreateForWrite()` to pre-allocate the correct header size.
+
+---
+
 ## 🎯 Current Status
 
 **Version**: v0.13.0 (RELEASED 2025-11-13 - HDF5 2.0.0 Compatibility) ✅

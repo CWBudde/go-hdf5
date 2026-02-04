@@ -589,8 +589,9 @@ type WriteOption func(*FileWriteConfig)
 
 // FileWriteConfig holds configuration for file creation.
 type FileWriteConfig struct {
-	SuperblockVersion uint8 // HDF5 superblock version (0, 2, or 3)
-	BTreeRebalancing  bool  // Enable B-tree rebalancing after deletions (default: true)
+	SuperblockVersion uint8                  // HDF5 superblock version (0, 2, or 3)
+	BTreeRebalancing  bool                   // Enable B-tree rebalancing after deletions (default: true)
+	RootAttributes    map[string]interface{} // Attributes to add to root group during creation
 }
 
 // WithSuperblockVersion sets the HDF5 superblock version.
@@ -641,6 +642,44 @@ func WithSuperblockVersion(version uint8) WriteOption {
 func WithBTreeRebalancing(enable bool) WriteOption {
 	return func(cfg *FileWriteConfig) {
 		cfg.BTreeRebalancing = enable
+	}
+}
+
+// WithRootAttribute adds an attribute to the root group during file creation.
+// This option can be called multiple times to add multiple attributes.
+// Attributes are written to the root "/" group's object header during file initialization,
+// avoiding the size limitations of post-creation attribute writes.
+//
+// Supported value types:
+//   - Scalars: int8-64, uint8-64, float32/64, string
+//   - Slices: []int32, []float64, []string, etc.
+//   - Arrays: [N]int32, [N]float64, etc.
+//
+// Storage behavior:
+//   - ≤8 attributes: Stored compactly in object header (inline messages)
+//   - >8 attributes: Stored densely using Fractal Heap + B-tree index
+//
+// Example - Add metadata to root group:
+//
+//	fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
+//	    hdf5.WithRootAttribute("Conventions", "SOFA"),
+//	    hdf5.WithRootAttribute("Version", "1.0"),
+//	    hdf5.WithRootAttribute("DateCreated", "2025-02-03"))
+//
+// Example - SOFA file with required global attributes:
+//
+//	fw, err := hdf5.CreateForWrite("sofa.h5", hdf5.CreateTruncate,
+//	    hdf5.WithRootAttribute("Conventions", "SOFA"),
+//	    hdf5.WithRootAttribute("Version", "1.0"),
+//	    hdf5.WithRootAttribute("SOFAConventions", "SimpleFreeFieldHRIR"),
+//	    hdf5.WithRootAttribute("SOFAConventionsVersion", "1.0"),
+//	    hdf5.WithRootAttribute("DataType", "FIR"))
+func WithRootAttribute(name string, value interface{}) WriteOption {
+	return func(cfg *FileWriteConfig) {
+		if cfg.RootAttributes == nil {
+			cfg.RootAttributes = make(map[string]interface{})
+		}
+		cfg.RootAttributes[name] = value
 	}
 }
 
@@ -713,7 +752,7 @@ func CreateForWrite(filename string, mode CreateMode, opts ...interface{}) (*Fil
 	}()
 
 	// Create root group with Symbol Table structure
-	rootInfo, err := createRootGroupStructure(fw, cfg.SuperblockVersion)
+	rootInfo, err := createRootGroupStructure(fw, cfg.SuperblockVersion, cfg.RootAttributes)
 	if err != nil {
 		return nil, err
 	}
@@ -2656,16 +2695,16 @@ type rootGroupInfo struct {
 // Returns information about the created root group structure.
 // createRootGroupStructure creates the root group structures.
 // Dispatches to version-specific implementation based on superblock version.
-func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8) (*rootGroupInfo, error) {
+func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8, rootAttributes map[string]interface{}) (*rootGroupInfo, error) {
 	if superblockVersion == core.Version0 {
-		return createRootGroupStructureV0(fw)
+		return createRootGroupStructureV0(fw, rootAttributes)
 	}
-	return createRootGroupStructureV2(fw)
+	return createRootGroupStructureV2(fw, rootAttributes)
 }
 
 // createRootGroupStructureV2 creates root group for modern format (v2/v3).
 // Order: Heap → B-tree → Object Header (v2 doesn't cache addresses in superblock).
-func createRootGroupStructureV2(fw *writer.FileWriter) (*rootGroupInfo, error) {
+func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes map[string]interface{}) (*rootGroupInfo, error) {
 	const offsetSize = 8
 	const lengthSize = 8
 
@@ -2694,7 +2733,7 @@ func createRootGroupStructureV2(fw *writer.FileWriter) (*rootGroupInfo, error) {
 	}
 
 	// Create and write root group object header
-	rootGroupAddr, rootGroupSize, err := writeRootGroupHeader(fw, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize)
+	rootGroupAddr, rootGroupSize, err := writeRootGroupHeader(fw, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize, rootAttributes)
 	if err != nil {
 		return nil, err
 	}
@@ -2714,7 +2753,7 @@ func createRootGroupStructureV2(fw *writer.FileWriter) (*rootGroupInfo, error) {
 // This matches the reference implementation where:
 // 1. H5O_create() creates object header first
 // 2. H5G__stab_create_components() creates B-tree, then heap.
-func createRootGroupStructureV0(fw *writer.FileWriter) (*rootGroupInfo, error) {
+func createRootGroupStructureV0(fw *writer.FileWriter, rootAttributes map[string]interface{}) (*rootGroupInfo, error) {
 	const offsetSize = 8
 	const lengthSize = 8
 
@@ -2753,7 +2792,7 @@ func createRootGroupStructureV0(fw *writer.FileWriter) (*rootGroupInfo, error) {
 	// 1. Write root group object header (offset 96)
 	// V0 superblock requires Object Header v1 (not v2!)
 	const objectHeaderVersion = 1
-	actualObjHeaderSize, err := writeRootGroupHeaderAt(fw, rootGroupAddr, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize, objectHeaderVersion)
+	actualObjHeaderSize, err := writeRootGroupHeaderAt(fw, rootGroupAddr, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize, objectHeaderVersion, rootAttributes)
 	if err != nil {
 		return nil, err
 	}
@@ -2893,15 +2932,46 @@ func writeRootGroupHeaderAt(fw *writer.FileWriter, addr, btreeAddr, heapAddr uin
 // writeRootGroupHeader creates and writes the root group object header.
 // Returns the address where the header was written and its size.
 // Uses Object Header v2 (for superblock v2).
-func writeRootGroupHeader(fw *writer.FileWriter, btreeAddr, heapAddr uint64, offsetSize, lengthSize int) (uint64, uint64, error) {
+func writeRootGroupHeader(fw *writer.FileWriter, btreeAddr, heapAddr uint64, offsetSize, lengthSize int, rootAttributes map[string]interface{}) (uint64, uint64, error) {
 	stMsg := core.EncodeSymbolTableMessage(btreeAddr, heapAddr, offsetSize, lengthSize)
 
+	// Start with Symbol Table message
+	messages := []core.MessageWriter{
+		{Type: core.MsgSymbolTable, Data: stMsg},
+	}
+
+	// Add attribute messages if any
+	if len(rootAttributes) > 0 {
+		for name, value := range rootAttributes {
+			// Infer datatype and dataspace from value
+			datatype, dataspace, err := inferDatatypeFromValue(value)
+			if err != nil {
+				return 0, 0, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
+			}
+
+			// Encode attribute value
+			data, err := encodeAttributeValue(value)
+			if err != nil {
+				return 0, 0, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
+			}
+
+			// Encode attribute message
+			attrMsg, err := core.EncodeAttributeMessage(name, datatype, dataspace, data)
+			if err != nil {
+				return 0, 0, fmt.Errorf("failed to encode attribute message %q: %w", name, err)
+			}
+
+			messages = append(messages, core.MessageWriter{
+				Type: core.MsgAttribute,
+				Data: attrMsg,
+			})
+		}
+	}
+
 	rootGroupHeader := &core.ObjectHeaderWriter{
-		Version: 2, // V2 superblock uses Object Header v2
-		Flags:   0,
-		Messages: []core.MessageWriter{
-			{Type: core.MsgSymbolTable, Data: stMsg},
-		},
+		Version:  2, // V2 superblock uses Object Header v2
+		Flags:    0,
+		Messages: messages,
 		RefCount: 1, // Always 1 for new files
 	}
 
