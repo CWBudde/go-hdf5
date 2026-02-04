@@ -131,20 +131,21 @@ func TestObjectHeaderWriter_WriteTo(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "chunk size too large for 1-byte encoding",
+			name: "chunk size uses 2-byte encoding when exceeding 255",
 			header: &ObjectHeaderWriter{
 				Version: 2,
-				Flags:   0, // Bits 0-1 = 0 means 1-byte chunk size (max 255)
+				Flags:   0, // Will be updated to 1 (2-byte encoding) automatically
 				Messages: []MessageWriter{
 					{
 						Type: MsgLinkInfo,
-						// Test data size: 1 (type) + 2 (size) + 1 (flags) + 300 (data) = 304 bytes (exceeds 255 limit).
+						// Test data size: 1 (type) + 2 (size) + 1 (flags) + 300 (data) = 304 bytes (exceeds 255, uses 2-byte encoding)
 						Data: make([]byte, 300),
 					},
 				},
 			},
-			address: 0,
-			wantErr: true,
+			address:  0,
+			wantSize: 4 + 1 + 1 + 2 + 304, // signature + version + flags + chunk_size(2 bytes) + messages
+			wantErr:  false,
 		},
 	}
 

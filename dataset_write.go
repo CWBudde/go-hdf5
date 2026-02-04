@@ -2908,15 +2908,46 @@ func createBTreeNode(fw *writer.FileWriter, stNodeAddr uint64, offsetSize int) (
 // writeRootGroupHeaderAt writes the root group object header at the specified address.
 // Returns the actual size written.
 // The objectHeaderVersion parameter determines which object header format to use (1 or 2).
-func writeRootGroupHeaderAt(fw *writer.FileWriter, addr, btreeAddr, heapAddr uint64, offsetSize, lengthSize int, objectHeaderVersion uint8) (uint64, error) {
+func writeRootGroupHeaderAt(fw *writer.FileWriter, addr, btreeAddr, heapAddr uint64, offsetSize, lengthSize int, objectHeaderVersion uint8, rootAttributes map[string]interface{}) (uint64, error) {
 	stMsg := core.EncodeSymbolTableMessage(btreeAddr, heapAddr, offsetSize, lengthSize)
 
+	// Start with Symbol Table message
+	messages := []core.MessageWriter{
+		{Type: core.MsgSymbolTable, Data: stMsg},
+	}
+
+	// Add attribute messages if any
+	if len(rootAttributes) > 0 {
+		for name, value := range rootAttributes {
+			// Infer datatype and dataspace from value
+			datatype, dataspace, err := inferDatatypeFromValue(value)
+			if err != nil {
+				return 0, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
+			}
+
+			// Encode attribute value
+			data, err := encodeAttributeValue(value)
+			if err != nil {
+				return 0, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
+			}
+
+			// Encode attribute message
+			attrMsg, err := core.EncodeAttributeMessage(name, datatype, dataspace, data)
+			if err != nil {
+				return 0, fmt.Errorf("failed to encode attribute message %q: %w", name, err)
+			}
+
+			messages = append(messages, core.MessageWriter{
+				Type: core.MsgAttribute,
+				Data: attrMsg,
+			})
+		}
+	}
+
 	rootGroupHeader := &core.ObjectHeaderWriter{
-		Version: objectHeaderVersion,
-		Flags:   0,
-		Messages: []core.MessageWriter{
-			{Type: core.MsgSymbolTable, Data: stMsg},
-		},
+		Version:  objectHeaderVersion,
+		Flags:    0,
+		Messages: messages,
 		RefCount: 1, // Always 1 for new files (used by v1, ignored by v2)
 	}
 

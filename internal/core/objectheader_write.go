@@ -134,8 +134,19 @@ func (ohw *ObjectHeaderWriter) sizeV2() uint64 {
 		messageDataSize += 1 + 2 + 1 + uint64(len(msg.Data))
 	}
 
-	// Header size: Signature (4) + Version (1) + Flags (1) + Chunk Size (1) + Messages
-	return 4 + 1 + 1 + 1 + messageDataSize
+	// Determine chunk size field width based on message size
+	// Flags bits 0-1 encode chunk size width: 00=1byte, 01=2byte, 10=4byte
+	var chunkSizeBytes uint64
+	if messageDataSize <= 255 {
+		chunkSizeBytes = 1
+	} else if messageDataSize <= 65535 {
+		chunkSizeBytes = 2
+	} else {
+		chunkSizeBytes = 4
+	}
+
+	// Header size: Signature (4) + Version (1) + Flags (1) + Chunk Size (1/2/4) + Messages
+	return 4 + 1 + 1 + chunkSizeBytes + messageDataSize
 }
 
 // WriteTo writes the object header to the writer at the specified address.
@@ -284,15 +295,26 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 	// Chunk contains all messages
 	chunkSize := messageDataSize
 
-	// Validate chunk size fits in encoding
-	// For MVP, flags bits 0-1 = 0, so chunk size is 1 byte (max 255)
-	if chunkSize > 255 {
-		return 0, fmt.Errorf("chunk size %d exceeds maximum for 1-byte encoding (255)", chunkSize)
+	// Determine chunk size encoding based on size
+	// Flags bits 0-1 encode chunk size width: 00=1byte, 01=2byte, 10=4byte, 11=8byte
+	var flags uint8
+	var chunkSizeBytes int
+	if chunkSize <= 255 {
+		flags = 0 // 1-byte encoding
+		chunkSizeBytes = 1
+	} else if chunkSize <= 65535 {
+		flags = 1 // 2-byte encoding
+		chunkSizeBytes = 2
+	} else if chunkSize <= 4294967295 {
+		flags = 2 // 4-byte encoding
+		chunkSizeBytes = 4
+	} else {
+		return 0, fmt.Errorf("chunk size %d too large (max 4GB)", chunkSize)
 	}
 
 	// Build header
-	// Signature (4) + Version (1) + Flags (1) + Chunk Size (1) + Messages (variable)
-	headerSize := 4 + 1 + 1 + 1 + chunkSize
+	// Signature (4) + Version (1) + Flags (1) + Chunk Size (1/2/4) + Messages (variable)
+	headerSize := 4 + 1 + 1 + uint64(chunkSizeBytes) + chunkSize
 	buf := make([]byte, headerSize)
 
 	offset := 0
@@ -305,13 +327,22 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 	buf[offset] = ohw.Version
 	offset++
 
-	// Flags
-	buf[offset] = ohw.Flags
+	// Flags (merge with caller's flags, preserving other bits)
+	buf[offset] = ohw.Flags | flags
 	offset++
 
-	// Chunk 0 size (1 byte for flags bits 0-1 = 0)
-	buf[offset] = uint8(chunkSize)
-	offset++
+	// Chunk 0 size (1, 2, or 4 bytes depending on flags)
+	switch chunkSizeBytes {
+	case 1:
+		buf[offset] = uint8(chunkSize)
+		offset++
+	case 2:
+		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(chunkSize))
+		offset += 2
+	case 4:
+		binary.LittleEndian.PutUint32(buf[offset:offset+4], uint32(chunkSize))
+		offset += 4
+	}
 
 	// Write messages
 	for _, msg := range ohw.Messages {
