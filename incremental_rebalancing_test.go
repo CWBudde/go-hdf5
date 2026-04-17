@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meko-christian/go-hdf5"
-	"github.com/meko-christian/go-hdf5/internal/structures"
+	"github.com/cwbudde/go-hdf5"
+	"github.com/cwbudde/go-hdf5/internal/structures"
 )
 
 // TestIncrementalRebalancing_WithDefer demonstrates BEST PRACTICE usage.

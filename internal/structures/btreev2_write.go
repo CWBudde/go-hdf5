@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
-	"github.com/meko-christian/go-hdf5/internal/utils"
+	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // writeUint64 writes a uint64 value to buffer with specified size and endianness.

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meko-christian/go-hdf5/internal/structures"
+	"github.com/cwbudde/go-hdf5/internal/structures"
 )
 
 // TestDecisionString tests Decision.String() method.

@@ -6,7 +6,7 @@ package hdf5
 import (
 	"time"
 
-	"github.com/meko-christian/go-hdf5/internal/structures"
+	"github.com/cwbudde/go-hdf5/internal/structures"
 )
 
 // FileWriterOption configures a FileWriter during creation.

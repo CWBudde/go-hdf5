@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/core"
 )
 
 // CreateHardLink creates a hard link to an existing object.

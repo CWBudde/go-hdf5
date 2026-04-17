@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
-	"github.com/meko-christian/go-hdf5/internal/structures"
+	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/structures"
 )
 
 // DenseGroupWriter manages dense group creation.

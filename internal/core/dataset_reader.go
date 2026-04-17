@@ -6,7 +6,7 @@ import (
 	"io"
 	"math"
 
-	"github.com/meko-christian/go-hdf5/internal/utils"
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // ReadDatasetFloat64 reads a dataset and returns values as float64 array.

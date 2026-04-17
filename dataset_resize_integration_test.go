@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/meko-christian/go-hdf5"
+	"github.com/cwbudde/go-hdf5"
 )
 
 func TestResizeRoundTrip1D(t *testing.T) {

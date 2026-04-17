@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/core"
 )
 
 // TestSuperblockV0FileCreation tests v0 file creation with exact addresses.

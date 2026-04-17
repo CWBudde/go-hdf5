@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/meko-christian/go-hdf5/internal/utils"
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // FractalHeap represents a minimal read-only fractal heap implementation.

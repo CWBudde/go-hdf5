@@ -70,3 +70,7 @@ build-dump:
 clean:
     rm -rf bin/
     rm -f coverage.out coverage.html
+
+fix:
+    just lint-fix
+    just fmt

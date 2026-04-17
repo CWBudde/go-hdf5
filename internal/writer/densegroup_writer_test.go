@@ -9,7 +9,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/core"
 )
 
 // TestDenseGroupWriter_Creation tests basic creation.

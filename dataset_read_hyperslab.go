@@ -6,8 +6,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
-	"github.com/meko-christian/go-hdf5/internal/utils"
+	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // HyperslabSelection represents a rectangular selection in N-dimensional space.

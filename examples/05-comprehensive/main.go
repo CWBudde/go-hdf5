@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/meko-christian/go-hdf5"
-	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5"
+	"github.com/cwbudde/go-hdf5/internal/core"
 )
 
 func main() {

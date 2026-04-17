@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/meko-christian/go-hdf5"
+	"github.com/cwbudde/go-hdf5"
 	"github.com/stretchr/testify/require"
 )
 

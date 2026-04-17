@@ -356,10 +356,125 @@ func CreateForWrite(filename string, mode CreateMode, opts ...CreateOption) (*Fi
 
 ### Next Steps After Completion
 
-1. **Update go-sofa**: Modify `Save()` to use `WithRootAttribute()` API
-2. **Run go-sofa Tests**: Verify SOFA file creation works end-to-end
-3. **Upstream PR**: Consider contributing this enhancement to meko-christian/go-hdf5
-4. **Documentation**: Update go-hdf5 CHANGELOG and release notes
+1. ✅ **Update go-sofa**: Modified `Save()` to use `WithRootAttribute()` API
+2. ✅ **Run go-sofa Tests**: SOFA file creation works end-to-end - all tests passing
+3. ⏳ **Upstream PR**: Consider contributing this enhancement to meko-christian/go-hdf5
+4. ⏳ **Documentation**: Update go-hdf5 CHANGELOG and release notes
+
+---
+
+## Phase 3.6 — Dataset Attributes Enhancement (Future Work)
+
+**Status**: 📋 Planned - Not yet started
+
+**Goal**: Enable writing attributes to datasets during creation to support netCDF-4 dimension-scale attributes and other dataset metadata.
+
+### Problem Statement
+
+**Current Limitation**: Dataset object headers are created with a fixed size during dataset creation (`CreateDataset`). Attempting to add attributes after creation causes file corruption, same issue as root attributes had.
+
+**Impact**:
+- Blocks full netCDF-4 compliance for SOFA files
+- Dimension-scale attributes (CLASS, NAME) cannot be written
+- Files are valid HDF5 but missing metadata for interoperability
+- Affects any application needing dataset-level metadata
+
+### Technical Analysis
+
+Same root cause as Phase 3:
+- `CreateDataset()` creates object header with fixed size (Dataspace + Datatype messages)
+- No mechanism to pre-allocate space for attributes
+- `WriteAttribute()` on datasets modifies header in-place → corruption
+
+### Solution: WithAttribute Option for CreateDataset
+
+Add functional options to `CreateDataset()` allowing attributes to be specified during dataset creation.
+
+#### API Design
+
+```go
+// In dataset_write.go
+func WithAttribute(name string, value interface{}) DatasetOption {
+    return func(cfg *datasetConfig) {
+        if cfg.attributes == nil {
+            cfg.attributes = make(map[string]interface{})
+        }
+        cfg.attributes[name] = value
+    }
+}
+
+// Usage example - SOFA dimension scale:
+ds, err := fw.CreateDataset("/M", hdf5.Float64, []uint64{1},
+    hdf5.WithAttribute("CLASS", "DIMENSION_SCALE"),
+    hdf5.WithAttribute("NAME", "This is a netCDF dimension but not a netCDF variable.     1"))
+```
+
+### Implementation Tasks
+
+#### Phase 3.6.1: API Design (30 minutes)
+
+- [ ] Add `attributes map[string]interface{}` to `datasetConfig` struct
+- [ ] Create `WithAttribute(name, value)` option constructor
+- [ ] Update `CreateDataset()` to pass attributes to object header creation
+- [ ] Ensure backward compatibility (no attributes = current behavior)
+
+#### Phase 3.6.2: Object Header Enhancement (2-3 hours)
+
+- [ ] Modify `createDatasetObjectHeader()` to accept attributes parameter
+- [ ] Calculate header size including attribute messages
+- [ ] Support both compact (≤8) and dense (>8) attribute storage
+- [ ] Reuse existing attribute encoding functions from Phase 3
+
+#### Phase 3.6.3: Testing (1 hour)
+
+- [ ] Test with 0 attributes (baseline)
+- [ ] Test with 1-8 attributes (compact storage)
+- [ ] Test with 9-20 attributes (dense storage)
+- [ ] Round-trip tests: create with attributes → close → reopen → verify
+- [ ] Test netCDF dimension-scale pattern specifically
+
+#### Phase 3.6.4: Integration (1 hour)
+
+- [ ] Update go-sofa to use `WithAttribute()` for dimension scales
+- [ ] Remove TODO comments in `writeDimensionScale()`
+- [ ] Verify full netCDF-4 compliance
+- [ ] Test SOFA files with MATLAB toolbox (if available)
+
+### Success Criteria
+
+1. ⏳ `WithAttribute()` option works for `CreateDataset()`
+2. ⏳ Both compact and dense storage supported
+3. ⏳ Backward compatibility maintained
+4. ⏳ go-sofa can write full netCDF-4 compliant files
+5. ⏳ Round-trip tests pass with dataset attributes
+
+### Files to Modify
+
+| File | Changes | Complexity |
+|------|---------|------------|
+| [dataset_write.go](dataset_write.go) | Add WithAttribute option, modify CreateDataset | Medium |
+| [internal/core/objectheader_write.go](internal/core/objectheader_write.go) | Enhance dataset header creation with attributes | Medium |
+| [dataset_write_test.go](dataset_write_test.go) | Add dataset attribute tests | Low |
+
+### Benefits
+
+- ✅ Full netCDF-4 compliance for SOFA files
+- ✅ Better interoperability with MATLAB, Python netCDF libraries
+- ✅ Consistent API between root and dataset attributes
+- ✅ Enables other HDF5-based formats that need dataset metadata
+
+### Estimated Timeline
+
+- **Phase 3.6.1 (API Design)**: 30 minutes
+- **Phase 3.6.2 (Implementation)**: 2-3 hours
+- **Phase 3.6.3 (Testing)**: 1 hour
+- **Phase 3.6.4 (Integration)**: 1 hour
+
+**Total**: 4-5 hours (similar to root attributes, can reuse much code)
+
+### Priority
+
+**Medium** - go-sofa write support is functional without this, but it would improve standards compliance and interoperability.
 
 ---
 

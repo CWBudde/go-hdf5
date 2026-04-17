@@ -7,9 +7,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
-	"github.com/meko-christian/go-hdf5/internal/structures"
-	"github.com/meko-christian/go-hdf5/internal/writer"
+	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/structures"
+	"github.com/cwbudde/go-hdf5/internal/writer"
 )
 
 // Datatype represents HDF5 datatype for creating datasets.

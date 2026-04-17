@@ -6,7 +6,7 @@ import (
 	"io"
 	"math"
 
-	"github.com/meko-christian/go-hdf5/internal/utils"
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // CompoundValue represents a single compound structure instance as a map of field names to values.

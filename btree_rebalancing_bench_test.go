@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/meko-christian/go-hdf5"
+	"github.com/cwbudde/go-hdf5"
 )
 
 // BenchmarkBTreeRebalancing_SmallDataset benchmarks rebalancing small B-tree (100 attributes).

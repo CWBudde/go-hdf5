@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/meko-christian/go-hdf5"
+	"github.com/cwbudde/go-hdf5"
 )
 
 func main() {

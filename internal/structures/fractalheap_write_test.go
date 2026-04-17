@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/core"
 )
 
 // MockWriter implements the Writer interface for testing.

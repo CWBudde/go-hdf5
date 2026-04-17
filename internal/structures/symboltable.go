@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
-	"github.com/meko-christian/go-hdf5/internal/utils"
+	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // SymbolTableSignature is the 4-byte signature for symbol table nodes.

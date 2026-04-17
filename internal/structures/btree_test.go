@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/core"
 	"github.com/stretchr/testify/require"
 )
 

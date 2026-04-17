@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
-	"github.com/meko-christian/go-hdf5/internal/structures"
-	"github.com/meko-christian/go-hdf5/internal/utils"
+	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/structures"
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // HDF5 signature constants.

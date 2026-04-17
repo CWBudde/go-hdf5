@@ -1,4 +1,4 @@
-module github.com/meko-christian/go-hdf5
+module github.com/cwbudde/go-hdf5
 
 go 1.25
 

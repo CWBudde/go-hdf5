@@ -5,8 +5,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/meko-christian/go-hdf5/internal/core"
-	"github.com/meko-christian/go-hdf5/internal/utils"
+	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // LocalHeap represents an HDF5 local heap for storing short strings.
