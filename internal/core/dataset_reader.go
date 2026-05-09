@@ -85,6 +85,14 @@ func ReadDatasetFloat64(r io.ReaderAt, header *ObjectHeader, sb *Superblock) ([]
 		dataSize := totalElements * uint64(datatype.Size)
 		rawData = make([]byte, dataSize)
 
+		// HADDR_UNDEF (0xFFFFFFFFFFFFFFFF) signals lazy / unallocated
+		// storage. netCDF emits this for dimension coordinates that
+		// were never written. Treat as a fully zero-filled (fill-value)
+		// read so the shape is preserved.
+		if layout.DataAddress == 0xFFFFFFFFFFFFFFFF {
+			break
+		}
+
 		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
 		_, err := r.ReadAt(rawData, int64(layout.DataAddress))
 		if err != nil {

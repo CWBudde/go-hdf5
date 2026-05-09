@@ -175,7 +175,7 @@ func determineObjectType(messages []*HeaderMessage) ObjectType {
 	return ObjectTypeUnknown
 }
 
-func parseV2Header(r io.ReaderAt, headerAddr uint64, flags uint8, _ *Superblock, isBE bool) ([]*HeaderMessage, string, error) {
+func parseV2Header(r io.ReaderAt, headerAddr uint64, flags uint8, sb *Superblock, isBE bool) ([]*HeaderMessage, string, error) {
 	var messages []*HeaderMessage
 	var name string
 
@@ -303,7 +303,95 @@ func parseV2Header(r io.ReaderAt, headerAddr uint64, flags uint8, _ *Superblock,
 		current += msgHeaderSize + uint64(msgSize)
 	}
 
+	// Follow V2 continuation chains. A continuation message points to a
+	// secondary chunk ("OCHK" signature + messages + CRC32) that may itself
+	// contain further continuation messages, so we iterate until none remain.
+	visited := map[uint64]bool{headerAddr: true}
+	pending := findContinuations(messages, sb)
+	for len(pending) > 0 {
+		next := pending[0]
+		pending = pending[1:]
+		if visited[next.Address] {
+			continue
+		}
+		visited[next.Address] = true
+		contMessages, err := parseV2ContinuationBlock(r, next.Address, next.Size, msgHeaderSize, isBE)
+		if err != nil {
+			return nil, "", utils.WrapError("v2 continuation parse failed", err)
+		}
+		messages = append(messages, contMessages...)
+		pending = append(pending, findContinuations(contMessages, sb)...)
+	}
+
 	return messages, name, nil
+}
+
+// parseV2ContinuationBlock parses messages from a V2 object header continuation
+// chunk. Layout: "OCHK" signature (4 bytes) + messages + 4-byte CRC32.
+// The block size in the continuation message includes the signature and CRC.
+func parseV2ContinuationBlock(r io.ReaderAt, blockAddr, blockSize, msgHeaderSize uint64, isBE bool) ([]*HeaderMessage, error) {
+	const ochkSignatureSize = 4
+	const checksumSize = 4
+	if blockSize < ochkSignatureSize+checksumSize {
+		return nil, fmt.Errorf("continuation block too small: %d bytes", blockSize)
+	}
+
+	sig := utils.GetBuffer(ochkSignatureSize)
+	defer utils.ReleaseBuffer(sig)
+	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
+	if _, err := r.ReadAt(sig, int64(blockAddr)); err != nil {
+		return nil, utils.WrapError("continuation signature read failed", err)
+	}
+	switch string(sig) {
+	case "OCHK":
+		// little-endian
+	case "KHCO":
+		// big-endian (signature reversed)
+	default:
+		return nil, fmt.Errorf("invalid continuation signature %q at 0x%x", string(sig), blockAddr)
+	}
+
+	current := blockAddr + ochkSignatureSize
+	end := blockAddr + blockSize - checksumSize
+
+	var messages []*HeaderMessage
+	for current < end {
+		headerBuf := utils.GetBuffer(6)
+		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
+		if _, err := r.ReadAt(headerBuf, int64(current)); err != nil {
+			utils.ReleaseBuffer(headerBuf)
+			return nil, utils.WrapError("continuation message header read failed", err)
+		}
+		msgType := MessageType(headerBuf[0])
+		var msgSize uint16
+		if isBE {
+			msgSize = binary.BigEndian.Uint16(headerBuf[1:3])
+		} else {
+			msgSize = binary.LittleEndian.Uint16(headerBuf[1:3])
+		}
+		utils.ReleaseBuffer(headerBuf)
+
+		if msgSize == 0 {
+			current += msgHeaderSize
+			continue
+		}
+
+		data := utils.GetBuffer(int(msgSize))
+		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
+		if _, err := r.ReadAt(data, int64(current+msgHeaderSize)); err != nil {
+			utils.ReleaseBuffer(data)
+			return nil, utils.WrapError("continuation message data read failed", err)
+		}
+
+		messages = append(messages, &HeaderMessage{
+			Type:   msgType,
+			Offset: current,
+			Data:   data,
+		})
+		current += msgHeaderSize + uint64(msgSize)
+	}
+
+	return messages, nil
 }
 
 // IncrementReferenceCount increments the reference count for this object header.

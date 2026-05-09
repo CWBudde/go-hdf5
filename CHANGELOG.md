@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [v0.14.0] - 2026-05-09
+
+### 🐛 Bug Fixes
+
+#### V2 Object Header Continuation Chunks Followed
+
+Datasets whose object header spilled messages into a V2 continuation
+chunk ("OCHK" signature + messages + CRC32) were missing their
+`MsgDataLayout`/`MsgDatatype`/etc., surfacing as
+`data layout message not found` or `missing required messages`.
+This affected most netCDF-4 / SOFA files produced by the upstream
+MATLAB toolbox (e.g. `GeneralTF_2.0.sofa`, `FreeFieldHRTF_2.0.sofa`).
+
+The V1 parser already chased `MsgContinuation` (type 0x10); the V2
+parser now does the same, parsing each "OCHK" chunk's messages and
+recursing through chained continuations. Detects both little-endian
+("OCHK") and big-endian ("KHCO") signatures.
+
+**Files modified**:
+- `internal/core/objectheader.go` — `parseV2Header` now drives a
+  worklist of continuation addresses; new `parseV2ContinuationBlock`
+  helper.
+
+#### Tolerate `HADDR_UNDEF` in Contiguous Datasets
+
+Reading a contiguous dataset whose `DataAddress` was
+`0xFFFFFFFFFFFFFFFF` (HADDR_UNDEF, signalling lazy/unallocated
+storage) failed with `failed to read contiguous data: ... negative
+offset`. netCDF emits this for dimension coordinates that were never
+written. The reader now treats `HADDR_UNDEF` as a fully zero-filled
+fill-value read of the dataspace shape.
+
+**Files modified**:
+- `internal/core/dataset_reader.go` — short-circuit `HADDR_UNDEF`
+  before issuing the underlying `ReadAt`.
+
 ### ✨ New Features
 
 #### ChunkIterator API for Memory-Efficient Reading (TASK-031)
