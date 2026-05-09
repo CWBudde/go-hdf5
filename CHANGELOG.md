@@ -11,6 +11,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.15.0] - 2026-05-09
+
+### ✨ New Features
+
+#### Dataset-level Attributes at Creation Time
+
+`CreateDataset()` now accepts a new `WithAttribute(name, value)`
+functional option that records attributes inside the dataset's object
+header during initial allocation, mirroring the long-existing
+`WithRootAttribute` for files.
+
+This unblocks netCDF-4 / SOFA writers that need to emit
+`CLASS=DIMENSION_SCALE`, `NAME=…`, and similar dimension-scale
+metadata. Previously, the only way to attach attributes to a dataset
+was post-creation, which corrupted the file because the object
+header had not pre-allocated the required space.
+
+**Scope**:
+- Compact storage only (≤ 8 attributes per dataset). This covers
+  every dimension-scale use case in the SOFA / netCDF-4 ecosystem;
+  dense (Fractal-Heap-backed) storage for datasets is not yet
+  implemented and `CreateDataset` returns an explicit error if more
+  than 8 attributes are supplied.
+- Works for both contiguous and chunked layouts.
+- Round-trip tested via the standard reader.
+
+**Files modified**:
+- `dataset_write.go` — `WithAttribute` option, attribute storage on
+  `datasetConfig`, `buildCompactAttributeMessages` helper, wiring in
+  the contiguous `CreateDataset` path.
+- `dataset_write_chunked.go` — same wiring in `createChunkedDataset`.
+- `dataset_with_attribute_test.go` — new round-trip and
+  too-many-attributes tests.
+
+**Usage example — netCDF-4 dimension scale**:
+
+```go
+ds, _ := fw.CreateDataset("/N", hdf5.Float64, []uint64{1},
+    hdf5.WithAttribute("CLASS", "DIMENSION_SCALE"),
+    hdf5.WithAttribute("NAME", "N"))
+```
+
+---
+
 ## [v0.14.0] - 2026-05-09
 
 ### 🐛 Bug Fixes

@@ -123,6 +123,13 @@ func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []u
 		})
 	}
 
+	// Append optional creation-time attributes (compact storage).
+	attrMsgs, err := buildCompactAttributeMessages(config.attributes, config.attributeOrder)
+	if err != nil {
+		return nil, fmt.Errorf("dataset %q: %w", name, err)
+	}
+	ohw.Messages = append(ohw.Messages, attrMsgs...)
+
 	// Calculate header size
 	headerSize, err := calculateObjectHeaderSize(ohw)
 	if err != nil {

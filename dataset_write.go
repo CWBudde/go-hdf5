@@ -984,6 +984,13 @@ func (fw *FileWriter) CreateDataset(name string, dtype Datatype, dims []uint64, 
 		},
 	}
 
+	// Append optional creation-time attributes (compact storage).
+	attrMsgs, err := buildCompactAttributeMessages(config.attributes, config.attributeOrder)
+	if err != nil {
+		return nil, fmt.Errorf("dataset %q: %w", name, err)
+	}
+	ohw.Messages = append(ohw.Messages, attrMsgs...)
+
 	// Allocate space for object header
 	// We need to calculate size first
 	headerSize, err := calculateObjectHeaderSize(ohw)
@@ -1882,6 +1889,103 @@ type datasetConfig struct {
 	pipeline      *writer.FilterPipeline // Filter pipeline for chunked datasets
 	enableShuffle bool                   // Add shuffle filter before compression
 	maxDims       []uint64               // Maximum dimensions (for resizable datasets)
+
+	// attributes holds dataset-level attributes added at creation time.
+	// Order is deterministic (attributeOrder mirrors insertion).
+	attributes     map[string]interface{}
+	attributeOrder []string
+}
+
+// MaxCompactDatasetAttributes is the upper bound on attributes attached
+// to a dataset via WithAttribute(). Above this, dense (Fractal Heap)
+// storage would be required, which is not yet implemented for datasets.
+const MaxCompactDatasetAttributes = 8
+
+// buildCompactAttributeMessages turns a name→value map into a slice of
+// MsgAttribute MessageWriters suitable for inlining into an object
+// header. Returns (nil, nil) when there are no attributes.
+func buildCompactAttributeMessages(attrs map[string]interface{}, order []string) ([]core.MessageWriter, error) {
+	if len(attrs) == 0 {
+		return nil, nil
+	}
+	if len(attrs) > MaxCompactDatasetAttributes {
+		return nil, fmt.Errorf("WithAttribute supports at most %d attributes per dataset (got %d); dense storage not yet implemented", MaxCompactDatasetAttributes, len(attrs))
+	}
+
+	// Iterate via the recorded insertion order so the on-disk layout
+	// is deterministic regardless of map iteration order.
+	msgs := make([]core.MessageWriter, 0, len(attrs))
+	seen := make(map[string]bool, len(order))
+	emit := func(name string) error {
+		value := attrs[name]
+		datatype, dataspace, err := inferDatatypeFromValue(value)
+		if err != nil {
+			return fmt.Errorf("attribute %q: %w", name, err)
+		}
+		data, err := encodeAttributeValue(value)
+		if err != nil {
+			return fmt.Errorf("attribute %q: %w", name, err)
+		}
+		attrMsg, err := core.EncodeAttributeMessage(name, datatype, dataspace, data)
+		if err != nil {
+			return fmt.Errorf("attribute %q: %w", name, err)
+		}
+		msgs = append(msgs, core.MessageWriter{Type: core.MsgAttribute, Data: attrMsg})
+		return nil
+	}
+	for _, name := range order {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if _, ok := attrs[name]; !ok {
+			continue
+		}
+		if err := emit(name); err != nil {
+			return nil, err
+		}
+	}
+	// Catch any keys not present in the order slice (shouldn't happen
+	// when WithAttribute is the only producer, but stay defensive).
+	for name := range attrs {
+		if !seen[name] {
+			if err := emit(name); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return msgs, nil
+}
+
+// WithAttribute adds an attribute to the dataset's object header at
+// creation time. Calling it multiple times accumulates attributes;
+// re-using a name overwrites the previous value.
+//
+// Attributes are stored compactly inside the dataset's object header
+// (≤ 8 attributes — sufficient for netCDF-4 dimension-scale metadata
+// such as CLASS=DIMENSION_SCALE and NAME=…). Dense (Fractal-Heap-
+// backed) storage is not yet supported here; if more than 8
+// attributes are supplied CreateDataset returns an error.
+//
+// Supported value types match WithRootAttribute:
+//   - Scalars: int8-64, uint8-64, float32/64, string
+//   - Slices/arrays of those types
+//
+// Example — netCDF-4 dimension scale:
+//
+//	ds, _ := fw.CreateDataset("/N", hdf5.Float64, []uint64{1},
+//	    hdf5.WithAttribute("CLASS", "DIMENSION_SCALE"),
+//	    hdf5.WithAttribute("NAME", "N"))
+func WithAttribute(name string, value interface{}) DatasetOption {
+	return func(cfg *datasetConfig) {
+		if cfg.attributes == nil {
+			cfg.attributes = make(map[string]interface{})
+		}
+		if _, exists := cfg.attributes[name]; !exists {
+			cfg.attributeOrder = append(cfg.attributeOrder, name)
+		}
+		cfg.attributes[name] = value
+	}
 }
 
 // WithStringSize sets the fixed string size for String datasets.
