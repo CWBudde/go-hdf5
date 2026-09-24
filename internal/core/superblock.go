@@ -485,7 +485,7 @@ func (sb *Superblock) UpdateEOA(rw interface {
 	}
 
 	current := readUintLE(buf[eoaPos : eoaPos+o])
-	if current >= eoa && current != undefinedAddress(o) {
+	if current >= eoa && current != undefinedAddressOfSize(o) {
 		return nil
 	}
 	putUintLE(buf[eoaPos:eoaPos+o], eoa)
@@ -520,7 +520,7 @@ func putUintLE(b []byte, v uint64) {
 	}
 }
 
-func undefinedAddress(size uint64) uint64 {
+func undefinedAddressOfSize(size uint64) uint64 {
 	if size >= 8 {
 		return ^uint64(0)
 	}

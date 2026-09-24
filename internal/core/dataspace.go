@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 )
 
 // DataspaceType represents the type of dataspace.
@@ -138,8 +139,13 @@ func (ds *DataspaceMessage) TotalElements() uint64 {
 		return 1
 	}
 
+	// Saturate at MaxUint64 on overflow so that corrupted dimensions can
+	// never wrap around to a small, plausible-looking element count.
 	total := uint64(1)
 	for _, dim := range ds.Dimensions {
+		if dim != 0 && total > math.MaxUint64/dim {
+			return math.MaxUint64
+		}
 		total *= dim
 	}
 	return total

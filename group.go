@@ -320,6 +320,10 @@ func loadModernGroup(file *File, address uint64) (*Group, error) {
 	// it has no messages (symbol table info is cached in superblock).
 	isGroup := header.Type == core.ObjectTypeGroup ||
 		(header.Type == core.ObjectTypeUnknown && sb.Version == core.Version0)
+	if isGroup && !file.markGroupExpanded(address) {
+		// Already expanded elsewhere (cycle or shared group): no children.
+		return group, nil
+	}
 	if isGroup {
 		// First, try to parse Link messages (modern format).
 		hasLinkMessages := false
@@ -463,6 +467,10 @@ func loadTraditionalGroup(file *File, address uint64) (*Group, error) {
 		file:      file,
 		name:      "/",
 		localHeap: heap,
+	}
+	if !file.markGroupExpanded(address) {
+		// Already expanded elsewhere (cycle or shared group): no children.
+		return group, nil
 	}
 
 	// Load children from SNOD entries.
@@ -649,6 +657,14 @@ func (g *Group) loadChildren() error {
 }
 
 func loadObject(file *File, address uint64, name string) (Object, error) {
+	// Bound recursion: corrupted files can describe arbitrarily deep or
+	// cyclic hierarchies.
+	file.loadDepth++
+	defer func() { file.loadDepth-- }()
+	if file.loadDepth > maxLoadDepth {
+		return nil, fmt.Errorf("object hierarchy deeper than %d levels", maxLoadDepth)
+	}
+
 	// Check signature first - SNOD means traditional group format.
 	sig := readSignature(file.osFile, address)
 	if sig == SignatureSNOD {

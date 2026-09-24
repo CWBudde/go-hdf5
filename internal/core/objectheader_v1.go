@@ -71,9 +71,16 @@ func parseV1Header(r io.ReaderAt, headerAddr uint64, sb *Superblock) ([]*HeaderM
 	// Process continuation messages
 	// We need to iterate through messages and follow any continuations
 	continuations := findContinuations(messages, sb)
+	visited := map[uint64]bool{headerAddr: true}
 	for len(continuations) > 0 {
 		cont := continuations[0]
 		continuations = continuations[1:]
+
+		// Guard against continuation cycles in corrupted files.
+		if visited[cont.Address] {
+			continue
+		}
+		visited[cont.Address] = true
 
 		// Parse continuation block
 		contMessages, contName, err := parseV1ContinuationBlock(r, cont.Address, cont.Size, sb)
@@ -231,11 +238,10 @@ func parseV1MessagesInBlock(r io.ReaderAt, start, end uint64, maxMessages uint16
 			break
 		}
 
-		// Read message data.
-		data := utils.GetBuffer(int(msgSize))
+		// Read message data (retained by the message, so not pooled).
+		data := make([]byte, msgSize)
 		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
 		if _, err := r.ReadAt(data, int64(current+8)); err != nil {
-			utils.ReleaseBuffer(data)
 			if err == io.EOF {
 				break
 			}

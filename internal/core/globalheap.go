@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // GlobalHeapSignature is the magic signature for global heap collections (4 bytes ASCII "GCOL").
@@ -86,10 +88,9 @@ func ReadGlobalHeapCollection(r io.ReaderAt, address uint64, offsetSize int) (*G
 	}
 
 	// Read entire collection into memory for easier parsing.
-	collectionData := make([]byte, collectionSize)
-	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-	if _, err := r.ReadAt(collectionData, int64(address)); err != nil {
-		return nil, fmt.Errorf("failed to read global heap collection: %w", err)
+	collectionData, err := utils.ReadAtChecked(r, address, collectionSize, "global heap collection")
+	if err != nil {
+		return nil, err
 	}
 
 	collection := &GlobalHeapCollection{
@@ -123,6 +124,16 @@ func ReadGlobalHeapCollection(r io.ReaderAt, address uint64, offsetSize int) (*G
 			objSize = binary.LittleEndian.Uint64(collectionData[offset+8 : offset+16])
 		} else {
 			objSize = uint64(binary.LittleEndian.Uint32(collectionData[offset+8 : offset+12]))
+		}
+
+		// Reject sizes that cannot fit in the remaining collection data
+		// (also guards the int conversions below against overflow).
+		//nolint:gosec // G115: offset+objHeaderSize <= len(collectionData) (checked above)
+		if objSize > uint64(len(collectionData)-offset-objHeaderSize) {
+			if objID == 0 {
+				break // Free space extends to the end of the collection.
+			}
+			return nil, fmt.Errorf("object %d data extends beyond collection", objID)
 		}
 
 		// Object ID 0 is the free space object, skip it.

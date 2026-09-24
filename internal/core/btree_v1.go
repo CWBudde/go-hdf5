@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // BTreeV1Node represents a B-tree version 1 node.
@@ -38,6 +40,9 @@ type ChunkKey struct {
 // The chunk dimensions in the layout message can be uint32 or uint64 depending on file version,
 // but the B-tree keys always use uint64 for backward compatibility.
 func ParseBTreeV1Node(r io.ReaderAt, address uint64, offsetSize uint8, ndims int, chunkDims []uint64) (*BTreeV1Node, error) {
+	if ndims < 0 || ndims > len(chunkDims) {
+		return nil, fmt.Errorf("b-tree dimensionality %d exceeds chunk dimensions %d", ndims, len(chunkDims))
+	}
 	// Read node header (fixed size part).
 	headerSize := 4 + 1 + 1 + 2 + int(offsetSize)*2 // signature + type + level + entries + 2 siblings.
 	header := make([]byte, headerSize)
@@ -101,14 +106,14 @@ func ParseBTreeV1Node(r io.ReaderAt, address uint64, offsetSize uint8, ndims int
 	entrySize := keySize + childSize
 	dataSize := int(node.EntriesUsed)*entrySize + keySize // +keySize for final key.
 
-	data := make([]byte, dataSize)
-	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-	if _, err := r.ReadAt(data, int64(address)+int64(headerSize)); err != nil {
+	//nolint:gosec // G115: headerSize and dataSize are small and non-negative
+	data, err := utils.ReadAtChecked(r, address+uint64(headerSize), uint64(dataSize), "B-tree node data")
+	if err != nil {
 		return nil, fmt.Errorf("failed to read B-tree node data: %w", err)
 	}
 
 	// Parse keys and children.
-	node.Keys = make([]ChunkKey, node.EntriesUsed+1) // +1 because there's always 1 more key than children.
+	node.Keys = make([]ChunkKey, int(node.EntriesUsed)+1) // +1 because there's always 1 more key than children.
 	node.Children = make([]uint64, node.EntriesUsed)
 
 	dataOffset := 0
@@ -172,8 +177,11 @@ func (node *BTreeV1Node) FindChunk(r io.ReaderAt, coords []uint64, offsetSize ui
 		childIndex = i + 1
 	}
 
-	if childIndex > int(node.EntriesUsed) {
-		childIndex = int(node.EntriesUsed)
+	if len(node.Children) == 0 {
+		return 0, errors.New("b-tree node has no children")
+	}
+	if childIndex >= len(node.Children) {
+		childIndex = len(node.Children) - 1
 	}
 
 	childAddr := node.Children[childIndex]
@@ -187,6 +195,9 @@ func (node *BTreeV1Node) FindChunk(r io.ReaderAt, coords []uint64, offsetSize ui
 	childNode, err := ParseBTreeV1Node(r, childAddr, offsetSize, ndims, chunkDims)
 	if err != nil {
 		return 0, err
+	}
+	if childNode.NodeLevel >= node.NodeLevel {
+		return 0, fmt.Errorf("b-tree child level %d not below parent level %d", childNode.NodeLevel, node.NodeLevel)
 	}
 
 	return childNode.FindChunk(r, coords, offsetSize, chunkDims)
@@ -242,41 +253,57 @@ type ChunkEntry struct {
 }
 
 // CollectAllChunks recursively collects all chunks from B-tree.
-// This handles both leaf and non-leaf nodes.
+// This handles both leaf and non-leaf nodes. Corrupted trees (cycles, shared
+// subtrees or non-decreasing levels) are rejected instead of recursing forever.
 func (node *BTreeV1Node) CollectAllChunks(r io.ReaderAt, offsetSize uint8, chunkDims []uint64) ([]ChunkEntry, error) {
-	ndims := len(chunkDims)
 	var chunks []ChunkEntry
+	visited := make(map[uint64]bool)
+	if err := node.collectChunks(r, offsetSize, chunkDims, visited, &chunks); err != nil {
+		return nil, err
+	}
+	return chunks, nil
+}
+
+func (node *BTreeV1Node) collectChunks(r io.ReaderAt, offsetSize uint8, chunkDims []uint64,
+	visited map[uint64]bool, chunks *[]ChunkEntry,
+) error {
+	ndims := len(chunkDims)
 
 	// If this is a leaf node (level 0), children point to actual chunks.
 	if node.NodeLevel == 0 {
 		for i := 0; i < int(node.EntriesUsed); i++ {
-			chunks = append(chunks, ChunkEntry{
+			*chunks = append(*chunks, ChunkEntry{
 				Key:     node.Keys[i],
 				Address: node.Children[i],
 			})
 		}
-		return chunks, nil
+		return nil
 	}
 
 	// Non-leaf node: children point to other B-tree nodes.
 	// Recursively collect chunks from all child nodes.
 	for i := 0; i < int(node.EntriesUsed); i++ {
 		childAddr := node.Children[i]
+		if visited[childAddr] {
+			return fmt.Errorf("b-tree node at 0x%x referenced more than once", childAddr)
+		}
+		visited[childAddr] = true
 
 		// Parse child node.
 		childNode, err := ParseBTreeV1Node(r, childAddr, offsetSize, ndims, chunkDims)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse child node at 0x%x: %w", childAddr, err)
+			return fmt.Errorf("failed to parse child node at 0x%x: %w", childAddr, err)
+		}
+		if childNode.NodeLevel >= node.NodeLevel {
+			return fmt.Errorf("b-tree child at 0x%x has level %d, parent level %d",
+				childAddr, childNode.NodeLevel, node.NodeLevel)
 		}
 
 		// Recursively collect chunks from child.
-		childChunks, err := childNode.CollectAllChunks(r, offsetSize, chunkDims)
-		if err != nil {
-			return nil, fmt.Errorf("failed to collect chunks from child at 0x%x: %w", childAddr, err)
+		if err := childNode.collectChunks(r, offsetSize, chunkDims, visited, chunks); err != nil {
+			return fmt.Errorf("failed to collect chunks from child at 0x%x: %w", childAddr, err)
 		}
-
-		chunks = append(chunks, childChunks...)
 	}
 
-	return chunks, nil
+	return nil
 }

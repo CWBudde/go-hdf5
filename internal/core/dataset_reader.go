@@ -73,34 +73,55 @@ func ReadDatasetFloat64(r io.ReaderAt, header *ObjectHeader, sb *Superblock) ([]
 	}
 
 	// 6. Read data based on layout type.
-	var rawData []byte
+	rawData, err := readRawData(r, layout, dataspace, datatype, sb, filterPipeline)
+	if err != nil {
+		return nil, err
+	}
 
+	// 7. Convert raw bytes to float64 based on datatype.
+	return convertToFloat64(rawData, datatype, totalElements)
+}
+
+// undefinedAddress is HADDR_UNDEF: storage that was never allocated.
+const undefinedAddress = 0xFFFFFFFFFFFFFFFF
+
+// readRawData reads the raw (decoded) bytes of a dataset for any supported
+// layout. All sizes derived from the file are validated before allocation:
+// the returned slice holds at least TotalElements*datatype.Size bytes.
+func readRawData(r io.ReaderAt, layout *DataLayoutMessage, dataspace *DataspaceMessage,
+	datatype *DatatypeMessage, sb *Superblock, filterPipeline *FilterPipelineMessage,
+) ([]byte, error) {
+	if datatype.Size == 0 {
+		return nil, errors.New("invalid datatype size 0")
+	}
+	totalElements := dataspace.TotalElements()
+	dataSize, err := utils.SafeMultiply(totalElements, uint64(datatype.Size))
+	if err != nil {
+		return nil, fmt.Errorf("dataset size overflow: %w", err)
+	}
+
+	var rawData []byte
 	switch {
 	case layout.IsCompact():
 		// Data is stored directly in the layout message.
 		rawData = layout.CompactData
 
 	case layout.IsContiguous():
-		// Data is stored contiguously at specific address.
-		dataSize := totalElements * uint64(datatype.Size)
-		rawData = make([]byte, dataSize)
-
-		// HADDR_UNDEF (0xFFFFFFFFFFFFFFFF) signals lazy / unallocated
-		// storage. netCDF emits this for dimension coordinates that
-		// were never written. Treat as a fully zero-filled (fill-value)
-		// read so the shape is preserved.
-		if layout.DataAddress == 0xFFFFFFFFFFFFFFFF {
-			break
+		// HADDR_UNDEF signals lazy / unallocated storage. netCDF emits this
+		// for dimension coordinates that were never written. Treat as a fully
+		// zero-filled (fill-value) read so the shape is preserved.
+		if layout.DataAddress == undefinedAddress {
+			if err := utils.CheckDecodedSize(r, dataSize, "unallocated dataset"); err != nil {
+				return nil, err
+			}
+			return make([]byte, dataSize), nil
 		}
-
-		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-		_, err := r.ReadAt(rawData, int64(layout.DataAddress))
+		rawData, err = utils.ReadAtChecked(r, layout.DataAddress, dataSize, "contiguous data")
 		if err != nil {
-			return nil, fmt.Errorf("failed to read contiguous data: %w", err)
+			return nil, err
 		}
 
 	case layout.IsChunked():
-		// Data is stored in chunks indexed by B-tree.
 		rawData, err = readChunkedData(r, layout, dataspace, datatype, sb, filterPipeline)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read chunked data: %w", err)
@@ -110,12 +131,19 @@ func ReadDatasetFloat64(r io.ReaderAt, header *ObjectHeader, sb *Superblock) ([]
 		return nil, fmt.Errorf("unsupported layout class: %d", layout.Class)
 	}
 
-	// 7. Convert raw bytes to float64 based on datatype.
-	return convertToFloat64(rawData, datatype, totalElements)
+	if uint64(len(rawData)) < dataSize {
+		return nil, fmt.Errorf("dataset data truncated: have %d bytes, need %d", len(rawData), dataSize)
+	}
+	return rawData, nil
 }
 
 // convertToFloat64 converts raw bytes to float64 array based on datatype.
 func convertToFloat64(rawData []byte, datatype *DatatypeMessage, numElements uint64) ([]float64, error) {
+	// Never allocate more elements than the raw data can hold (4 bytes is the
+	// smallest supported element width).
+	if numElements > uint64(len(rawData))/4 {
+		return nil, errors.New("data truncated")
+	}
 	result := make([]float64, numElements)
 	byteOrder := datatype.GetByteOrder()
 
@@ -241,6 +269,23 @@ func readChunkedData(r io.ReaderAt, layout *DataLayoutMessage, dataspace *Datasp
 	// Note: chunk dimensions may include an extra dimension for datatype size.
 	// (HDF5 stores "fastest-varying dimension" as bytes, see H5Dbtree.c comments).
 	ndims := len(layout.ChunkSize)
+	dataDims := dataspace.Dimensions
+	if ndims < len(dataDims) || ndims == 0 {
+		return nil, fmt.Errorf("chunk dimensionality %d does not match dataspace rank %d", ndims, len(dataDims))
+	}
+	for i, c := range layout.ChunkSize {
+		if c == 0 {
+			return nil, fmt.Errorf("invalid zero chunk dimension %d", i)
+		}
+	}
+	expectedChunkBytes, err := utils.CalculateChunkSize64(layout.ChunkSize, 1)
+	if err != nil {
+		return nil, err
+	}
+	if expectedChunkBytes > utils.MaxChunkSize {
+		return nil, fmt.Errorf("chunk size %d exceeds limit %d", expectedChunkBytes, utils.MaxChunkSize)
+	}
+
 	btree, err := ParseBTreeV1Node(r, layout.DataAddress, sb.OffsetSize, ndims, layout.ChunkSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse B-tree: %w", err)
@@ -256,8 +301,9 @@ func readChunkedData(r io.ReaderAt, layout *DataLayoutMessage, dataspace *Datasp
 		return nil, fmt.Errorf("dataset size overflow: %w", err)
 	}
 
-	// Validate total size is within reasonable limits.
-	if err := utils.ValidateBufferSize(totalBytes, utils.MaxChunkSize*1024, "dataset"); err != nil {
+	// Validate total size is within reasonable limits (the data may be
+	// compressed or fill-valued, so it is bounded relative to the file size).
+	if err := utils.CheckDecodedSize(r, totalBytes, "dataset"); err != nil {
 		return nil, fmt.Errorf("dataset too large: %w", err)
 	}
 
@@ -280,17 +326,19 @@ func readChunkedData(r io.ReaderAt, layout *DataLayoutMessage, dataspace *Datasp
 			return nil, fmt.Errorf("invalid chunk size at 0x%x: %w", chunkAddr, err)
 		}
 
+		if len(chunkKey.Scaled) < len(dataDims) {
+			return nil, fmt.Errorf("chunk key at 0x%x has too few dimensions", chunkAddr)
+		}
+
 		// Read chunk data.
-		chunkData := make([]byte, chunkKey.Nbytes)
-		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-		_, err := r.ReadAt(chunkData, int64(chunkAddr))
+		chunkData, err := utils.ReadAtChecked(r, chunkAddr, uint64(chunkKey.Nbytes), "chunk data")
 		if err != nil {
 			return nil, fmt.Errorf("failed to read chunk at 0x%x: %w", chunkAddr, err)
 		}
 
 		// Apply filters (decompression, etc) if present.
 		if filterPipeline != nil {
-			chunkData, err = filterPipeline.ApplyFilters(chunkData)
+			chunkData, err = filterPipeline.ApplyFiltersLimit(chunkData, expectedChunkBytes)
 			if err != nil {
 				return nil, fmt.Errorf("failed to apply filters to chunk at 0x%x: %w", chunkAddr, err)
 			}
@@ -302,7 +350,6 @@ func readChunkedData(r io.ReaderAt, layout *DataLayoutMessage, dataspace *Datasp
 
 		// Trim chunk dimensions to match dataset dimensions.
 		// (chunk may have extra dimension for datatype size).
-		dataDims := dataspace.Dimensions
 		actualChunkDims := layout.ChunkSize[:len(dataDims)]
 		actualChunkCoords := chunkKey.Scaled[:len(dataDims)]
 

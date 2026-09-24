@@ -91,11 +91,11 @@ func LoadLocalHeap(r io.ReaderAt, address uint64, sb *core.Superblock) (*LocalHe
 	}
 
 	// Allocate and read data segment from the ACTUAL address in the header
-	heap.Data = make([]byte, dataSegmentSize)
-	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-	if _, err := r.ReadAt(heap.Data, int64(dataSegmentAddr)); err != nil {
-		return nil, utils.WrapError("local heap data read failed", err)
+	data, err := utils.ReadAtChecked(r, dataSegmentAddr, dataSegmentSize, "local heap data")
+	if err != nil {
+		return nil, err
 	}
+	heap.Data = data
 
 	return heap, nil
 }
