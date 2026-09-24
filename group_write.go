@@ -627,8 +627,15 @@ func (fw *FileWriter) CreateDenseGroup(name string, links map[string]string) err
 	// Create DenseGroupWriter
 	dgw := writer.NewDenseGroupWriter(name)
 
-	// Add all links
-	for linkName, targetPath := range links {
+	// Add all links in name order: map iteration order is random and must
+	// not decide the on-disk layout (identical inputs -> identical files).
+	linkNames := make([]string, 0, len(links))
+	for linkName := range links {
+		linkNames = append(linkNames, linkName)
+	}
+	sort.Strings(linkNames)
+	for _, linkName := range linkNames {
+		targetPath := links[linkName]
 		// Resolve target path to object header address
 		targetAddr, err := fw.resolveObjectAddress(targetPath)
 		if err != nil {

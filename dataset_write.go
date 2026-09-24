@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 	"unsafe"
 
@@ -593,6 +594,44 @@ type FileWriteConfig struct {
 	SuperblockVersion uint8                  // HDF5 superblock version (0, 2, or 3)
 	BTreeRebalancing  bool                   // Enable B-tree rebalancing after deletions (default: true)
 	RootAttributes    map[string]interface{} // Attributes to add to root group during creation
+
+	// rootAttributeOrder records the order in which WithRootAttribute added
+	// names, so files are written deterministically.
+	rootAttributeOrder []string
+}
+
+// namedAttribute is an attribute name/value pair in write order.
+type namedAttribute struct {
+	name  string
+	value interface{}
+}
+
+// orderedRootAttributes returns the root attributes in insertion order
+// (WithRootAttribute call order). Entries placed in RootAttributes directly
+// follow in name order. Map iteration order is random, so it must never
+// decide the on-disk layout: identical inputs must produce identical files.
+func (cfg *FileWriteConfig) orderedRootAttributes() []namedAttribute {
+	out := make([]namedAttribute, 0, len(cfg.RootAttributes))
+	seen := make(map[string]bool, len(cfg.RootAttributes))
+	for _, name := range cfg.rootAttributeOrder {
+		value, ok := cfg.RootAttributes[name]
+		if !ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, namedAttribute{name, value})
+	}
+	rest := make([]string, 0, len(cfg.RootAttributes)-len(out))
+	for name := range cfg.RootAttributes {
+		if !seen[name] {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	for _, name := range rest {
+		out = append(out, namedAttribute{name, cfg.RootAttributes[name]})
+	}
+	return out
 }
 
 // WithSuperblockVersion sets the HDF5 superblock version.
@@ -680,6 +719,9 @@ func WithRootAttribute(name string, value interface{}) WriteOption {
 		if cfg.RootAttributes == nil {
 			cfg.RootAttributes = make(map[string]interface{})
 		}
+		if _, exists := cfg.RootAttributes[name]; !exists {
+			cfg.rootAttributeOrder = append(cfg.rootAttributeOrder, name)
+		}
 		cfg.RootAttributes[name] = value
 	}
 }
@@ -753,7 +795,7 @@ func CreateForWrite(filename string, mode CreateMode, opts ...interface{}) (*Fil
 	}()
 
 	// Create root group with Symbol Table structure
-	rootInfo, err := createRootGroupStructure(fw, cfg.SuperblockVersion, cfg.RootAttributes)
+	rootInfo, err := createRootGroupStructure(fw, cfg.SuperblockVersion, cfg.orderedRootAttributes())
 	if err != nil {
 		return nil, err
 	}
@@ -2836,7 +2878,7 @@ type rootGroupInfo struct {
 // Returns information about the created root group structure.
 // createRootGroupStructure creates the root group structures.
 // Dispatches to version-specific implementation based on superblock version.
-func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8, rootAttributes map[string]interface{}) (*rootGroupInfo, error) {
+func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8, rootAttributes []namedAttribute) (*rootGroupInfo, error) {
 	if superblockVersion == core.Version0 {
 		return createRootGroupStructureV0(fw, rootAttributes)
 	}
@@ -2845,7 +2887,7 @@ func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8, ro
 
 // createRootGroupStructureV2 creates root group for modern format (v2/v3).
 // Order: Heap → B-tree → Object Header (v2 doesn't cache addresses in superblock).
-func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes map[string]interface{}) (*rootGroupInfo, error) {
+func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes []namedAttribute) (*rootGroupInfo, error) {
 	const offsetSize = 8
 	const lengthSize = 8
 
@@ -2896,7 +2938,7 @@ func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes map[string
 // past them so that the root object header (v1, whose size depends on the
 // root attributes), dense attribute storage and all later objects are
 // allocated after the fixed region instead of overwriting it.
-func createRootGroupStructureV0(fw *writer.FileWriter, rootAttributes map[string]interface{}) (*rootGroupInfo, error) {
+func createRootGroupStructureV0(fw *writer.FileWriter, rootAttributes []namedAttribute) (*rootGroupInfo, error) {
 	const offsetSize = 8
 	const lengthSize = 8
 	const superblockSize = 96
@@ -3037,14 +3079,15 @@ func createBTreeNode(fw *writer.FileWriter, stNodeAddr uint64, offsetSize int) (
 // messages: inline Attribute messages for up to MaxCompactAttributes
 // attributes, otherwise dense storage (fractal heap + B-tree v2, written now)
 // referenced by an Attribute Info message.
-func buildRootAttributeMessages(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes map[string]interface{}) ([]core.MessageWriter, error) {
+func buildRootAttributeMessages(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes []namedAttribute) ([]core.MessageWriter, error) {
 	if len(rootAttributes) > MaxCompactAttributes {
 		return buildDenseRootAttributes(fw, offsetSize, lengthSize, rootAttributes)
 	}
 
 	messages := make([]core.MessageWriter, 0, len(rootAttributes))
-	for name, value := range rootAttributes {
-		attr, err := newRootAttribute(name, value)
+	for _, na := range rootAttributes {
+		name := na.name
+		attr, err := newRootAttribute(name, na.value)
 		if err != nil {
 			return nil, err
 		}
@@ -3072,7 +3115,7 @@ func newRootAttribute(name string, value interface{}) (*core.Attribute, error) {
 
 // buildDenseRootAttributes writes the attributes to dense storage and returns
 // the Attribute Info message referencing it.
-func buildDenseRootAttributes(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes map[string]interface{}) ([]core.MessageWriter, error) {
+func buildDenseRootAttributes(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes []namedAttribute) ([]core.MessageWriter, error) {
 	denseWriter := writer.NewDenseAttributeWriter(0)
 
 	// Superblock for encoding (dense attribute writer only needs sizes/endianness)
@@ -3083,8 +3126,9 @@ func buildDenseRootAttributes(fw *writer.FileWriter, offsetSize, lengthSize int,
 		Endianness: binary.LittleEndian,
 	}
 
-	for name, value := range rootAttributes {
-		attr, err := newRootAttribute(name, value)
+	for _, na := range rootAttributes {
+		name := na.name
+		attr, err := newRootAttribute(name, na.value)
 		if err != nil {
 			return nil, err
 		}
@@ -3108,7 +3152,7 @@ func buildDenseRootAttributes(fw *writer.FileWriter, offsetSize, lengthSize int,
 // header (symbol table message + attributes). objectHeaderVersion is 1 for
 // superblock v0 files and 2 otherwise.
 // Returns the address where the header was written and its size.
-func writeRootGroupHeader(fw *writer.FileWriter, btreeAddr, heapAddr uint64, offsetSize, lengthSize int, objectHeaderVersion uint8, rootAttributes map[string]interface{}) (uint64, uint64, error) {
+func writeRootGroupHeader(fw *writer.FileWriter, btreeAddr, heapAddr uint64, offsetSize, lengthSize int, objectHeaderVersion uint8, rootAttributes []namedAttribute) (uint64, uint64, error) {
 	stMsg := core.EncodeSymbolTableMessage(btreeAddr, heapAddr, offsetSize, lengthSize)
 	messages := []core.MessageWriter{{Type: core.MsgSymbolTable, Data: stMsg}}
 

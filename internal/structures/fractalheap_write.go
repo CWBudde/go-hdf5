@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
 	"github.com/cwbudde/go-hdf5/internal/utils"
@@ -385,8 +386,15 @@ func (fh *WritableFractalHeap) insertViaIndirect(data []byte) ([]byte, error) {
 	var targetBlock *WritableDirectBlock
 	var targetOffset uint64
 
-	// Try each existing child block
-	for offset, block := range fh.DirectBlocks {
+	// Try each existing child block, lowest heap offset first (map iteration
+	// order is random and must not influence the file layout).
+	blockOffsets := make([]uint64, 0, len(fh.DirectBlocks))
+	for offset := range fh.DirectBlocks {
+		blockOffsets = append(blockOffsets, offset)
+	}
+	sort.Slice(blockOffsets, func(i, j int) bool { return blockOffsets[i] < blockOffsets[j] })
+	for _, offset := range blockOffsets {
+		block := fh.DirectBlocks[offset]
 		if block.FreeOffset+dataSize <= block.Size {
 			targetBlock = block
 			targetOffset = offset
