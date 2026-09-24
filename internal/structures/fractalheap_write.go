@@ -63,6 +63,87 @@ type WritableFractalHeap struct {
 	// Addresses loaded from file (for RMW scenarios)
 	loadedHeaderAddress      uint64
 	loadedDirectBlockAddress uint64
+
+	// growDirectRoot makes a full root direct block grow (double) instead of
+	// transitioning to an indirect root; see NewGrowableFractalHeap.
+	growDirectRoot bool
+	// directBlockMoved is set when the root direct block grew after the heap
+	// was loaded from file: it must be written to newly allocated space.
+	directBlockMoved bool
+}
+
+// Direct block sizes used for dense attribute and link storage. The HDF5
+// library starts dense-storage heaps with small direct blocks (1 KiB for
+// attributes as written by libhdf5, 512 bytes for links) and a 64 KiB
+// maximum direct block size.
+const (
+	AttributeHeapStartBlockSize = 1024
+	LinkHeapStartBlockSize      = 512
+	DefaultMaxDirectBlockSize   = 64 * 1024
+	maxGrowableDirectBlockSize  = 1 << 30
+)
+
+// NewGrowableFractalHeap creates a fractal heap whose root is a single direct
+// block of startBlockSize bytes (a power of two) that doubles in size when an
+// object does not fit. Heap IDs stay valid when the block grows because the
+// root block always starts at heap offset 0 and its header size is fixed.
+//
+// This keeps small dense storages small (a few attributes need ~1 KiB instead
+// of a 64 KiB block) while allowing any number of objects.
+func NewGrowableFractalHeap(startBlockSize uint64) *WritableFractalHeap {
+	fh := NewWritableFractalHeap(startBlockSize)
+	fh.growDirectRoot = true
+	if fh.Header.MaxDirectBlockSize < DefaultMaxDirectBlockSize {
+		fh.Header.MaxDirectBlockSize = DefaultMaxDirectBlockSize
+		fh.MaxDirectBlockSize = DefaultMaxDirectBlockSize
+	}
+	return fh
+}
+
+// EnableDirectRootGrowth enables root direct block growth (see
+// NewGrowableFractalHeap) for a heap, e.g. before or after LoadFromFile.
+func (fh *WritableFractalHeap) EnableDirectRootGrowth() {
+	fh.growDirectRoot = true
+}
+
+// directBlockCapacity returns the number of object bytes that fit into the
+// root direct block (block size minus header and trailing checksum).
+func (fh *WritableFractalHeap) directBlockCapacity(blockSize uint64) uint64 {
+	overhead := fh.directBlockHeaderSize() + 4
+	if blockSize <= overhead {
+		return 0
+	}
+	return blockSize - overhead
+}
+
+// growDirectRootFor doubles the root direct block until dataSize more bytes fit.
+func (fh *WritableFractalHeap) growDirectRootFor(dataSize uint64) error {
+	db := fh.DirectBlock
+	newSize := db.Size
+	for db.FreeOffset+dataSize > fh.directBlockCapacity(newSize) {
+		newSize *= 2
+		if newSize > maxGrowableDirectBlockSize {
+			return fmt.Errorf("%w: direct block would exceed %d bytes", ErrHeapFull, maxGrowableDirectBlockSize)
+		}
+	}
+	if newSize == db.Size {
+		return nil
+	}
+
+	delta := newSize - db.Size
+	db.Size = newSize
+	fh.Header.StartingBlockSize = newSize
+	if fh.Header.MaxDirectBlockSize < newSize {
+		fh.Header.MaxDirectBlockSize = newSize
+		fh.MaxDirectBlockSize = newSize
+	}
+	fh.Header.ManagedSpaceSize += delta
+	fh.Header.AllocatedManagedSpace += delta
+	fh.Header.FreeSpace += delta
+	if fh.loadedDirectBlockAddress != 0 {
+		fh.directBlockMoved = true
+	}
+	return nil
 }
 
 // WritableHeapHeader represents a fractal heap header for writing.
@@ -304,6 +385,15 @@ func (fh *WritableFractalHeap) InsertObject(data []byte) ([]byte, error) {
 	if dataSize > uint64(fh.Header.MaxManagedObjectSize) {
 		return nil, fmt.Errorf("%w: object size %d exceeds max %d",
 			ErrObjectTooLarge, dataSize, fh.Header.MaxManagedObjectSize)
+	}
+
+	// Growable heaps enlarge their root direct block instead of switching to
+	// an indirect root.
+	if fh.growDirectRoot && fh.RootIndirectBlock == nil &&
+		fh.DirectBlock.FreeOffset+dataSize > fh.directBlockCapacity(fh.DirectBlock.Size) {
+		if err := fh.growDirectRootFor(dataSize); err != nil {
+			return nil, err
+		}
 	}
 
 	// Check if transition to indirect root is needed
@@ -588,9 +678,28 @@ func (fh *WritableFractalHeap) WriteToFile(writer Writer, allocator Allocator, s
 //
 // Reference: Same as WriteToFile, but uses stored addresses.
 func (fh *WritableFractalHeap) WriteAt(writer Writer, sb *core.Superblock) error {
+	return fh.WriteAtWithAllocator(writer, nil, sb)
+}
+
+// WriteAtWithAllocator is WriteAt for heaps whose root direct block may have
+// grown since loading: the enlarged block is written to newly allocated space
+// (the old block is abandoned) and the header is updated to point to it.
+func (fh *WritableFractalHeap) WriteAtWithAllocator(writer Writer, allocator Allocator, sb *core.Superblock) error {
 	// Verify this heap was loaded from file
 	if fh.loadedHeaderAddress == 0 {
 		return errors.New("cannot use WriteAt: heap not loaded from file (use WriteToFile for new heaps)")
+	}
+
+	if fh.directBlockMoved {
+		if allocator == nil {
+			return errors.New("fractal heap direct block grew: an allocator is required to relocate it")
+		}
+		addr, err := allocator.Allocate(fh.DirectBlock.Size)
+		if err != nil {
+			return fmt.Errorf("failed to allocate grown direct block: %w", err)
+		}
+		fh.loadedDirectBlockAddress = addr
+		fh.directBlockMoved = false
 	}
 
 	// Update cross-references (in case they were cleared)

@@ -59,8 +59,8 @@ type denseLink struct {
 func NewDenseGroupWriter(name string) *DenseGroupWriter {
 	return &DenseGroupWriter{
 		name:        name,
-		fractalHeap: structures.NewWritableFractalHeap(512 * 1024), // 512KB default
-		btree:       structures.NewWritableBTreeV2(4096),           // 4KB node
+		fractalHeap: structures.NewGrowableFractalHeap(structures.LinkHeapStartBlockSize), // grows as needed
+		btree:       structures.NewWritableBTreeV2(4096),                                  // 4KB node
 		linkInfo: &core.LinkInfoMessage{
 			Version: 0,
 			Flags:   0, // No creation order tracking for MVP
@@ -197,51 +197,34 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 //
 // Reference: H5Ollink.c - H5O__link_encode().
 func (dgw *DenseGroupWriter) createLinkMessage(link denseLink, sb *core.Superblock) []byte {
+	// Link message, version 1 (H5O__link_encode):
+	//   version (1) | flags (1) | [link type] [creation order] [charset] |
+	//   name length (1/2/4/8 bytes, flags bits 0-1) | name | link info
+	// A hard link with an ASCII name needs no optional fields; the link
+	// info is the target object header address.
 	nameBytes := []byte(link.name)
 	nameLen := uint64(len(nameBytes))
 
-	// Calculate message size
-	// Version (1) + Type (1) + Flags (1) + Encoding (1) + Name Length (variable) + Name + Address
-	// For MVP: name length encoded as compact uint64 (1-8 bytes based on value)
-	nameLenSize := compactUint64Size(nameLen)
-	messageSize := 4 + nameLenSize + len(nameBytes) + int(sb.OffsetSize)
+	var sizeCode byte
+	lenBytes := 1
+	switch {
+	case nameLen > 0xFFFFFFFF:
+		sizeCode, lenBytes = 3, 8
+	case nameLen > 0xFFFF:
+		sizeCode, lenBytes = 2, 4
+	case nameLen > 0xFF:
+		sizeCode, lenBytes = 1, 2
+	}
 
-	buf := make([]byte, messageSize)
-	offset := 0
-
-	// Version (1 byte)
-	buf[offset] = 1 // Link message version 1
-	offset++
-
-	// Type (1 byte): 0 = Hard Link
-	buf[offset] = 0
-	offset++
-
-	// Flags (1 byte)
-	// Bit 0: creation order present (0 = no)
-	// Bit 1: link type field present (0 = no, type is in separate field)
-	// Bit 2: link name character set field present (1 = yes)
-	// Bit 3: link name is stored as a creation order (0 = no)
-	// For MVP: only bit 2 set (character set field present)
-	buf[offset] = 0x04 // Character set field present
-	offset++
-
-	// Link Name Character Set Encoding (1 byte)
-	buf[offset] = 0 // ASCII/UTF-8
-	offset++
-
-	// Link Name Length (compact uint64)
-	encodeCompactUint64(buf[offset:], nameLen)
-	offset += nameLenSize
-
-	// Link Name (UTF-8 bytes)
-	copy(buf[offset:], nameBytes)
-	offset += len(nameBytes)
-
-	// Link Info: For hard link, this is the target object header address
-	writeUint64(buf[offset:], link.targetAddr, int(sb.OffsetSize), sb.Endianness)
-
-	return buf
+	buf := make([]byte, 0, 2+lenBytes+len(nameBytes)+int(sb.OffsetSize))
+	buf = append(buf, 1, sizeCode)
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], nameLen)
+	buf = append(buf, lenBuf[:lenBytes]...)
+	buf = append(buf, nameBytes...)
+	addr := make([]byte, sb.OffsetSize)
+	writeUint64(addr, link.targetAddr, int(sb.OffsetSize), sb.Endianness)
+	return append(buf, addr...)
 }
 
 // createObjectHeader creates object header with Link Info Message.

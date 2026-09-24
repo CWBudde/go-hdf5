@@ -377,7 +377,7 @@ func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
 	attrInfo *core.AttributeInfoMessage, name string, value interface{}, sb *core.Superblock,
 ) error {
 	// Load existing fractal heap from file
-	heap := structures.NewWritableFractalHeap(64 * 1024)
+	heap := structures.NewGrowableFractalHeap(structures.AttributeHeapStartBlockSize) // size comes from the file
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load fractal heap: %w", err)
@@ -448,7 +448,7 @@ func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
 	}
 
 	// Write updated structures back to file (IN-PLACE using WriteAt)
-	err = heap.WriteAt(fw.writer, sb)
+	err = heap.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated heap: %w", err)
 	}
@@ -598,7 +598,7 @@ func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessag
 	name string, sb *core.Superblock,
 ) error {
 	// Load existing fractal heap from file
-	heap := structures.NewWritableFractalHeap(64 * 1024)
+	heap := structures.NewGrowableFractalHeap(structures.AttributeHeapStartBlockSize) // size comes from the file
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load fractal heap: %w", err)
@@ -620,7 +620,7 @@ func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessag
 	}
 
 	// Write updated heap back to file
-	err = heap.WriteAt(fw.writer, sb)
+	err = heap.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated heap: %w", err)
 	}
@@ -674,7 +674,7 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 	}
 
 	// Step 2: Load existing fractal heap from file
-	heap := structures.NewWritableFractalHeap(64 * 1024) // Match size from dense attribute writer
+	heap := structures.NewGrowableFractalHeap(structures.AttributeHeapStartBlockSize) // size comes from the file
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load fractal heap: %w", err)
@@ -748,7 +748,7 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 	// This is true Read-Modify-Write - no new allocations!
 
 	// Write heap in-place at loaded address
-	err = heap.WriteAt(fw.writer, sb)
+	err = heap.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated heap: %w", err)
 	}

@@ -2,8 +2,10 @@ package hdf5
 
 import (
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -112,6 +114,15 @@ func TestInteropH5py(t *testing.T) {
 				require.InDelta(t, 8.0, got["/b"].Sum, 1e-9)
 				require.Len(t, got["/b"].Attrs, 12)
 				require.Equal(t, []interface{}{"hello"}, got["/grp"].Attrs["title"])
+			case "dense_attrs_growing_heap":
+				require.Len(t, got["/"].Attrs, 200)
+				require.Len(t, got["/v"].Attrs, 200)
+				require.Equal(t, []interface{}{strings.Repeat("x", 300) + "-199"}, got["/v"].Attrs["a199"])
+				require.Equal(t, []interface{}{strings.Repeat("x", 300) + "-0"}, got["/"].Attrs["root000"])
+			case "dense_group":
+				for i := 0; i < 12; i++ {
+					require.InDelta(t, 2.0, got[fmt.Sprintf("/dense/l%02d", i)].Sum, 1e-9)
+				}
 			case "many_links":
 				for i := 0; i < 20; i++ {
 					require.Contains(t, got, "/d"+string(rune('0'+i/10))+string(rune('0'+i%10)))

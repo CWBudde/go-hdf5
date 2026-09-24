@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -123,6 +124,37 @@ func compatScenarios() []writeScenario {
 			require.NoError(t, g.WriteAttribute("title", "hello"))
 			closeOK(t, fw)
 		}},
+		{"dense_attrs_growing_heap", func(t *testing.T, p string) {
+			long := strings.Repeat("x", 300)
+			opts := make([]interface{}, 0, 200)
+			for i := 0; i < 200; i++ {
+				opts = append(opts, WithRootAttribute(fmt.Sprintf("root%03d", i), fmt.Sprintf("%s-%d", long, i)))
+			}
+			fw, err := CreateForWrite(p, CreateTruncate, opts...)
+			require.NoError(t, err)
+			ds, err := fw.CreateDataset("/v", Float64, []uint64{2})
+			require.NoError(t, err)
+			require.NoError(t, ds.Write(seqFloat64(2)))
+			// Added one by one after creation: the dense heap's direct block
+			// has to grow (and move) several times.
+			for i := 0; i < 200; i++ {
+				require.NoError(t, ds.WriteAttribute(fmt.Sprintf("a%03d", i), fmt.Sprintf("%s-%d", long, i)))
+			}
+			closeOK(t, fw)
+		}},
+		{"dense_group", func(t *testing.T, p string) {
+			fw, err := CreateForWrite(p, CreateTruncate)
+			require.NoError(t, err)
+			links := map[string]string{}
+			for i := 0; i < 12; i++ {
+				ds, err := fw.CreateDataset(fmt.Sprintf("/d%02d", i), Float64, []uint64{2})
+				require.NoError(t, err)
+				require.NoError(t, ds.Write(seqFloat64(2)))
+				links[fmt.Sprintf("l%02d", i)] = fmt.Sprintf("/d%02d", i)
+			}
+			require.NoError(t, fw.CreateDenseGroup("/dense", links))
+			closeOK(t, fw)
+		}},
 		{"many_links", func(t *testing.T, p string) {
 			fw, err := CreateForWrite(p, CreateTruncate)
 			require.NoError(t, err)
@@ -165,6 +197,24 @@ func TestWrittenFilesSatisfyCLibraryInvariants(t *testing.T) {
 			require.NoError(t, f.Close())
 		})
 	}
+}
+
+// TestDenseAttributeStorageIsCompact guards against oversized dense storage:
+// a handful of short root attributes used to allocate a 64 KiB fractal heap
+// direct block (a ~75 KB file of mostly zeros).
+func TestDenseAttributeStorageIsCompact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dense_small.h5")
+	opts := make([]interface{}, 0, 11)
+	for i := 0; i < 11; i++ {
+		opts = append(opts, WithRootAttribute(fmt.Sprintf("attr%02d", i), fmt.Sprintf("value %d", i)))
+	}
+	fw, err := CreateForWrite(path, CreateTruncate, opts...)
+	require.NoError(t, err)
+	require.NoError(t, fw.Close())
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Less(t, info.Size(), int64(12*1024), "11 short dense attributes should need only a few KiB")
 }
 
 // TestSuperblockEOAMatchesFileSize is the minimal regression test for the
