@@ -360,9 +360,10 @@ func TestFractalHeapRoundTrip(t *testing.T) {
 		t.Fatalf("Failed to open heap: %v", err)
 	}
 
-	// Verify all objects can be read back
+	// Verify all objects can be read back. Heap IDs use HDF5 spec offsets
+	// (measured from the direct block start, including its header).
 	for name, heapID := range heapIDs {
-		data, err := readHeap.ReadObject(heapID)
+		data, err := readHeap.ReadObjectSpecCompliant(heapID)
 		if err != nil {
 			t.Errorf("Failed to read object %s: %v", name, err)
 			continue

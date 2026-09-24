@@ -69,6 +69,38 @@ type ChunkKey struct {
 type ChunkBTreeWriter struct {
 	dimensionality int
 	entries        []ChunkBTreeEntry
+
+	// chunkDims, when set via SetChunkDims, switches the writer to the
+	// on-disk format expected by the HDF5 C library (see SetChunkDims).
+	chunkDims []uint64
+}
+
+// chunkBTreeK is the HDF5 default "indexed storage internal node K"
+// (H5F_CRT_BTREE_RANK / istore_k = 32). The C library always reads chunk
+// B-tree nodes with room for 2K children and 2K+1 keys.
+const chunkBTreeK = 32
+
+// SetChunkDims enables HDF5-compliant serialization:
+//   - keys store chunk offsets in dataset elements (scaled index * chunk
+//     dimension), followed by an extra trailing 0 offset for the datatype
+//     "dimension", as in H5D__btree_encode_key;
+//   - the final key is the chunk just after the last one (last+1 in every
+//     dimension), which is a valid multiple of the chunk dimensions;
+//   - every node is padded to the full 2K entries size and trees with more
+//     than 2K chunks are split into multiple levels.
+//
+// chunkDims must have exactly `dimensionality` entries (the dataset rank).
+func (w *ChunkBTreeWriter) SetChunkDims(chunkDims []uint64) error {
+	if len(chunkDims) != w.dimensionality {
+		return fmt.Errorf("chunk dims rank mismatch: expected %d, got %d", w.dimensionality, len(chunkDims))
+	}
+	for i, d := range chunkDims {
+		if d == 0 {
+			return fmt.Errorf("chunk dimension %d is zero", i)
+		}
+	}
+	w.chunkDims = append([]uint64(nil), chunkDims...)
+	return nil
 }
 
 // ChunkBTreeEntry represents a single chunk in the index.
@@ -167,6 +199,10 @@ func (w *ChunkBTreeWriter) WriteToFile(writer Writer, allocator Allocator) (uint
 		return compareChunkCoords(w.entries[i].Coordinate, w.entries[j].Coordinate) < 0
 	})
 
+	if w.chunkDims != nil {
+		return w.writeHDF5Tree(writer, allocator)
+	}
+
 	// 2. Build node
 	node := &ChunkBTreeNode{
 		Signature:    [4]byte{'T', 'R', 'E', 'E'},
@@ -214,6 +250,89 @@ func (w *ChunkBTreeWriter) WriteToFile(writer Writer, allocator Allocator) (uint
 	}
 
 	return addr, nil
+}
+
+// writeHDF5Tree writes the (possibly multi-level) B-tree in the format the
+// HDF5 C library expects. Entries must already be sorted.
+func (w *ChunkBTreeWriter) writeHDF5Tree(writer Writer, allocator Allocator) (uint64, error) {
+	nd := w.dimensionality + 1 // + datatype "dimension"
+
+	toOffsets := func(scaled []uint64, plusOne bool) []uint64 {
+		out := make([]uint64, nd)
+		for i := 0; i < w.dimensionality; i++ {
+			v := scaled[i]
+			if plusOne {
+				v++
+			}
+			out[i] = v * w.chunkDims[i]
+		}
+		return out
+	}
+
+	// Level 0: one key per chunk plus the right-most key.
+	keys := make([]ChunkKey, 0, len(w.entries)+1)
+	children := make([]uint64, 0, len(w.entries))
+	for _, e := range w.entries {
+		keys = append(keys, ChunkKey{Coords: toOffsets(e.Coordinate, false), Nbytes: e.Nbytes})
+		children = append(children, e.Address)
+	}
+	keys = append(keys, ChunkKey{Coords: toOffsets(w.entries[len(w.entries)-1].Coordinate, true)})
+
+	nodeSize := uint64(24 + 2*chunkBTreeK*8 + (2*chunkBTreeK+1)*(8+nd*8)) //nolint:gosec // G115: small constants
+
+	for level := uint8(0); ; level++ {
+		numNodes := (len(children) + 2*chunkBTreeK - 1) / (2 * chunkBTreeK)
+		addrs := make([]uint64, numNodes)
+		for i := range addrs {
+			addr, err := allocator.Allocate(nodeSize)
+			if err != nil {
+				return 0, fmt.Errorf("failed to allocate space for B-tree node: %w", err)
+			}
+			addrs[i] = addr
+		}
+
+		parentKeys := make([]ChunkKey, 0, numNodes+1)
+		for i := 0; i < numNodes; i++ {
+			lo := i * 2 * chunkBTreeK
+			hi := lo + 2*chunkBTreeK
+			if hi > len(children) {
+				hi = len(children)
+			}
+			node := &ChunkBTreeNode{
+				Signature:    [4]byte{'T', 'R', 'E', 'E'},
+				NodeType:     1,
+				NodeLevel:    level,
+				EntriesUsed:  uint16(hi - lo), //nolint:gosec // G115: at most 2K
+				LeftSibling:  ^uint64(0),
+				RightSibling: ^uint64(0),
+				Keys:         keys[lo : hi+1],
+				ChildAddrs:   children[lo:hi],
+			}
+			if i > 0 {
+				node.LeftSibling = addrs[i-1]
+			}
+			if i < numNodes-1 {
+				node.RightSibling = addrs[i+1]
+			}
+
+			buf := make([]byte, nodeSize)
+			copy(buf, serializeChunkBTreeNode(node, nd))
+			if err := writer.WriteAtAddress(buf, addrs[i]); err != nil {
+				return 0, fmt.Errorf("failed to write B-tree node at address %d: %w", addrs[i], err)
+			}
+			parentKeys = append(parentKeys, keys[lo])
+		}
+
+		if numNodes == 1 {
+			return addrs[0], nil
+		}
+		if level == 255 {
+			return 0, fmt.Errorf("chunk B-tree too deep")
+		}
+		parentKeys = append(parentKeys, keys[len(keys)-1])
+		keys = parentKeys
+		children = addrs
+	}
 }
 
 // serializeChunkBTreeNode serializes node to bytes.

@@ -29,9 +29,13 @@ import (
 // Format (version 3, chunked):
 //   - Version: 1 byte (3)
 //   - Class: 1 byte (2 for chunked)
-//   - Dimensionality: 1 byte
-//   - B-tree Address: offsetSize bytes
-//   - Chunk Dimensions: dimensionality * 4 bytes (uint32 each)
+//   - Dimensionality: 1 byte (dataset rank + 1)
+//   - B-tree Address: offsetSize bytes (UNDEF if no chunk written yet)
+//   - Chunk Dimensions: rank * 4 bytes (uint32 each), followed by the
+//     datatype element size in bytes (4 bytes)
+//
+// For LayoutChunked the dataSize argument is the datatype element size in
+// bytes (the size of the extra, last chunk "dimension").
 //
 // Reference: HDF5 spec III.D (Data Storage - Data Layout Message)
 // C Reference: H5Olayout.c - H5O__layout_encode()..
@@ -49,7 +53,10 @@ func EncodeLayoutMessage(
 		if len(chunkDims) == 0 {
 			return nil, fmt.Errorf("chunk dimensions required for chunked layout")
 		}
-		return encodeChunkedLayout(chunkDims, dataAddress, sb)
+		if dataSize == 0 || dataSize > 0xFFFFFFFF {
+			return nil, fmt.Errorf("chunked layout requires the datatype element size (got %d)", dataSize)
+		}
+		return encodeChunkedLayout(chunkDims, uint32(dataSize), dataAddress, sb)
 
 	default:
 		return nil, fmt.Errorf("unsupported layout class for writing: %d", layoutClass)
@@ -99,12 +106,14 @@ func encodeContiguousLayout(dataSize, dataAddress uint64, sb *Superblock) ([]byt
 //   - Chunk Dimensions: dimensionality * 4 bytes (uint32 each)
 //
 // Reference: H5Olayout.c - H5O__layout_encode() for chunked case.
-func encodeChunkedLayout(chunkDims []uint64, btreeAddress uint64, sb *Superblock) ([]byte, error) {
+func encodeChunkedLayout(chunkDims []uint64, elementSize uint32, btreeAddress uint64, sb *Superblock) ([]byte, error) {
 	if len(chunkDims) == 0 {
 		return nil, fmt.Errorf("chunk dimensions cannot be empty")
 	}
 
-	dimensionality := len(chunkDims)
+	// The on-disk dimensionality is rank+1: the last "dimension" is the
+	// datatype size in bytes (H5O__layout_encode / H5D__chunk_construct).
+	dimensionality := len(chunkDims) + 1
 	if dimensionality > 255 {
 		return nil, fmt.Errorf("dimensionality %d exceeds maximum 255", dimensionality)
 	}
@@ -117,7 +126,7 @@ func encodeChunkedLayout(chunkDims []uint64, btreeAddress uint64, sb *Superblock
 	}
 
 	// Calculate total message size
-	// Version (1) + Class (1) + Dimensionality (1) + BTreeAddress (OffsetSize) + ChunkDims (4*N)
+	// Version (1) + Class (1) + Dimensionality (1) + BTreeAddress (OffsetSize) + ChunkDims (4*(rank+1))
 	messageSize := 3 + int(sb.OffsetSize) + dimensionality*4
 	buf := make([]byte, messageSize)
 
@@ -139,11 +148,12 @@ func encodeChunkedLayout(chunkDims []uint64, btreeAddress uint64, sb *Superblock
 	writeUint64(buf[offset:], btreeAddress, int(sb.OffsetSize), sb.Endianness)
 	offset += int(sb.OffsetSize)
 
-	// Chunk dimensions (each 4 bytes, uint32)
+	// Chunk dimensions (each 4 bytes, uint32), followed by the element size.
 	for _, dim := range chunkDims {
 		binary.LittleEndian.PutUint32(buf[offset:], uint32(dim)) //nolint:gosec // G115: HDF5 limits dimensions to uint32
 		offset += 4
 	}
+	binary.LittleEndian.PutUint32(buf[offset:], elementSize)
 
 	return buf, nil
 }
@@ -215,55 +225,44 @@ func encodeDatatypeNumeric(dt *DatatypeMessage) ([]byte, error) {
 		return nil, fmt.Errorf("invalid numeric datatype size: %d (must be 1, 2, 4, or 8)", dt.Size)
 	}
 
-	// For numeric types, properties contain:
-	// - Byte Order: 1 byte
-	// - Precision: 1 byte
-	// - Offset: 1 byte
-	// Plus additional fields for floating-point types
+	// Properties per HDF5 spec (Datatype message, classes 0 and 1):
+	//   Fixed-point:    bit offset (2) + bit precision (2)
+	//   Floating-point: bit offset (2) + bit precision (2) + exponent location (1) +
+	//                   exponent size (1) + mantissa location (1) + mantissa size (1) +
+	//                   exponent bias (4)
 	var properties []byte
+	classBitField := dt.ClassBitField
+	precision := uint16(dt.Size * 8) //nolint:gosec // G115: size validated above (1..8)
 
 	if dt.Class == DatatypeFloat {
-		// Floating-point properties (12 bytes total)
-		// Byte order (bit 0 of ClassBitField), little-endian = 0
-		byteOrder := byte(dt.ClassBitField & 0x01)
-
-		// For IEEE 754:
-		// - float32: mantissa=23 bits, exponent=8 bits
-		// - float64: mantissa=52 bits, exponent=11 bits
-		var mantissaBits, exponentBits uint8
-		var exponentBias uint8
-
+		var expLoc, expSize, mantSize uint8
+		var bias uint32
 		switch dt.Size {
 		case 4:
-			// float32
-			mantissaBits = 23
-			exponentBits = 8
-			exponentBias = 127
+			expLoc, expSize, mantSize, bias = 23, 8, 23, 127
 		case 8:
-			// float64
-			mantissaBits = 52
-			exponentBits = 11
-			//nolint:mnd // Standard IEEE 754 bias for float64
-			exponentBias = 127 // Will be adjusted in full implementation
+			expLoc, expSize, mantSize, bias = 52, 11, 52, 1023
 		default:
 			return nil, fmt.Errorf("unsupported float size: %d", dt.Size)
 		}
 
+		// Class bit field for IEEE 754: keep byte order (bit 0) and padding
+		// bits (1-3), mantissa normalization "implied" (bits 4-5 = 2),
+		// sign bit location in bits 8-15.
+		classBitField = (classBitField & 0x0F) | 0x20 | (uint32(precision-1) << 8)
+
 		properties = make([]byte, 12)
-		properties[0] = byteOrder         // Byte order
-		properties[1] = byte(dt.Size * 8) // Precision in bits
-		properties[2] = 0                 // Offset (always 0 for standard floats)
-		properties[3] = exponentBits      // Exponent size
-		properties[4] = mantissaBits      // Mantissa size
-		properties[5] = exponentBias      // Exponent bias
-		// Remaining bytes: mantissa location, exponent location, etc. (set to 0 for standard)
+		binary.LittleEndian.PutUint16(properties[0:2], 0)         // Bit offset
+		binary.LittleEndian.PutUint16(properties[2:4], precision) // Bit precision
+		properties[4] = expLoc                                    // Exponent location
+		properties[5] = expSize                                   // Exponent size
+		properties[6] = 0                                         // Mantissa location
+		properties[7] = mantSize                                  // Mantissa size
+		binary.LittleEndian.PutUint32(properties[8:12], bias)     // Exponent bias
 	} else {
-		// Fixed-point (integer) properties (4 bytes)
 		properties = make([]byte, 4)
-		properties[0] = byte(dt.ClassBitField & 0x01) // Byte order (little-endian = 0)
-		properties[1] = byte(dt.Size * 8)             // Precision in bits
-		properties[2] = 0                             // Offset
-		properties[3] = 0                             // Padding type
+		binary.LittleEndian.PutUint16(properties[0:2], 0)         // Bit offset
+		binary.LittleEndian.PutUint16(properties[2:4], precision) // Bit precision
 	}
 
 	// Build message: header (8 bytes) + properties
@@ -271,7 +270,7 @@ func encodeDatatypeNumeric(dt *DatatypeMessage) ([]byte, error) {
 	buf := make([]byte, messageSize)
 
 	// Pack class, version, and class bit field into bytes 0-3
-	classAndVersion := uint32(dt.Class) | (uint32(version) << 4) | (dt.ClassBitField << 8)
+	classAndVersion := uint32(dt.Class) | (uint32(version) << 4) | (classBitField << 8)
 	binary.LittleEndian.PutUint32(buf[0:4], classAndVersion)
 
 	// Size (bytes 4-7)

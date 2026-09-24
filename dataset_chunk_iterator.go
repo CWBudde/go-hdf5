@@ -111,10 +111,17 @@ func (d *Dataset) ChunkIteratorWithContext(ctx context.Context) (*ChunkIterator,
 		return nil, fmt.Errorf("failed to collect chunk coordinates: %w", err)
 	}
 
+	// The on-disk chunk dimensions carry an extra trailing "dimension" (the
+	// datatype size in bytes); expose only the dataset-rank dimensions.
+	chunkDims := layout.ChunkSize
+	if len(chunkDims) > len(dataspace.Dimensions) {
+		chunkDims = chunkDims[:len(dataspace.Dimensions)]
+	}
+
 	return &ChunkIterator{
 		dataset:     d,
 		chunkCoords: chunkCoords,
-		chunkDims:   layout.ChunkSize,
+		chunkDims:   chunkDims,
 		datasetDims: dataspace.Dimensions,
 		current:     0,
 		ctx:         ctx,

@@ -46,7 +46,7 @@ func NewDenseAttributeWriter(objectAddr uint64) *DenseAttributeWriter {
 	return &DenseAttributeWriter{
 		objectAddr:  objectAddr,
 		fractalHeap: structures.NewWritableFractalHeap(64 * 1024), // 64KB heap for attributes
-		btree:       structures.NewWritableBTreeV2(4096),          // 4KB B-tree node
+		btree:       structures.NewWritableAttrBTreeV2(4096),      // 4KB B-tree node (type 8: attribute name index)
 		attrInfo: &core.AttributeInfoMessage{
 			Version: 0,
 			Flags:   0, // No creation order tracking for MVP

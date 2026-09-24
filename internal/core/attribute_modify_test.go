@@ -387,7 +387,7 @@ func TestModifyCompactAttribute_DifferentSize_ReplaceMessage(t *testing.T) {
 	// Verify: Read back
 	ohRead, err := ReadObjectHeader(writer, 0x1000, sb)
 	require.NoError(t, err)
-	require.Len(t, ohRead.Messages, 3, "Should have 3 messages (2 dummies + 1 new attribute)")
+	require.Len(t, payloadMessages(ohRead.Messages), 3, "Should have 3 messages (2 dummies + 1 new attribute)")
 
 	// Find attribute message (should be last now, as it was appended)
 	var attrMsg *HeaderMessage
@@ -570,7 +570,7 @@ func TestDeleteCompactAttribute_Success(t *testing.T) {
 	// Verify: Read back and check
 	ohRead, err := ReadObjectHeader(writer, 0x1000, sb)
 	require.NoError(t, err)
-	require.Len(t, ohRead.Messages, 2, "Should have 2 messages after deletion")
+	require.Len(t, payloadMessages(ohRead.Messages), 2, "Should have 2 messages after deletion")
 
 	// Verify remaining attributes are attr1 and attr3
 	attrs := make([]string, 0, 2)
@@ -1050,6 +1050,34 @@ func TestDeleteDenseAttribute_LazyOverridesRebalance(t *testing.T) {
 // mockReaderWriterAt implements io.ReaderAt and io.WriterAt for testing.
 type mockReaderWriterAt struct {
 	data []byte
+	next int64 // next allocation offset (0 = second half of data)
+}
+
+// Allocate implements SpaceAllocator so object headers can spill into
+// continuation chunks when they outgrow their original space.
+func (m *mockReaderWriterAt) Allocate(size uint64) (uint64, error) {
+	if m.next == 0 {
+		m.next = int64(len(m.data) / 2)
+	}
+	addr := m.next
+	if addr+int64(size) > int64(len(m.data)) {
+		return 0, fmt.Errorf("mock allocator out of space")
+	}
+	m.next += int64(size)
+	return uint64(addr), nil
+}
+
+// payloadMessages drops NIL (padding) and continuation messages, which are
+// layout artifacts of in-place object header rewrites.
+func payloadMessages(msgs []*HeaderMessage) []*HeaderMessage {
+	out := make([]*HeaderMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Type == MsgNil || m.Type == MsgContinuation {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func (m *mockReaderWriterAt) ReadAt(p []byte, off int64) (int, error) {

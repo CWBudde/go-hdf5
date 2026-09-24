@@ -131,7 +131,13 @@ type WritableDirectBlock struct {
 func NewWritableFractalHeap(blockSize uint64) *WritableFractalHeap {
 	// Compute heap offset and length sizes
 	// Reference: H5HFhdr.c - H5HF__hdr_finish_init_phase1()
-	maxHeapSize := uint16(16)                      // 16 bits for heap size (65KB max offset)
+	// Max heap size in bits. It must be large enough for the doubling table
+	// of the HDF5 C library (H5HF__dtable_init): max_root_rows =
+	// max_heap_size - log2(start block size) - log2(table width) + 1 must be
+	// positive, otherwise the C library cannot address the root block.
+	// 32 bits gives 4-byte heap offsets, keeping heap IDs within 7 bytes
+	// (1 flag byte + 4 offset bytes + <=2 significant length bytes).
+	maxHeapSize := uint16(32)
 	heapOffsetSize := uint8((maxHeapSize + 7) / 8) //nolint:gosec // G115: Division by 8, result always fits in uint8
 
 	// Length size based on max managed object size
@@ -146,10 +152,10 @@ func NewWritableFractalHeap(blockSize uint64) *WritableFractalHeap {
 
 		MaxManagedObjectSize: DefaultMaxManagedObjectSize,
 		NextHugeObjectID:     0,
-		HugeObjectBTreeAddr:  0,
+		HugeObjectBTreeAddr:  ^uint64(0), // UNDEF: no huge objects
 
-		FreeSpace:          blockSize, // Initially all free
-		FreeSectionAddress: 0,         // No free space manager in MVP
+		FreeSpace:          blockSize,  // Initially all free
+		FreeSectionAddress: ^uint64(0), // UNDEF: no free space manager in MVP
 
 		ManagedSpaceSize:      blockSize,
 		AllocatedManagedSpace: blockSize,
@@ -475,9 +481,12 @@ func (fh *WritableFractalHeap) encodeHeapID(offset, length uint64) []byte {
 	// Flags byte: version (bits 6-7) = 0, type (bits 4-5) = 0 (managed)
 	heapID[0] = 0x00 // Version 0, Type managed
 
-	// Encode offset (little-endian for MVP)
+	// Encode offset (little-endian for MVP). Per the HDF5 format, managed
+	// object offsets are measured from the start of the direct block,
+	// including the block header; internally we track offsets relative to
+	// the block's data area.
 	idx := 1
-	writeUintVar(heapID[idx:], offset, int(fh.Header.HeapOffsetSize), binary.LittleEndian)
+	writeUintVar(heapID[idx:], offset+fh.directBlockHeaderSize(), int(fh.Header.HeapOffsetSize), binary.LittleEndian)
 	idx += int(fh.Header.HeapOffsetSize)
 
 	// Encode length (little-endian for MVP)
@@ -485,6 +494,27 @@ func (fh *WritableFractalHeap) encodeHeapID(offset, length uint64) []byte {
 	// Remaining bytes stay zero-padded
 
 	return heapID
+}
+
+// directBlockHeaderSize returns the size of a direct block header:
+// signature (4) + version (1) + heap header address (8, the only offset size
+// supported for writing) + block offset (HeapOffsetSize) + optional checksum.
+func (fh *WritableFractalHeap) directBlockHeaderSize() uint64 {
+	size := 4 + 1 + 8 + uint64(fh.Header.HeapOffsetSize)
+	if fh.Header.Flags&0x02 != 0 {
+		size += 4
+	}
+	return size
+}
+
+// dataRelativeOffset converts a spec heap-ID offset (from the direct block
+// start, including its header) into an offset relative to the block data.
+func (fh *WritableFractalHeap) dataRelativeOffset(specOffset uint64) (uint64, error) {
+	hdr := fh.directBlockHeaderSize()
+	if specOffset < hdr {
+		return 0, fmt.Errorf("%w: offset %d inside direct block header", ErrInvalidObjectID, specOffset)
+	}
+	return specOffset - hdr, nil
 }
 
 // WriteToFile writes fractal heap (header + direct block) to file.
@@ -948,6 +978,10 @@ func (fh *WritableFractalHeap) GetObject(heapID []byte) ([]byte, error) {
 	idx := 1
 	globalOffset := readUint(heapID[idx:idx+int(fh.Header.HeapOffsetSize)], int(fh.Header.HeapOffsetSize), binary.LittleEndian)
 	idx += int(fh.Header.HeapOffsetSize)
+	globalOffset, err := fh.dataRelativeOffset(globalOffset)
+	if err != nil {
+		return nil, err
+	}
 
 	length := readUint(heapID[idx:idx+int(fh.Header.HeapLengthSize)], int(fh.Header.HeapLengthSize), binary.LittleEndian)
 
@@ -1054,6 +1088,10 @@ func (fh *WritableFractalHeap) OverwriteObject(heapID, newData []byte) error {
 	idx := 1
 	offset := readUint(heapID[idx:idx+int(fh.Header.HeapOffsetSize)], int(fh.Header.HeapOffsetSize), binary.LittleEndian)
 	idx += int(fh.Header.HeapOffsetSize)
+	offset, err := fh.dataRelativeOffset(offset)
+	if err != nil {
+		return err
+	}
 
 	length := readUint(heapID[idx:idx+int(fh.Header.HeapLengthSize)], int(fh.Header.HeapLengthSize), binary.LittleEndian)
 
@@ -1123,6 +1161,10 @@ func (fh *WritableFractalHeap) DeleteObject(heapID []byte) error {
 	idx := 1
 	offset := readUint(heapID[idx:idx+int(fh.Header.HeapOffsetSize)], int(fh.Header.HeapOffsetSize), binary.LittleEndian)
 	idx += int(fh.Header.HeapOffsetSize)
+	offset, err := fh.dataRelativeOffset(offset)
+	if err != nil {
+		return err
+	}
 
 	length := readUint(heapID[idx:idx+int(fh.Header.HeapLengthSize)], int(fh.Header.HeapLengthSize), binary.LittleEndian)
 

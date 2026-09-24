@@ -180,6 +180,63 @@ func NewWritableBTreeV2(nodeSize uint32) *WritableBTreeV2 {
 	}
 }
 
+// NewWritableAttrBTreeV2 creates a new B-tree v2 for an attribute name index
+// (type 8), as used by dense attribute storage.
+//
+// Type 8 records are 17 bytes (H5A__dense_btree2_name_encode):
+// heap ID (8) + message flags (1) + creation order (4) + name hash (4).
+func NewWritableAttrBTreeV2(nodeSize uint32) *WritableBTreeV2 {
+	bt := NewWritableBTreeV2(nodeSize)
+	bt.header.Type = BTreeV2TypeAttrNameIndex
+	bt.header.RecordSize = attrNameRecordSize
+	bt.leaf.Type = BTreeV2TypeAttrNameIndex
+	return bt
+}
+
+const (
+	linkNameRecordSize = 11 // hash (4) + heap ID (7)
+	attrNameRecordSize = 17 // heap ID (8) + flags (1) + creation order (4) + hash (4)
+)
+
+// recordSize returns the on-disk record size for this tree's type.
+func (bt *WritableBTreeV2) recordSize() int {
+	return recordSizeForType(bt.header.Type)
+}
+
+func recordSizeForType(t uint8) int {
+	if t == BTreeV2TypeAttrNameIndex {
+		return attrNameRecordSize
+	}
+	return linkNameRecordSize
+}
+
+// encodeRecord appends the on-disk encoding of a record for B-tree type t.
+func encodeRecord(buf []byte, t uint8, r LinkNameRecord) []byte {
+	if t == BTreeV2TypeAttrNameIndex {
+		buf = append(buf, r.HeapID[:]...)
+		// 8th heap ID byte (IDs use at most 7), then message flags (not shared).
+		buf = append(buf, 0, 0)
+		buf = binary.LittleEndian.AppendUint32(buf, 0) // creation order (not tracked)
+		buf = binary.LittleEndian.AppendUint32(buf, r.NameHash)
+		return buf
+	}
+	buf = binary.LittleEndian.AppendUint32(buf, r.NameHash)
+	return append(buf, r.HeapID[:]...)
+}
+
+// decodeRecord decodes one record for B-tree type t.
+func decodeRecord(b []byte, t uint8) LinkNameRecord {
+	var r LinkNameRecord
+	if t == BTreeV2TypeAttrNameIndex {
+		copy(r.HeapID[:], b[0:7])
+		r.NameHash = binary.LittleEndian.Uint32(b[13:17])
+		return r
+	}
+	r.NameHash = binary.LittleEndian.Uint32(b[0:4])
+	copy(r.HeapID[:], b[4:11])
+	return r
+}
+
 // InsertRecord adds a link name record to the B-tree.
 //
 // Parameters:
@@ -557,15 +614,11 @@ func (bt *WritableBTreeV2) encodeLeafNode(sb *core.Superblock) ([]byte, error) {
 	buf[offset] = bt.leaf.Type
 	offset++
 
-	// Records (each record is 11 bytes: 4 bytes hash + 7 bytes heap ID)
+	// Records (format depends on the B-tree type)
 	for _, record := range bt.leaf.Records {
-		// Name Hash (4 bytes)
-		binary.LittleEndian.PutUint32(buf[offset:], record.NameHash)
-		offset += 4
-
-		// Heap ID (7 bytes)
-		copy(buf[offset:], record.HeapID[:])
-		offset += 7
+		enc := encodeRecord(nil, bt.header.Type, record)
+		copy(buf[offset:], enc)
+		offset += len(enc)
 	}
 
 	// Checksum (CRC32, 4 bytes)
@@ -587,7 +640,7 @@ func (bt *WritableBTreeV2) calculateHeaderSize(sb *core.Superblock) uint64 {
 func (bt *WritableBTreeV2) calculateLeafSize(_ *core.Superblock) uint64 {
 	numRecords := len(bt.leaf.Records)
 	//nolint:gosec // G115: size calculation, overflow not possible with valid record counts
-	return uint64(4 + 1 + 1 + (numRecords * 11) + 4)
+	return uint64(4 + 1 + 1 + (numRecords * bt.recordSize()) + 4)
 	// Signature + Version + Type + Records + Checksum
 }
 
@@ -596,7 +649,7 @@ func (bt *WritableBTreeV2) calculateMaxRecords() int {
 	// Node size - overhead (signature + version + type + checksum)
 	overhead := uint32(4 + 1 + 1 + 4) // 10 bytes
 	available := bt.nodeSize - overhead
-	recordSize := uint32(11) // 4 bytes hash + 7 bytes heap ID
+	recordSize := uint32(bt.recordSize()) //nolint:gosec // G115: 11 or 17
 	return int(available / recordSize)
 }
 
@@ -693,7 +746,7 @@ func (bt *WritableBTreeV2) LoadFromFile(r io.ReaderAt, headerAddr uint64, sb *co
 
 	// 5. Read and decode leaf node (if not empty)
 	if header.NumRecordsRoot > 0 {
-		leaf, records, err := readBTreeV2LeafNode(r, header.RootNodeAddr, int(header.NumRecordsRoot), sb)
+		leaf, records, err := readBTreeV2LeafNode(r, header.RootNodeAddr, int(header.NumRecordsRoot), header.Type, sb)
 		if err != nil {
 			return fmt.Errorf("failed to read leaf node: %w", err)
 		}
@@ -704,7 +757,7 @@ func (bt *WritableBTreeV2) LoadFromFile(r io.ReaderAt, headerAddr uint64, sb *co
 		bt.leaf = &BTreeV2LeafNode{
 			Signature: [4]byte{'B', 'T', 'L', 'F'},
 			Version:   0,
-			Type:      BTreeV2TypeLinkNameIndex,
+			Type:      header.Type,
 			Records:   make([]LinkNameRecord, 0),
 		}
 		bt.records = make([]LinkNameRecord, 0)
@@ -826,9 +879,11 @@ func readBTreeV2Header(r io.ReaderAt, address uint64, sb *core.Superblock) (*BTr
 //   - Type: 5 (1 byte)
 //   - Records: Array of link name records (numRecords * 11 bytes)
 //   - Checksum: CRC32 (4 bytes)
-func readBTreeV2LeafNode(r io.ReaderAt, address uint64, numRecords int, _ *core.Superblock) (*BTreeV2LeafNode, []LinkNameRecord, error) {
+func readBTreeV2LeafNode(r io.ReaderAt, address uint64, numRecords int, btreeType uint8, _ *core.Superblock) (*BTreeV2LeafNode, []LinkNameRecord, error) {
+	recSize := recordSizeForType(btreeType)
+
 	// Calculate leaf size
-	size := 4 + 1 + 1 + (numRecords * 11) + 4
+	size := 4 + 1 + 1 + (numRecords * recSize) + 4
 
 	// Read leaf data
 	buf := make([]byte, size)
@@ -862,22 +917,11 @@ func readBTreeV2LeafNode(r io.ReaderAt, address uint64, numRecords int, _ *core.
 	leafType := buf[offset]
 	offset++
 
-	// Records (each record is 11 bytes: 4 bytes hash + 7 bytes heap ID)
+	// Records (format depends on the B-tree type)
 	records := make([]LinkNameRecord, numRecords)
 	for i := 0; i < numRecords; i++ {
-		// Name Hash (4 bytes)
-		nameHash := binary.LittleEndian.Uint32(buf[offset : offset+4])
-		offset += 4
-
-		// Heap ID (7 bytes)
-		var heapID [7]byte
-		copy(heapID[:], buf[offset:offset+7])
-		offset += 7
-
-		records[i] = LinkNameRecord{
-			NameHash: nameHash,
-			HeapID:   heapID,
-		}
+		records[i] = decodeRecord(buf[offset:offset+recSize], btreeType)
+		offset += recSize
 	}
 
 	// Checksum (Jenkins lookup3, 4 bytes)

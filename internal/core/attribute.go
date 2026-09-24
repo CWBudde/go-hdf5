@@ -593,7 +593,7 @@ func readDenseAttributes(r io.ReaderAt, attrInfo *AttributeInfoMessage, sb *Supe
 	}
 
 	// Step 2: Read B-tree leaf node to get all heap IDs
-	heapIDs, err := readBTreeV2LeafRecords(r, btreeHeader.RootNodeAddr, btreeHeader.NumRecordsRoot, sb)
+	heapIDs, err := readBTreeV2LeafRecords(r, btreeHeader.RootNodeAddr, btreeHeader.NumRecordsRoot, btreeHeader.Type, btreeHeader.RecordSize, sb)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read B-tree leaf: %w", err)
 	}
@@ -618,7 +618,12 @@ func readDenseAttributes(r io.ReaderAt, attrInfo *AttributeInfoMessage, sb *Supe
 		}
 
 		// Read object from direct block
-		objectData, err := readHeapObject(r, heapHeader.RootBlockAddress, offset, length, sb, heapHeader)
+		// Spec-compliant attribute name indexes (type 8, as written by the HDF5
+		// library) use heap offsets measured from the start of the direct
+		// block. Legacy go-hdf5 files used a type 5 index with offsets
+		// relative to the block's data area.
+		specOffsets := btreeHeader.Type == 8
+		objectData, err := readHeapObject(r, heapHeader.RootBlockAddress, offset, length, sb, heapHeader, specOffsets)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read heap object %d: %w", i, err)
 		}
@@ -740,11 +745,23 @@ func readBTreeV2HeaderRaw(r io.ReaderAt, addr uint64, sb *Superblock) (*btreeV2H
 //   - Records (N × record size):
 //     Each record: Name Hash (4 bytes) + Heap ID (7 bytes)
 //   - Checksum (4 bytes)
-func readBTreeV2LeafRecords(r io.ReaderAt, addr uint64, numRecords uint16, _ *Superblock) ([][7]byte, error) {
-	// Each record: 4 (hash) + 7 (heap ID) = 11 bytes
+func readBTreeV2LeafRecords(r io.ReaderAt, addr uint64, numRecords uint16, btreeType uint8, recordSize uint16, _ *Superblock) ([][7]byte, error) {
+	// Record layouts:
+	//   type 8 (attribute name index): heap ID (8) + flags (1) + creation order (4) + hash (4)
+	//   legacy go-hdf5 (type 5 layout): hash (4) + heap ID (7)
+	recSize := 11
+	heapIDPos := 4
+	if btreeType == 8 {
+		recSize = int(recordSize)
+		heapIDPos = 0
+		if recSize < 7 {
+			return nil, fmt.Errorf("attribute name record size %d too small", recSize)
+		}
+	}
+
 	// Header: 4 (sig) + 1 (ver) + 1 (type) = 6 bytes
 	// Checksum: 4 bytes
-	bufSize := 6 + int(numRecords)*11 + 4
+	bufSize := 6 + int(numRecords)*recSize + 4
 	buf := make([]byte, bufSize)
 
 	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
@@ -767,14 +784,12 @@ func readBTreeV2LeafRecords(r io.ReaderAt, addr uint64, numRecords uint16, _ *Su
 	// Read records
 	heapIDs := make([][7]byte, numRecords)
 	for i := uint16(0); i < numRecords; i++ {
-		if offset+11 > len(buf) {
+		if offset+recSize > len(buf) {
 			return nil, fmt.Errorf("buffer too short for record %d", i)
 		}
 
-		// Skip name hash (4 bytes), copy heap ID (7 bytes)
-		offset += 4
-		copy(heapIDs[i][:], buf[offset:offset+7])
-		offset += 7
+		copy(heapIDs[i][:], buf[offset+heapIDPos:offset+heapIDPos+7])
+		offset += recSize
 	}
 
 	return heapIDs, nil
@@ -962,7 +977,7 @@ func parseHeapID(heapID [7]byte, header *fractalHeapHeaderRaw) (offset, length u
 //   - Block Offset (heapOffsetSize bytes from heap header)
 //   - Managed Objects Data (variable)
 //   - Optional Checksum (4 bytes if ChecksumDirBlocks flag set)
-func readHeapObject(r io.ReaderAt, blockAddr, offset, length uint64, sb *Superblock, header *fractalHeapHeaderRaw) ([]byte, error) {
+func readHeapObject(r io.ReaderAt, blockAddr, offset, length uint64, sb *Superblock, header *fractalHeapHeaderRaw, specOffsets bool) ([]byte, error) {
 	// Read direct block header to determine object data start
 	// Header size: 4 (sig) + 1 (ver) + offsetSize (heap addr) + heapOffsetSize (block offset)
 	headerSize := 4 + 1 + int(sb.OffsetSize) + int(header.HeapOffsetSize)
@@ -1006,6 +1021,10 @@ func readHeapObject(r io.ReaderAt, blockAddr, offset, length uint64, sb *Superbl
 	// Read the object at the relative offset within this block
 	//nolint:gosec // G115: headerOffset bounded by header size specification
 	objectAddr := blockAddr + uint64(headerOffset) + relativeOffset
+	if specOffsets {
+		// Offset already includes the direct block header.
+		objectAddr = blockAddr + relativeOffset
+	}
 	objectData := make([]byte, length)
 
 	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface

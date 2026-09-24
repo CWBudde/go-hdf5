@@ -7,6 +7,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// chunkedMetadataOverhead returns the number of non-chunk-data bytes in a file
+// holding a single unfiltered 1D chunked dataset "/data" with 1000 elements of
+// elemSize bytes (chunk size 100). Compression tests subtract it from the compressed file size
+// so they measure the chunk payload rather than fixed metadata (superblock,
+// object headers, full-size chunk B-tree nodes, ...).
+func chunkedMetadataOverhead(t *testing.T, dtype Datatype, elemSize int) int {
+	t.Helper()
+	const n = 1000
+	tmp := t.TempDir() + "/overhead.h5"
+	fw, err := CreateForWrite(tmp, CreateTruncate)
+	require.NoError(t, err)
+	ds, err := fw.CreateDataset("/data", dtype, []uint64{n}, WithChunkDims([]uint64{100}))
+	require.NoError(t, err)
+	require.NoError(t, ds.WriteRaw(make([]byte, n*elemSize)))
+	require.NoError(t, fw.Close())
+	info, err := os.Stat(tmp)
+	require.NoError(t, err)
+	return int(info.Size()) - n*elemSize
+}
+
 func TestChunkedDatasetWithGZIP(t *testing.T) {
 	tmpFile := "test_gzip.h5"
 	defer os.Remove(tmpFile)
@@ -80,7 +100,7 @@ func TestChunkedDatasetWithShuffleGZIP(t *testing.T) {
 	require.NoError(t, err)
 
 	uncompressedSize := 1000 * 8 // 8KB
-	compressedSize := int(info.Size())
+	compressedSize := int(info.Size()) - chunkedMetadataOverhead(t, Float64, 8)
 
 	// Shuffle+GZIP should compress better than GZIP alone
 	// Expect at least 1.5:1 ratio for this data
@@ -428,7 +448,7 @@ func TestChunkedDatasetBinaryPatterns(t *testing.T) {
 	require.NoError(t, err)
 
 	uncompressedSize := 1000 * 4
-	compressionRatio := float64(uncompressedSize) / float64(info.Size())
+	compressionRatio := float64(uncompressedSize) / float64(int(info.Size())-chunkedMetadataOverhead(t, Uint32, 4))
 
 	// Binary pattern should compress reasonably with shuffle
 	require.Greater(t, compressionRatio, 0.9,
@@ -532,7 +552,7 @@ func TestChunkedDatasetIntegerSequences(t *testing.T) {
 	require.NoError(t, err)
 
 	uncompressedSize := 1000 * 8
-	compressionRatio := float64(uncompressedSize) / float64(info.Size())
+	compressionRatio := float64(uncompressedSize) / float64(int(info.Size())-chunkedMetadataOverhead(t, Int64, 8))
 
 	// Sequential values should compress reasonably
 	require.Greater(t, compressionRatio, 1.5,
@@ -606,7 +626,7 @@ func TestChunkedDatasetFloatingPoint(t *testing.T) {
 	require.NoError(t, err)
 
 	uncompressedSize := 1000 * 8
-	compressionRatio := float64(uncompressedSize) / float64(info.Size())
+	compressionRatio := float64(uncompressedSize) / float64(int(info.Size())-chunkedMetadataOverhead(t, Float64, 8))
 
 	// Floating-point with small variations may not compress as well as integers
 	require.Greater(t, compressionRatio, 0.8,
