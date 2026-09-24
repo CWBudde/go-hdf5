@@ -491,11 +491,14 @@ func (fh *FractalHeap) readFromDirectBlock(id *HeapID, blockAddr, blockSize uint
 
 	// HDF5 spec: heap ID offsets are from block start (including header).
 	// go-hdf5's write path uses offsets from data start (after header).
-	if relativeOffset+id.Length > dataLen && relativeOffset >= dblock.HeaderSize {
+	if id.Length > dataLen {
+		return nil, fmt.Errorf("object length %d exceeds block data size %d", id.Length, dataLen)
+	}
+	if relativeOffset > dataLen-id.Length && relativeOffset >= dblock.HeaderSize {
 		relativeOffset -= dblock.HeaderSize
 	}
 
-	if relativeOffset+id.Length > dataLen {
+	if relativeOffset > dataLen-id.Length {
 		return nil, fmt.Errorf("object extends beyond block data (offset: 0x%X, length: %d, block size: %d)",
 			relativeOffset, id.Length, len(dblock.Data))
 	}
@@ -535,13 +538,18 @@ func (fh *FractalHeap) readDirectBlock(address, blockSize uint64) (*DirectBlock,
 	_ = 5 + int(fh.sizeofAddr) + int(fh.Header.HeapOffsetSize) // headerSize calculated but not used yet
 
 	// Read entire block (header + data)
-	//nolint:gosec // G115: safe conversion, blockSize from HDF5 header (max ~2GB per block)
-	totalSize := int(blockSize)
-	buf := make([]byte, totalSize)
-	//nolint:gosec // G115: uint64 to int64 conversion safe for file offsets
-	if _, err := fh.reader.ReadAt(buf, int64(address)); err != nil {
-		return nil, fmt.Errorf("failed to read direct block: %w", err)
+	minSize := fh.DirectBlockHeaderSize()
+	if fh.Header.ChecksumDirectBlocks {
+		minSize += 4
 	}
+	if blockSize < minSize {
+		return nil, fmt.Errorf("direct block size %d smaller than header size %d", blockSize, minSize)
+	}
+	buf, err := utils.ReadAtChecked(fh.reader, address, blockSize, "fractal heap direct block")
+	if err != nil {
+		return nil, err
+	}
+	totalSize := len(buf)
 
 	dblock := &DirectBlock{}
 	offset := 0

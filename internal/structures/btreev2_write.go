@@ -924,14 +924,10 @@ func ReadBTreeV2AttrNameRecords(r io.ReaderAt, headerAddr uint64, sb *core.Super
 	numRecords := int(header.NumRecordsRoot)
 	leafSize := 4 + 1 + 1 + (numRecords * recordSize) + 4
 
-	buf := make([]byte, leafSize)
-	//nolint:gosec // G115: address conversion
-	n, err := r.ReadAt(buf, int64(header.RootNodeAddr))
-	if err != nil && err != io.EOF {
+	//nolint:gosec // G115: leafSize is non-negative
+	buf, err := utils.ReadAtChecked(r, header.RootNodeAddr, uint64(leafSize), "B-tree v2 leaf")
+	if err != nil {
 		return nil, fmt.Errorf("failed to read leaf at 0x%X: %w", header.RootNodeAddr, err)
-	}
-	if n < leafSize {
-		return nil, fmt.Errorf("incomplete leaf read: got %d, want %d", n, leafSize)
 	}
 
 	// Validate signature

@@ -140,8 +140,8 @@ func ParseLinkMessage(data []byte, sb *core.Superblock) (*LinkMessage, error) {
 	}
 
 	// Name (N bytes).
-	//nolint:gosec // G115: Safe conversion for HDF5 string lengths
-	if current+int(nameLen) > len(data) {
+	//nolint:gosec // G115: current <= len(data), so the subtraction cannot underflow
+	if nameLen > uint64(len(data)-current) {
 		return nil, fmt.Errorf("unexpected end of data reading name (need %d bytes, have %d)",
 			nameLen, len(data)-current)
 	}

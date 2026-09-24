@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"unsafe"
 
 	"github.com/cwbudde/go-hdf5/internal/utils"
@@ -179,6 +180,13 @@ func (a *Attribute) ReadValue() (interface{}, error) {
 	if totalElements == 0 || len(a.Data) == 0 {
 		// Empty attribute - return empty slice instead of nil.
 		return []interface{}{}, nil
+	}
+
+	// Every element occupies at least one byte of attribute data; reject
+	// dataspaces that claim more elements than the data can hold before
+	// allocating any result slice.
+	if totalElements > uint64(len(a.Data)) {
+		return nil, fmt.Errorf("attribute data size mismatch: %d elements, %d bytes", totalElements, len(a.Data))
 	}
 
 	// For scalar attributes, return single value.
@@ -1005,17 +1013,14 @@ func readHeapObject(r io.ReaderAt, blockAddr, offset, length uint64, sb *Superbl
 	// Now we're at the start of managed objects data
 	// Read the object at the relative offset within this block
 	//nolint:gosec // G115: headerOffset bounded by header size specification
-	objectAddr := blockAddr + uint64(headerOffset) + relativeOffset
-	objectData := make([]byte, length)
-
-	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-	n, err = r.ReadAt(objectData, int64(objectAddr))
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("read object failed at 0x%X: %w", objectAddr, err)
+	objectAddr := blockAddr + uint64(headerOffset)
+	if relativeOffset > math.MaxUint64-objectAddr {
+		return nil, fmt.Errorf("object offset 0x%X overflows", relativeOffset)
 	}
-	//nolint:gosec // G115: Safe comparison, length bounded by heap object size
-	if uint64(n) < length {
-		return nil, fmt.Errorf("object data too short: got %d bytes, expected %d", n, length)
+	objectAddr += relativeOffset
+	objectData, err := utils.ReadAtChecked(r, objectAddr, length, "heap object")
+	if err != nil {
+		return nil, err
 	}
 
 	return objectData, nil

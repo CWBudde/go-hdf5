@@ -123,6 +123,11 @@ func (d *Dataset) ChunkIteratorWithContext(ctx context.Context) (*ChunkIterator,
 
 // collectChunkCoordinates retrieves all chunk coordinates from the B-tree.
 func (d *Dataset) collectChunkCoordinates(layout *core.DataLayoutMessage, dataspace *core.DataspaceMessage) ([][]uint64, error) {
+	ndims := len(dataspace.Dimensions)
+	if len(layout.ChunkSize) < ndims {
+		return nil, fmt.Errorf("chunk rank %d smaller than dataspace rank %d", len(layout.ChunkSize), ndims)
+	}
+
 	// Parse B-tree to get all chunks.
 	btreeNode, err := core.ParseBTreeV1Node(
 		d.file.osFile,
@@ -141,9 +146,11 @@ func (d *Dataset) collectChunkCoordinates(layout *core.DataLayoutMessage, datasp
 	}
 
 	// Extract coordinates.
-	ndims := len(dataspace.Dimensions)
 	coords := make([][]uint64, 0, len(allChunks))
 	for _, chunk := range allChunks {
+		if len(chunk.Key.Scaled) < ndims {
+			return nil, fmt.Errorf("chunk key has %d dimensions, need %d", len(chunk.Key.Scaled), ndims)
+		}
 		coord := make([]uint64, ndims)
 		copy(coord, chunk.Key.Scaled[:ndims])
 		coords = append(coords, coord)

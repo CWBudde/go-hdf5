@@ -19,6 +19,30 @@ type File struct {
 	sb            *core.Superblock
 	root          *Group
 	visitedBTrees map[uint64]bool // Track visited B-tree addresses to prevent cycles
+
+	// expandedGroups records group addresses whose children were already
+	// loaded. A group reached again (hard-link cycle or shared subgroup) is
+	// returned without children so corrupted or cyclic files cannot cause
+	// unbounded recursion or exponential work.
+	expandedGroups map[uint64]bool
+	// loadDepth is the current object-loading recursion depth.
+	loadDepth int
+}
+
+// maxLoadDepth bounds object nesting while loading the group hierarchy.
+const maxLoadDepth = 512
+
+// markGroupExpanded records that the children of the group at address are
+// being loaded. It returns false if that group was already expanded.
+func (f *File) markGroupExpanded(address uint64) bool {
+	if f.expandedGroups == nil {
+		f.expandedGroups = make(map[uint64]bool)
+	}
+	if f.expandedGroups[address] {
+		return false
+	}
+	f.expandedGroups[address] = true
+	return true
 }
 
 // Open opens an HDF5 file for reading and returns a File handle.

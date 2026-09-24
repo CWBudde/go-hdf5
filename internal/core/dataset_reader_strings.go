@@ -66,46 +66,21 @@ func ReadDatasetStrings(r io.ReaderAt, header *ObjectHeader, sb *Superblock) ([]
 		return []string{}, nil
 	}
 
-	// 6. Read data based on layout type.
-	var rawData []byte
-
-	switch {
-	case layout.IsCompact():
-		// Data is stored directly in the layout message.
-		rawData = layout.CompactData
-
-	case layout.IsContiguous():
-		// Data is stored contiguously at specific address.
-		dataSize := totalElements * uint64(datatype.Size)
-		rawData = make([]byte, dataSize)
-
-		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-		_, err := r.ReadAt(rawData, int64(layout.DataAddress))
-		if err != nil {
-			return nil, fmt.Errorf("failed to read contiguous data: %w", err)
-		}
-
-	case layout.IsChunked():
-		// Data is stored in chunks indexed by B-tree.
-		// Extract filter pipeline if present.
-		var filterPipeline *FilterPipelineMessage
-		for _, msg := range header.Messages {
-			if msg.Type == MsgFilterPipeline {
-				filterPipeline, err = ParseFilterPipelineMessage(msg.Data)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse filter pipeline: %w", err)
-				}
-				break
+	// 6. Extract filter pipeline if present.
+	var filterPipeline *FilterPipelineMessage
+	for _, msg := range header.Messages {
+		if msg.Type == MsgFilterPipeline {
+			filterPipeline, err = ParseFilterPipelineMessage(msg.Data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse filter pipeline: %w", err)
 			}
+			break
 		}
+	}
 
-		rawData, err = readChunkedData(r, layout, dataspace, datatype, sb, filterPipeline)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read chunked data: %w", err)
-		}
-
-	default:
-		return nil, fmt.Errorf("unsupported layout class: %d", layout.Class)
+	rawData, err := readRawData(r, layout, dataspace, datatype, sb, filterPipeline)
+	if err != nil {
+		return nil, err
 	}
 
 	// 7. Convert raw bytes to string array based on string type.
