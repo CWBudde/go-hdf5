@@ -75,7 +75,7 @@ func TestLZFDecompressLimit(t *testing.T) {
 	// Literal run of 4 bytes, then long back-references repeating them.
 	in := []byte{3, 'a', 'b', 'c', 'd'}
 	for i := 0; i < 100; i++ {
-		in = append(in, 0xE0, 0x03, 0xFF) // long backref, offset 4, len 264
+		in = append(in, 0xE0, 0xFF, 0x03) // long backref (liblzf order: len byte, then offset): offset 4, len 264
 	}
 	_, err := lzfDecompressLimit(in, 1024)
 	require.Error(t, err)

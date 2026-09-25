@@ -151,27 +151,21 @@ func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []u
 		return nil, fmt.Errorf("header size mismatch: expected %d, wrote %d", headerSize, writtenSize)
 	}
 
-	// Calculate offset of B-tree address within the file.
-	// Object header v2 layout:
-	//   - OHDR signature: 4 bytes
-	//   - Version: 1 byte
-	//   - Flags: 1 byte
-	//   - Chunk size: 1 byte (for flags bits 0-1 = 0)
-	//   - Messages (each: type 1 + size 2 + flags 1 + data):
-	//     - Datatype: 4 + len(datatypeData)
-	//     - Dataspace: 4 + len(dataspaceData)
-	//     - Layout header: 4 bytes
-	//     - Layout data: version(1) + class(1) + dimensionality(1) + btreeAddress(offsetSize)
-	// The B-tree address is at offset 3 within layout message data.
-	layoutBTreeOffset := headerAddress +
-		4 + // OHDR
-		1 + // version
-		1 + // flags
-		1 + // chunk size
+	// Offset of the chunk index address within the file: it sits 3 bytes
+	// (version, class, dimensionality) into the layout message data. The
+	// prefix length (signature through chunk-size field) is derived from the
+	// written size, because the chunk-size field widens to 2 or 4 bytes for
+	// headers with more than 255 bytes of messages.
+	var messageBytes uint64
+	for _, m := range ohw.Messages {
+		messageBytes += 4 + uint64(len(m.Data))
+	}
+	prefixLen := writtenSize - messageBytes - core.ObjectHeaderV2ChecksumSize
+	layoutBTreeOffset := headerAddress + prefixLen +
 		4 + uint64(len(datatypeData)) + // datatype message
 		4 + uint64(len(dataspaceData)) + // dataspace message
 		4 + // layout message header
-		3 // offset to btree address within layout data (version + class + dimensionality)
+		3 // version + class + dimensionality
 
 	// 9. Link to parent group
 	parent, datasetName := parsePath(name)

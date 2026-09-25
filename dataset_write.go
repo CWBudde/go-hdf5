@@ -2393,6 +2393,9 @@ func (fw *FileWriter) OpenDataset(path string) (*DatasetWriter, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse attribute info: %w", err)
 			}
+			if !isDefinedAddress(attrInfoMsg.FractalHeapAddr) {
+				attrInfoMsg = nil // no dense storage yet (libhdf5 placeholder)
+			}
 		}
 	}
 

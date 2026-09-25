@@ -129,7 +129,10 @@ with h5py.File(sys.argv[1], "r") as f:
         ds = f[name]
         out["h5py"][name] = [[s.name for s in d.values()] for d in ds.dims]
     p = f["Partial"]
-    refs = list(p.attrs["scale_ref"]) + list(p.attrs["scale_refs"])
+    scalar = p.attrs["scale_ref"]
+    shape = getattr(scalar, "shape", ())
+    out["h5py"]["scalar_shape"] = list(shape) if shape != () else None
+    refs = ([scalar] if shape == () else list(scalar)) + list(p.attrs["scale_refs"])
     out["h5py"]["refs"] = [f[r].name for r in refs]
     for name in ("M", "N"):
         out["h5py"][name + ".reflist"] = sorted(
@@ -182,6 +185,7 @@ func TestInteropDimensionScales(t *testing.T) {
 	require.Equal(t, []interface{}{[]interface{}{"/N"}}, got.H5py["Dense"])
 	require.Equal(t, []interface{}{[]interface{}{"/M"}, []interface{}{}}, got.H5py["Partial"])
 	require.Equal(t, []interface{}{"/M", "/N", "/M"}, got.H5py["refs"])
+	require.Nil(t, got.H5py["scalar_shape"], "scalar ObjectRef must use a scalar dataspace")
 	require.Equal(t, []interface{}{
 		[]interface{}{"/Data.IR", float64(0)}, []interface{}{"/Partial", float64(0)},
 	}, got.H5py["M.reflist"])
@@ -201,4 +205,110 @@ func TestInteropDimensionScales(t *testing.T) {
 	require.NotContains(t, got.NC.Vars, "M")
 	require.NotContains(t, got.NC.Vars, "N")
 	require.InDelta(t, 66.0, got.NC.Sum, 1e-9)
+}
+
+const dimScaleExistingScript = `
+import sys
+import h5py, numpy as np
+with h5py.File(sys.argv[1], "w", libver="latest") as f:
+    x = f.create_dataset("X", data=np.zeros(3, "f4")); x.make_scale("X")
+    y = f.create_dataset("Y", data=np.zeros(4, "f4")); y.make_scale("Y")
+    f.create_dataset("Z", data=np.zeros(4, "f4")).make_scale("Z")
+    a = f.create_dataset("A", data=np.zeros((3, 4)))
+    a.dims[0].attach_scale(x)
+    b = f.create_dataset("B", data=np.zeros(3))
+    b.dims[0].attach_scale(x)
+`
+
+const dimScaleListScript = `
+import json, sys
+import h5py
+out = {}
+with h5py.File(sys.argv[1], "r") as f:
+    for name in ("A", "B", "C"):
+        if name in f:
+            out[name] = [sorted(s.name for s in d.values()) for d in f[name].dims]
+    for name in ("X", "Y", "Z"):
+        if "REFERENCE_LIST" in f[name].attrs:
+            out[name + ".reflist"] = sorted(
+                [f[r["dataset"]].name, int(r["dimension"])] for r in f[name].attrs["REFERENCE_LIST"])
+print(json.dumps(out))
+`
+
+// TestAttachDimensionScaleKeepsExisting reopens files that already have
+// dimension scale attachments (written by libhdf5 and by this library),
+// attaches more scales and checks that no prior attachment is lost.
+func TestAttachDimensionScaleKeepsExisting(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	if err := exec.Command(python, "-c", "import h5py").Run(); err != nil {
+		t.Skip("h5py not available")
+	}
+
+	writeGo := func(t *testing.T, path string) {
+		t.Helper()
+		fw, err := CreateForWrite(path, CreateTruncate)
+		require.NoError(t, err)
+		mk := func(name string, dims []uint64) *DatasetWriter {
+			ds, err := fw.CreateDataset("/"+name, Float32, dims)
+			require.NoError(t, err)
+			n := uint64(1)
+			for _, d := range dims {
+				n *= d
+			}
+			require.NoError(t, ds.Write(make([]float32, n)))
+			return ds
+		}
+		x, y := mk("X", []uint64{3}), mk("Y", []uint64{4})
+		require.NoError(t, x.SetDimensionScale("X"))
+		require.NoError(t, y.SetDimensionScale("Y"))
+		z := mk("Z", []uint64{4})
+		require.NoError(t, z.SetDimensionScale("Z"))
+		a, b := mk("A", []uint64{3, 4}), mk("B", []uint64{3})
+		require.NoError(t, a.AttachDimensionScale(0, x))
+		require.NoError(t, b.AttachDimensionScale(0, x))
+		require.NoError(t, fw.Close())
+	}
+	writeLib := func(t *testing.T, path string) {
+		t.Helper()
+		out, err := exec.Command(python, "-c", dimScaleExistingScript, path).CombinedOutput()
+		require.NoError(t, err, "%s", out)
+	}
+
+	for name, write := range map[string]func(*testing.T, string){"go-hdf5": writeGo, "libhdf5": writeLib} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "existing.h5")
+			write(t, path)
+
+			fw, err := OpenForWrite(path, OpenReadWrite)
+			require.NoError(t, err)
+			a, err := fw.OpenDataset("/A")
+			require.NoError(t, err)
+			x, err := fw.OpenDataset("/X")
+			require.NoError(t, err)
+			y, err := fw.OpenDataset("/Y")
+			require.NoError(t, err)
+			z, err := fw.OpenDataset("/Z")
+			require.NoError(t, err)
+			require.NoError(t, a.AttachDimensionScale(1, y))
+			require.NoError(t, a.AttachDimensionScale(1, z)) // second scale on the same dim
+			require.NoError(t, a.AttachDimensionScale(0, x)) // already attached: no-op
+			require.NoError(t, fw.Close())
+
+			out, err := exec.Command(python, "-c", dimScaleListScript, path).CombinedOutput()
+			require.NoError(t, err, "%s", out)
+			var got map[string]interface{}
+			require.NoError(t, json.Unmarshal(out, &got), "%s", out)
+
+			require.Equal(t, []interface{}{[]interface{}{"/X"}, []interface{}{"/Y", "/Z"}}, got["A"])
+			require.Equal(t, []interface{}{[]interface{}{"/X"}}, got["B"])
+			require.Equal(t, []interface{}{
+				[]interface{}{"/A", float64(0)}, []interface{}{"/B", float64(0)},
+			}, got["X.reflist"])
+			require.Equal(t, []interface{}{[]interface{}{"/A", float64(1)}}, got["Y.reflist"])
+			require.Equal(t, []interface{}{[]interface{}{"/A", float64(1)}}, got["Z.reflist"])
+		})
+	}
 }

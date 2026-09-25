@@ -2,7 +2,10 @@ package hdf5
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
+	"slices"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
 )
@@ -67,6 +70,7 @@ func (dw *DatasetWriter) SetDimensionScale(name string) error {
 // REFERENCE_LIST attribute (the {dataset, dimension} back references) are
 // maintained by the FileWriter and written when it is closed, so all
 // attachments made during a session end up in one attribute per object.
+// Attachments already stored in the file (OpenForWrite) are kept.
 // Attaching the same scale to the same dimension twice is a no-op.
 //
 // The scale should be marked with SetDimensionScale. A dataset cannot be
@@ -94,27 +98,177 @@ func (dw *DatasetWriter) AttachDimensionScale(dimIdx int, scale *DatasetWriter) 
 	}
 	st := fw.dimScales
 
+	// Start from the attachments already stored in the file (files opened
+	// with OpenForWrite), so rewriting the attributes on Close keeps them.
 	lists, ok := st.dimLists[dw.address]
 	if !ok {
+		existing, err := fw.readDimensionList(dw.address)
+		if err != nil {
+			return fmt.Errorf("attach dimension scale: %s: %w", dw.name, err)
+		}
 		lists = make([][]ObjectRef, len(dw.dims))
+		for i := 0; i < len(lists) && i < len(existing); i++ {
+			lists[i] = existing[i]
+		}
+		st.dimLists[dw.address] = lists
 		st.datasets = append(st.datasets, dw)
 	}
-	for _, ref := range lists[dimIdx] {
-		if ref == scale.Reference() {
-			return nil
+	refs, ok := st.refLists[scale.address]
+	if !ok {
+		existing, err := fw.readReferenceList(scale.address)
+		if err != nil {
+			return fmt.Errorf("attach dimension scale: %s: %w", scale.name, err)
 		}
-	}
-	lists[dimIdx] = append(lists[dimIdx], scale.Reference())
-	st.dimLists[dw.address] = lists
-
-	if _, ok := st.refLists[scale.address]; !ok {
+		refs = existing
 		st.scales = append(st.scales, scale)
 	}
-	st.refLists[scale.address] = append(st.refLists[scale.address], DimensionReference{
+
+	if !slices.Contains(lists[dimIdx], scale.Reference()) {
+		lists[dimIdx] = append(lists[dimIdx], scale.Reference())
+	}
+	back := DimensionReference{
 		Dataset: dw.Reference(),
 		Index:   int32(dimIdx), //nolint:gosec // G115: dimIdx < rank (<= 32)
-	})
+	}
+	if !slices.Contains(refs, back) {
+		refs = append(refs, back)
+	}
+	st.refLists[scale.address] = refs
 	return nil
+}
+
+// errNoAttribute reports that an object has no attribute of the given name.
+var errNoAttribute = errors.New("attribute not found")
+
+// readObjectAttribute returns the attribute name of the object at addr, or
+// errNoAttribute.
+func (fw *FileWriter) readObjectAttribute(addr uint64, name string) (*core.Attribute, error) {
+	sb := fw.file.Superblock()
+	reader := fw.writer.Reader()
+	oh, err := core.ReadObjectHeader(reader, addr, sb)
+	if err != nil {
+		return nil, fmt.Errorf("read object header: %w", err)
+	}
+	attrs, err := core.ParseAttributesFromMessages(reader, oh.Messages, sb)
+	if err != nil {
+		return nil, fmt.Errorf("read attributes: %w", err)
+	}
+	for _, a := range attrs {
+		if a.Name == name {
+			return a, nil
+		}
+	}
+	return nil, errNoAttribute
+}
+
+// readDimensionList decodes an existing DIMENSION_LIST attribute (a 1D
+// array of variable-length sequences of object references).
+func (fw *FileWriter) readDimensionList(addr uint64) ([][]ObjectRef, error) {
+	attr, err := fw.readObjectAttribute(addr, dimensionListAttr)
+	if errors.Is(err, errNoAttribute) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if attr.Datatype.Class != core.DatatypeVarLen {
+		return nil, fmt.Errorf("%s is not a variable-length attribute", dimensionListAttr)
+	}
+	offsetSize := int(fw.file.Superblock().OffsetSize)
+	elemSize := 4 + offsetSize + 4
+	n := int(attr.Dataspace.TotalElements()) //nolint:gosec // G115: bounded by attribute data below
+	if n < 0 || n*elemSize > len(attr.Data) {
+		return nil, fmt.Errorf("%s data too short", dimensionListAttr)
+	}
+
+	reader := fw.writer.Reader()
+	heaps := make(map[uint64]*core.GlobalHeapCollection)
+	out := make([][]ObjectRef, n)
+	for i := range out {
+		elem := attr.Data[i*elemSize : (i+1)*elemSize]
+		count := int(binary.LittleEndian.Uint32(elem[0:4]))
+		ref, err := core.ParseGlobalHeapReference(elem[4:], offsetSize)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: %w", dimensionListAttr, i, err)
+		}
+		if count == 0 || !isDefinedAddress(ref.HeapAddress) {
+			continue
+		}
+		refs, err := readReferenceSequence(reader, heaps, ref, count, offsetSize)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: %w", dimensionListAttr, i, err)
+		}
+		out[i] = refs
+	}
+	return out, nil
+}
+
+// readReferenceSequence reads a variable-length sequence of count object
+// references from the global heap object ref points to.
+func readReferenceSequence(reader io.ReaderAt, heaps map[uint64]*core.GlobalHeapCollection,
+	ref *core.GlobalHeapReference, count, offsetSize int,
+) ([]ObjectRef, error) {
+	heap, ok := heaps[ref.HeapAddress]
+	if !ok {
+		var err error
+		heap, err = core.ReadGlobalHeapCollection(reader, ref.HeapAddress, offsetSize)
+		if err != nil {
+			return nil, err
+		}
+		heaps[ref.HeapAddress] = heap
+	}
+	obj, err := heap.GetObject(ref.ObjectIndex)
+	if err != nil {
+		return nil, err
+	}
+	if count*objectReferenceSize > len(obj.Data) {
+		return nil, fmt.Errorf("sequence of %d references exceeds heap object", count)
+	}
+	refs := make([]ObjectRef, count)
+	for j := range refs {
+		refs[j] = ObjectRef(binary.LittleEndian.Uint64(obj.Data[j*objectReferenceSize:]))
+	}
+	return refs, nil
+}
+
+// readReferenceList decodes an existing REFERENCE_LIST attribute (a 1D
+// array of the compound {dataset reference, int32 dimension}).
+func (fw *FileWriter) readReferenceList(addr uint64) ([]DimensionReference, error) {
+	attr, err := fw.readObjectAttribute(addr, referenceListAttr)
+	if errors.Is(err, errNoAttribute) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if attr.Datatype.Class != core.DatatypeCompound {
+		return nil, fmt.Errorf("%s is not a compound attribute", referenceListAttr)
+	}
+	refOff, dimOff := uint32(0), uint32(8) // libhdf5 ds_list_t layout
+	if ct, err := core.ParseCompoundType(attr.Datatype); err == nil {
+		for _, m := range ct.Members {
+			switch m.Name {
+			case "dataset":
+				refOff = m.Offset
+			case "dimension":
+				dimOff = m.Offset
+			}
+		}
+	}
+	elemSize := int(attr.Datatype.Size)
+	n := int(attr.Dataspace.TotalElements()) //nolint:gosec // G115: bounded by attribute data below
+	if elemSize < int(refOff)+objectReferenceSize || elemSize < int(dimOff)+4 || n < 0 || n*elemSize > len(attr.Data) {
+		return nil, fmt.Errorf("unsupported %s layout", referenceListAttr)
+	}
+	out := make([]DimensionReference, n)
+	for i := range out {
+		elem := attr.Data[i*elemSize : (i+1)*elemSize]
+		out[i] = DimensionReference{
+			Dataset: ObjectRef(binary.LittleEndian.Uint64(elem[refOff:])),
+			Index:   int32(binary.LittleEndian.Uint32(elem[dimOff:])), //nolint:gosec // G115: two's complement
+		}
+	}
+	return out, nil
 }
 
 // dimensionScaleState collects dimension scale attachments until Close.
@@ -171,7 +325,9 @@ func objectReferenceDatatype() *core.DatatypeMessage {
 func (fw *FileWriter) prepareAttributeValue(value interface{}) (interface{}, error) {
 	switch v := value.(type) {
 	case ObjectRef:
-		return encodeObjectReferences([]ObjectRef{v}), nil
+		ev := encodeObjectReferences([]ObjectRef{v})
+		ev.dataspace = &core.DataspaceMessage{Type: core.DataspaceScalar} // H5S_SCALAR
+		return ev, nil
 	case []ObjectRef:
 		if len(v) == 0 {
 			return nil, fmt.Errorf("cannot write empty []ObjectRef attribute")

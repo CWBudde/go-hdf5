@@ -71,8 +71,14 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 	}
 
 	// Parse each filter.
+	//
+	// Version 1: ID, name length, flags, #client data (2 bytes each), name
+	// padded to a multiple of 8, client data padded to a multiple of 8.
+	// Version 2 (H5O__pline_decode): ID; name length only for IDs >= 256;
+	// flags; #client data; name (not padded) only for IDs >= 256; client
+	// data (not padded).
 	for i := uint8(0); i < numFilters; i++ {
-		if offset+8 > len(data) {
+		if offset+2 > len(data) {
 			return nil, fmt.Errorf("filter pipeline truncated at filter %d", i)
 		}
 
@@ -82,9 +88,17 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 		filter.ID = FilterID(binary.LittleEndian.Uint16(data[offset : offset+2]))
 		offset += 2
 
-		// Name length (2 bytes) - for version 1, optional.
+		hasName := version == 1 || filter.ID >= 256
+		fixed := 4
+		if hasName {
+			fixed = 6
+		}
+		if offset+fixed > len(data) {
+			return nil, fmt.Errorf("filter pipeline truncated at filter %d", i)
+		}
+
 		var nameLength uint16
-		if version == 1 {
+		if hasName {
 			nameLength = binary.LittleEndian.Uint16(data[offset : offset+2])
 			offset += 2
 		}
@@ -98,11 +112,10 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 		filter.NumClientData = binary.LittleEndian.Uint16(data[offset : offset+2])
 		offset += 2
 
-		// Filter name (variable length, only in version 1).
-		if version == 1 && nameLength > 0 {
-			// Name is null-terminated and padded to 8-byte boundary.
+		// Filter name (null-terminated; padded to 8 bytes only in version 1).
+		if nameLength > 0 {
 			padded := int(nameLength)
-			if padded%8 != 0 {
+			if version == 1 && padded%8 != 0 {
 				padded += 8 - (padded % 8)
 			}
 
@@ -112,14 +125,12 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 
 			// Extract name (up to first null).
 			nameBytes := data[offset : offset+int(nameLength)]
+			filter.Name = string(nameBytes)
 			for idx, b := range nameBytes {
 				if b == 0 {
 					filter.Name = string(nameBytes[:idx])
 					break
 				}
-			}
-			if filter.Name == "" {
-				filter.Name = string(nameBytes)
 			}
 
 			offset += padded
@@ -174,7 +185,6 @@ func (fp *FilterPipelineMessage) ApplyFiltersLimit(data []byte, limit uint64) ([
 	// Filters are applied in REVERSE order during decompression.
 	// (they were applied forward during compression).
 	result := data
-	var err error
 
 	for i := len(fp.Filters) - 1; i >= 0; i-- {
 		filter := fp.Filters[i]
@@ -182,7 +192,10 @@ func (fp *FilterPipelineMessage) ApplyFiltersLimit(data []byte, limit uint64) ([
 		// Skip optional filters if they fail.
 		isOptional := (filter.Flags & 0x0001) != 0
 
-		result, err = applyFilter(filter, result, maxOut)
+		// The output of this stage is the input the earlier filters
+		// produced, which may be larger than the final chunk (Fletcher32
+		// adds a checksum, compressors can expand incompressible data).
+		decoded, err := applyFilter(filter, result, stageLimit(fp.Filters[:i], maxOut))
 		if err != nil {
 			if isOptional {
 				// Optional filter - log and continue.
@@ -190,6 +203,7 @@ func (fp *FilterPipelineMessage) ApplyFiltersLimit(data []byte, limit uint64) ([
 			}
 			return nil, fmt.Errorf("filter %d (%s) failed: %w", filter.ID, filterName(filter.ID), err)
 		}
+		result = decoded
 
 		// LZF filter: ensure output matches expected size from cd_values[2].
 		// The HDF5 LZF filter stores the expected uncompressed chunk size in cd_values[2].
@@ -207,6 +221,31 @@ func (fp *FilterPipelineMessage) ApplyFiltersLimit(data []byte, limit uint64) ([
 	}
 
 	return result, nil
+}
+
+// stageLimit returns the output size limit for a decoding stage whose output
+// is still to be decoded by the given (earlier) filters: the final limit plus
+// a bounded allowance for what each of those filters may add, capped at
+// utils.MaxChunkSize.
+func stageLimit(remaining []Filter, final int) int {
+	limit := uint64(final) //nolint:gosec // G115: final is non-negative
+	for _, f := range remaining {
+		switch f.ID {
+		case FilterFletcher:
+			limit += 4
+		case FilterShuffle, FilterNBit, FilterScaleOffset:
+			// Size-preserving (or shrinking) on encode.
+		default:
+			// Compressors may expand incompressible input slightly
+			// (deflate: 5 bytes per 16 KiB block plus header; bzip2 and
+			// LZF have similar small bounds).
+			limit += limit/64 + 1024
+		}
+		if limit >= utils.MaxChunkSize {
+			return int(utils.MaxChunkSize)
+		}
+	}
+	return int(limit) //nolint:gosec // G115: bounded by MaxChunkSize above
 }
 
 // applyFilter applies a single filter.
@@ -381,7 +420,7 @@ func applySZIP(_ []byte) ([]byte, error) {
 // LZF format consists of segments:
 //   - Literal run (000LLLLL): L+1 bytes of uncompressed data
 //   - Short backref (RRROXXXX XXXXXXXX): 3-8 bytes from offset 1-8192
-//   - Long backref (111OXXXX XXXXXXXX RRRRRRRR): 9-264 bytes from offset 1-8192
+//   - Long backref (111OXXXX RRRRRRRR XXXXXXXX): 9-264 bytes from offset 1-8192
 //
 // It fails if the output would exceed limit bytes.
 func lzfDecompressLimit(input []byte, limit int) ([]byte, error) {
@@ -414,33 +453,24 @@ func lzfDecompressLimit(input []byte, limit int) ([]byte, error) {
 			output = append(output, input[inPos:inPos+runLen]...)
 			inPos += runLen
 		} else {
-			// Backreference (short or long).
-			if inPos >= inLen {
-				return nil, errors.New("lzf: truncated backreference")
-			}
-
-			// Read offset (13 bits across 2 bytes).
+			// Backreference (liblzf lzf_d.c): length = ctrl>>5; for 7 an
+			// extra length byte follows the control byte; then the low
+			// offset byte. Offset is 1-based, length is len+2.
 			offsetHigh := int(ctrl & 0x1F)
-			offsetLow := int(input[inPos])
-			inPos++
-
-			offset := (offsetHigh << 8) | offsetLow
-			offset++ // Offset is 1-based in encoding
-
-			// Determine run length.
-			var runLen int
-			if (ctrl & 0xE0) == 0xE0 {
-				// Long backreference: 111OXXXX XXXXXXXX RRRRRRRR
+			runLen := int(ctrl >> 5)
+			if runLen == 7 {
 				if inPos >= inLen {
 					return nil, errors.New("lzf: truncated long backreference")
 				}
-				runLen = int(input[inPos]) + 9
+				runLen += int(input[inPos])
 				inPos++
-			} else {
-				// Short backreference: RRROXXXX XXXXXXXX
-				runBits := (ctrl >> 5) & 0x07
-				runLen = int(runBits) + 2
 			}
+			if inPos >= inLen {
+				return nil, errors.New("lzf: truncated backreference")
+			}
+			offset := (offsetHigh<<8 | int(input[inPos])) + 1
+			inPos++
+			runLen += 2
 
 			// Validate offset.
 			if offset > len(output) {

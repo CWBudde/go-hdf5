@@ -22,6 +22,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Chunked datasets whose creation-time object header exceeds 255 bytes
+  (wide chunk-size field) had their chunk index address patched at the wrong
+  offset, corrupting the header.
+- `AttachDimensionScale` on files opened with `OpenForWrite` keeps the
+  existing `DIMENSION_LIST` / `REFERENCE_LIST` entries (from libhdf5 or this
+  library) instead of overwriting them. Attribute Info messages without
+  dense storage (written by libhdf5 with `libver="latest"`) no longer send
+  new attributes down the dense path.
+- Filter pipelines whose intermediate decoded data is larger than the chunk
+  (e.g. Fletcher32 before deflate) are no longer rejected by the per-stage
+  decode limit.
+- Version 2 filter pipeline messages are parsed per the spec (name and name
+  length only for filter IDs >= 256, no padding).
+- LZF long back-references use liblzf's byte order (length byte before the
+  low offset byte) when compressing and decompressing, so LZF data is
+  interoperable with h5py/libhdf5.
+- A scalar `ObjectRef` attribute uses a scalar dataspace.
+
 - Attributes stay in compact storage up to `MaxCompactAttributes` (8), like
   libhdf5's `max_compact`, even when they overflow the object header's first
   chunk: the header grows through a continuation chunk (reused on later

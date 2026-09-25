@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cwbudde/go-hdf5/internal/writer"
 	"github.com/stretchr/testify/require"
 
 	"github.com/cwbudde/go-hdf5/internal/utils"
@@ -36,6 +37,7 @@ func seqFloat64(n int) []float64 {
 	return v
 }
 
+//nolint:gocognit // one closure per scenario
 func compatScenarios() []writeScenario {
 	closeOK := func(t *testing.T, fw *FileWriter) {
 		t.Helper()
@@ -135,6 +137,54 @@ func compatScenarios() []writeScenario {
 			require.NoError(t, err)
 			require.NoError(t, ds.Write([]float32{1, 2, 3}))
 			require.NoError(t, ds.WriteAttribute("later", "added"))
+			closeOK(t, fw)
+		}},
+		{"chunked_large_header", func(t *testing.T, p string) {
+			// Chunked dataset whose initial header exceeds 255 bytes: the
+			// chunk-size field is 2 bytes wide, which shifts the layout
+			// message's chunk index address patched by Write.
+			fw, err := CreateForWrite(p, CreateTruncate)
+			require.NoError(t, err)
+			opts := []DatasetOption{WithChunkDims([]uint64{4})}
+			for i := 0; i < 4; i++ {
+				opts = append(opts, WithAttribute(fmt.Sprintf("a%d", i), strings.Repeat("z", 100)))
+			}
+			ds, err := fw.CreateDataset("/kc", Float64, []uint64{10}, opts...)
+			require.NoError(t, err)
+			require.NoError(t, ds.Write(seqFloat64(10)))
+			closeOK(t, fw)
+		}},
+		{"filter_orders", func(t *testing.T, p string) {
+			fw, err := CreateForWrite(p, CreateTruncate)
+			require.NoError(t, err)
+			a, err := fw.CreateDataset("/fg", Float64, []uint64{40}, WithChunkDims([]uint64{16}),
+				WithFletcher32(), WithGZIPCompression(6))
+			require.NoError(t, err)
+			require.NoError(t, a.Write(seqFloat64(40)))
+			b, err := fw.CreateDataset("/gf", Float64, []uint64{40}, WithChunkDims([]uint64{16}),
+				WithGZIPCompression(6), WithFletcher32())
+			require.NoError(t, err)
+			require.NoError(t, b.Write(seqFloat64(40)))
+			closeOK(t, fw)
+		}},
+		{"lzf_long_runs", func(t *testing.T, p string) {
+			// LZF (filter 32000, named) with long back-references, checked
+			// against h5py's liblzf-based decoder.
+			withLZF := func(cfg *datasetConfig) {
+				if cfg.pipeline == nil {
+					cfg.pipeline = writer.NewFilterPipeline()
+				}
+				cfg.pipeline.AddFilter(writer.NewLZFFilter())
+			}
+			fw, err := CreateForWrite(p, CreateTruncate)
+			require.NoError(t, err)
+			ds, err := fw.CreateDataset("/lz", Float64, []uint64{2000}, WithChunkDims([]uint64{500}), withLZF)
+			require.NoError(t, err)
+			v := make([]float64, 2000)
+			for i := range v {
+				v[i] = float64(i % 7)
+			}
+			require.NoError(t, ds.Write(v))
 			closeOK(t, fw)
 		}},
 		{"compact_attrs_continuation", func(t *testing.T, p string) {

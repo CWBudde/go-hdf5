@@ -558,7 +558,13 @@ func EncodeAttributeMessage(name string, datatype *DatatypeMessage, dataspace *D
 		return nil, fmt.Errorf("encode datatype: %w", err)
 	}
 
-	dataspaceBytes, err := EncodeDataspaceMessage(dataspace.Dimensions, dataspace.MaxDims)
+	var dataspaceBytes []byte
+	if dataspace.Type == DataspaceScalar && len(dataspace.Dimensions) == 0 {
+		// Scalar dataspace: version 1 with rank 0 (H5S_SCALAR).
+		dataspaceBytes = []byte{1, 0, 0, 0, 0, 0, 0, 0}
+	} else {
+		dataspaceBytes, err = EncodeDataspaceMessage(dataspace.Dimensions, dataspace.MaxDims)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("encode dataspace: %w", err)
 	}

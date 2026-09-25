@@ -41,6 +41,8 @@ try:
     import netCDF4
 except ImportError:
     netCDF4 = None
+if len(sys.argv) > 2 and sys.argv[2] == "no-netcdf":
+    netCDF4 = None  # e.g. LZF is an h5py-only filter
 if netCDF4 is not None:
     def walk(g):
         for v in g.variables.values():
@@ -80,7 +82,11 @@ func TestInteropH5py(t *testing.T) {
 			path := filepath.Join(t.TempDir(), sc.name+".h5")
 			sc.write(t, path)
 
-			out, err := exec.Command(python, "-c", h5pyDumpScript, path).CombinedOutput()
+			args := []string{"-c", h5pyDumpScript, path}
+			if strings.HasPrefix(sc.name, "lzf") {
+				args = append(args, "no-netcdf")
+			}
+			out, err := exec.Command(python, args...).CombinedOutput()
 			require.NoError(t, err, "h5py/netCDF4 failed to read %s:\n%s", sc.name, out)
 
 			var got map[string]h5pyEntry
@@ -119,6 +125,14 @@ func TestInteropH5py(t *testing.T) {
 				require.Equal(t, []interface{}{float64(4)}, got["/wide"].Attrs["_Netcdf4Dimid"])
 				require.Equal(t, []interface{}{"added"}, got["/wide"].Attrs["later"])
 				require.InDelta(t, 6.0, got["/wide"].Sum, 1e-9)
+			case "chunked_large_header":
+				require.InDelta(t, 50.0, got["/kc"].Sum, 1e-9)
+				require.Len(t, got["/kc"].Attrs, 4)
+			case "filter_orders":
+				require.InDelta(t, 800.0, got["/fg"].Sum, 1e-9)
+				require.InDelta(t, 800.0, got["/gf"].Sum, 1e-9)
+			case "lzf_long_runs":
+				require.InDelta(t, 5995.0, got["/lz"].Sum, 1e-9)
 			case "compact_attrs_continuation":
 				require.Len(t, got["/c"].Attrs, 8)
 				require.Equal(t, []interface{}{strings.Repeat("c", 60) + "0"}, got["/c"].Attrs["k0"])

@@ -2,6 +2,7 @@ package hdf5
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -667,4 +668,43 @@ func TestChunkedDatasetMixedValues(t *testing.T) {
 	compressionRatio := float64(uncompressedSize) / float64(info.Size())
 
 	t.Logf("Mixed values compression: %.2f:1", compressionRatio)
+}
+
+// TestChunkedDatasetFilterOrder round-trips pipelines in both orders. With
+// Fletcher32 before deflate, the inflated intermediate output is the chunk
+// plus a 4-byte checksum, larger than the final chunk size.
+func TestChunkedDatasetFilterOrder(t *testing.T) {
+	orders := map[string][]DatasetOption{
+		"fletcher_then_gzip":    {WithFletcher32(), WithGZIPCompression(6)},
+		"gzip_then_fletcher":    {WithGZIPCompression(6), WithFletcher32()},
+		"shuffle_fletcher_gzip": {WithShuffle(), WithFletcher32(), WithGZIPCompression(6)},
+	}
+	for name, filters := range orders {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), name+".h5")
+			fw, err := CreateForWrite(path, CreateTruncate)
+			require.NoError(t, err)
+			opts := append([]DatasetOption{WithChunkDims([]uint64{16})}, filters...)
+			ds, err := fw.CreateDataset("/d", Float64, []uint64{40}, opts...)
+			require.NoError(t, err)
+			want := make([]float64, 40)
+			for i := range want {
+				want[i] = float64(i*i) / 7
+			}
+			require.NoError(t, ds.Write(want))
+			require.NoError(t, fw.Close())
+
+			f, err := Open(path)
+			require.NoError(t, err)
+			defer func() { _ = f.Close() }()
+			var got []float64
+			f.Walk(func(p string, obj Object) {
+				if d, ok := obj.(*Dataset); ok && p == "/d" {
+					got, err = d.Read()
+					require.NoError(t, err)
+				}
+			})
+			require.Equal(t, want, got)
+		})
+	}
 }

@@ -220,15 +220,12 @@ func writeAttribute(fw *FileWriter, objectAddr uint64, name string, value interf
 
 	// Count existing attributes
 	compactCount := 0
-	hasDenseStorage := false
 	for _, msg := range oh.Messages {
 		if msg.Type == core.MsgAttribute {
 			compactCount++
 		}
-		if msg.Type == core.MsgAttributeInfo {
-			hasDenseStorage = true
-		}
 	}
+	hasDenseStorage := hasDenseAttributeStorage(oh, sb)
 
 	// Determine storage strategy
 	if hasDenseStorage {
@@ -243,6 +240,32 @@ func writeAttribute(fw *FileWriter, objectAddr uint64, name string, value interf
 
 	// Transition needed → migrate to dense
 	return transitionToDenseAttributes(fw, objectAddr, oh, name, value, sb)
+}
+
+// hasDenseAttributeStorage reports whether the object header points to
+// dense attribute storage. libhdf5 may write an Attribute Info message with
+// undefined heap/B-tree addresses (e.g. with libver="latest"); such objects
+// still store their attributes compactly.
+func hasDenseAttributeStorage(oh *core.ObjectHeader, sb *core.Superblock) bool {
+	for _, msg := range oh.Messages {
+		if msg.Type != core.MsgAttributeInfo {
+			continue
+		}
+		info, err := core.ParseAttributeInfoMessage(msg.Data, sb)
+		if err != nil {
+			return true // let the dense path report the problem
+		}
+		if isDefinedAddress(info.FractalHeapAddr) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDefinedAddress reports whether addr is neither 0 nor the undefined
+// address (all bits set).
+func isDefinedAddress(addr uint64) bool {
+	return addr != 0 && addr != ^uint64(0)
 }
 
 // hasCompactAttribute reports whether the object header holds a compact
@@ -847,10 +870,11 @@ func transitionToDenseAttributes(fw *FileWriter, objectAddr uint64, oh *core.Obj
 		return fmt.Errorf("failed to add new attribute: %w", err)
 	}
 
-	// 6. Remove compact attributes from object header
+	// 6. Remove compact attributes (and any Attribute Info message without
+	// dense storage, as libhdf5 writes) from the object header
 	var newMessages []*core.HeaderMessage
 	for _, msg := range oh.Messages {
-		if msg.Type != core.MsgAttribute {
+		if msg.Type != core.MsgAttribute && msg.Type != core.MsgAttributeInfo {
 			newMessages = append(newMessages, msg)
 		}
 	}
