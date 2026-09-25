@@ -144,24 +144,21 @@ func TestBTreeV2_LargeScale(t *testing.T) {
 	}
 }
 
-// TestBTreeV2_NodeSizeExceeded tests error handling for full nodes.
-func TestBTreeV2_NodeSizeExceeded(t *testing.T) {
+// TestBTreeV2_NodeGrowsWhenFull checks that a full single leaf doubles its
+// node size instead of failing.
+func TestBTreeV2_NodeGrowsWhenFull(t *testing.T) {
 	bt := NewWritableBTreeV2(128) // Very small node
 
-	// Calculate max records
 	maxRecords := bt.calculateMaxRecords()
 	require.Greater(t, maxRecords, 0)
-
-	// Insert up to max
 	for i := 0; i < maxRecords; i++ {
-		err := bt.InsertRecord(fmt.Sprintf("link%d", i), uint64(i))
-		require.NoError(t, err)
+		require.NoError(t, bt.InsertRecord(fmt.Sprintf("link%d", i), uint64(i)))
 	}
+	require.Equal(t, uint32(128), bt.header.NodeSize)
 
-	// Next insertion should fail
-	err := bt.InsertRecord("overflow", 0xFFFF)
-	require.Error(t, err)
-	require.Equal(t, ErrBTreeNodeFull, err)
+	require.NoError(t, bt.InsertRecord("overflow", 0xFFFF))
+	require.Equal(t, uint32(256), bt.header.NodeSize)
+	require.Len(t, bt.records, maxRecords+1)
 }
 
 // TestBTreeV2_UTF8Names tests Unicode link names.

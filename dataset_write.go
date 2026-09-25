@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 	"unsafe"
 
@@ -466,10 +467,10 @@ var datatypeRegistry map[Datatype]datatypeHandler
 func init() {
 	datatypeRegistry = map[Datatype]datatypeHandler{
 		// Basic integers (fixed-point)
-		Int8:   &basicTypeHandler{core.DatatypeFixed, 1, 0x00},
-		Int16:  &basicTypeHandler{core.DatatypeFixed, 2, 0x00},
-		Int32:  &basicTypeHandler{core.DatatypeFixed, 4, 0x00},
-		Int64:  &basicTypeHandler{core.DatatypeFixed, 8, 0x00},
+		Int8:   &basicTypeHandler{core.DatatypeFixed, 1, 0x08}, // bit 3: signed
+		Int16:  &basicTypeHandler{core.DatatypeFixed, 2, 0x08},
+		Int32:  &basicTypeHandler{core.DatatypeFixed, 4, 0x08},
+		Int64:  &basicTypeHandler{core.DatatypeFixed, 8, 0x08},
 		Uint8:  &basicTypeHandler{core.DatatypeFixed, 1, 0x00},
 		Uint16: &basicTypeHandler{core.DatatypeFixed, 2, 0x00},
 		Uint32: &basicTypeHandler{core.DatatypeFixed, 4, 0x00},
@@ -547,6 +548,7 @@ type FileWriter struct {
 	writer   *writer.FileWriter
 	filename string
 	config   *FileWriteConfig // Configuration for write operations
+	readOnly bool             // Opened with OpenReadOnly: never modify the file
 
 	// Root group metadata for linking objects
 	rootGroupAddr  uint64 // Address of root group object header
@@ -561,6 +563,10 @@ type FileWriter struct {
 
 	// Global heap writer for variable-length data (vlen strings, ragged arrays)
 	globalHeapWriter *globalHeapWriter
+
+	// Dimension scale attachments, written as DIMENSION_LIST /
+	// REFERENCE_LIST attributes on Close.
+	dimScales *dimensionScaleState
 
 	// Rebalancing configurations (Phase 3)
 	// These are set via functional options: WithLazyRebalancing(), WithIncrementalRebalancing(), WithSmartRebalancing()
@@ -592,6 +598,44 @@ type FileWriteConfig struct {
 	SuperblockVersion uint8                  // HDF5 superblock version (0, 2, or 3)
 	BTreeRebalancing  bool                   // Enable B-tree rebalancing after deletions (default: true)
 	RootAttributes    map[string]interface{} // Attributes to add to root group during creation
+
+	// rootAttributeOrder records the order in which WithRootAttribute added
+	// names, so files are written deterministically.
+	rootAttributeOrder []string
+}
+
+// namedAttribute is an attribute name/value pair in write order.
+type namedAttribute struct {
+	name  string
+	value interface{}
+}
+
+// orderedRootAttributes returns the root attributes in insertion order
+// (WithRootAttribute call order). Entries placed in RootAttributes directly
+// follow in name order. Map iteration order is random, so it must never
+// decide the on-disk layout: identical inputs must produce identical files.
+func (cfg *FileWriteConfig) orderedRootAttributes() []namedAttribute {
+	out := make([]namedAttribute, 0, len(cfg.RootAttributes))
+	seen := make(map[string]bool, len(cfg.RootAttributes))
+	for _, name := range cfg.rootAttributeOrder {
+		value, ok := cfg.RootAttributes[name]
+		if !ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, namedAttribute{name, value})
+	}
+	rest := make([]string, 0, len(cfg.RootAttributes)-len(out))
+	for name := range cfg.RootAttributes {
+		if !seen[name] {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	for _, name := range rest {
+		out = append(out, namedAttribute{name, cfg.RootAttributes[name]})
+	}
+	return out
 }
 
 // WithSuperblockVersion sets the HDF5 superblock version.
@@ -679,6 +723,9 @@ func WithRootAttribute(name string, value interface{}) WriteOption {
 		if cfg.RootAttributes == nil {
 			cfg.RootAttributes = make(map[string]interface{})
 		}
+		if _, exists := cfg.RootAttributes[name]; !exists {
+			cfg.rootAttributeOrder = append(cfg.rootAttributeOrder, name)
+		}
 		cfg.RootAttributes[name] = value
 	}
 }
@@ -752,7 +799,7 @@ func CreateForWrite(filename string, mode CreateMode, opts ...interface{}) (*Fil
 	}()
 
 	// Create root group with Symbol Table structure
-	rootInfo, err := createRootGroupStructure(fw, cfg.SuperblockVersion, cfg.RootAttributes)
+	rootInfo, err := createRootGroupStructure(fw, cfg.SuperblockVersion, cfg.orderedRootAttributes())
 	if err != nil {
 		return nil, err
 	}
@@ -773,15 +820,9 @@ func CreateForWrite(filename string, mode CreateMode, opts ...interface{}) (*Fil
 	}
 
 	// Calculate end-of-file address
-	var eofAddress uint64
-	if cfg.SuperblockVersion == core.Version0 {
-		// V0 uses fixed addresses - calculate from actual layout
-		// EOF = last structure address + its size
-		eofAddress = rootInfo.heapAddr + rootInfo.heapSize
-	} else {
-		// V2 uses allocator - get dynamic EOF
-		eofAddress = fw.EndOfFile()
-	}
+	// All root structures are tracked by the allocator (v0 and v2).
+	// Close() refreshes the EOA once everything else has been written.
+	eofAddress := fw.EndOfFile()
 
 	// Step 4: Write superblock at offset 0
 	if err := sb.WriteTo(fw, eofAddress); err != nil {
@@ -1212,22 +1253,10 @@ func calculateObjectHeaderSize(ohw *core.ObjectHeaderWriter) (uint64, error) {
 		return 0, fmt.Errorf("only object header version 2 supported")
 	}
 
-	// Calculate message data size
-	var messageDataSize uint64
-	for _, msg := range ohw.Messages {
-		// Each message: Type (1) + Size (2) + Flags (1) + Data (variable)
-		messageDataSize += 1 + 2 + 1 + uint64(len(msg.Data))
-	}
-
-	// Validate chunk size fits in 1 byte (MVP limitation)
-	if messageDataSize > 255 {
-		return 0, fmt.Errorf("message data size %d exceeds 255 bytes (MVP limitation)", messageDataSize)
-	}
-
-	// Header: Signature (4) + Version (1) + Flags (1) + Chunk Size (1) + Messages
-	headerSize := 4 + 1 + 1 + 1 + messageDataSize
-
-	return headerSize, nil
+	// The chunk size field widens to 2 or 4 bytes as needed (see
+	// ObjectHeaderWriter.sizeV2), so large initial headers (e.g. several
+	// attributes given with WithAttribute) are supported.
+	return ohw.Size(), nil
 }
 
 // DatasetWriter provides write access to a dataset.
@@ -2286,6 +2315,7 @@ func OpenForWrite(filename string, mode OpenMode, opts ...WriteOption) (*FileWri
 		rootBTreeAddr:  rootBTreeAddr,
 		rootHeapAddr:   rootHeapAddr,
 		rootStNodeAddr: rootStNodeAddr,
+		readOnly:       mode != OpenReadWrite,
 	}
 
 	return fileWriter, nil
@@ -2363,6 +2393,9 @@ func (fw *FileWriter) OpenDataset(path string) (*DatasetWriter, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse attribute info: %w", err)
 			}
+			if !isDefinedAddress(attrInfoMsg.FractalHeapAddr) {
+				attrInfoMsg = nil // no dense storage yet (libhdf5 placeholder)
+			}
 		}
 	}
 
@@ -2412,11 +2445,24 @@ func (fw *FileWriter) Close() error {
 	// Future: Will stop all tracked BTrees automatically.
 	_ = fw.StopIncrementalRebalancing() // Ignore error - likely "not enabled" (MVP)
 
+	// Write pending dimension scale attributes (they use the global heap).
+	if err := fw.writeDimensionScaleAttributes(); err != nil {
+		return err
+	}
+
 	// Flush global heap before closing (for variable-length data)
 	if fw.globalHeapWriter != nil {
 		if err := fw.globalHeapWriter.Flush(); err != nil {
 			return fmt.Errorf("failed to flush global heap: %w", err)
 		}
+	}
+
+	// Record the final end-of-file address in the superblock. Everything
+	// written after file creation (datasets, groups, heaps, dense attribute
+	// storage) lies beyond the EOA recorded at creation time, and the HDF5 C
+	// library refuses to read past the EOA.
+	if err := fw.updateSuperblockEOA(); err != nil {
+		return err
 	}
 
 	// Flush buffered writes
@@ -2430,6 +2476,39 @@ func (fw *FileWriter) Close() error {
 	}
 
 	fw.writer = nil
+	return nil
+}
+
+// updateSuperblockEOA sets the superblock end-of-file address to the end of
+// the last allocated/written byte.
+func (fw *FileWriter) updateSuperblockEOA() error {
+	if fw.readOnly || fw.file == nil || fw.file.sb == nil {
+		return nil
+	}
+
+	eoa := fw.writer.EndOfFile()
+	if f := fw.writer.File(); f != nil {
+		st, err := f.Stat()
+		if err != nil {
+			return fmt.Errorf("failed to stat file: %w", err)
+		}
+		size := uint64(st.Size()) //nolint:gosec // G115: file size is non-negative
+		switch {
+		case size > eoa:
+			eoa = size
+		case size < eoa:
+			// Space was allocated but never written (e.g. a dataset whose
+			// Write was never called). The C library rejects files shorter
+			// than their EOA as truncated, so extend the file with zeros.
+			if err := f.Truncate(int64(eoa)); err != nil { //nolint:gosec // G115: EOA fits in int64
+				return fmt.Errorf("failed to extend file to end-of-file address: %w", err)
+			}
+		}
+	}
+
+	if err := fw.file.sb.UpdateEOA(fw.writer, eoa); err != nil {
+		return fmt.Errorf("failed to update superblock end-of-file address: %w", err)
+	}
 	return nil
 }
 
@@ -2799,7 +2878,7 @@ type rootGroupInfo struct {
 // Returns information about the created root group structure.
 // createRootGroupStructure creates the root group structures.
 // Dispatches to version-specific implementation based on superblock version.
-func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8, rootAttributes map[string]interface{}) (*rootGroupInfo, error) {
+func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8, rootAttributes []namedAttribute) (*rootGroupInfo, error) {
 	if superblockVersion == core.Version0 {
 		return createRootGroupStructureV0(fw, rootAttributes)
 	}
@@ -2808,7 +2887,7 @@ func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8, ro
 
 // createRootGroupStructureV2 creates root group for modern format (v2/v3).
 // Order: Heap → B-tree → Object Header (v2 doesn't cache addresses in superblock).
-func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes map[string]interface{}) (*rootGroupInfo, error) {
+func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes []namedAttribute) (*rootGroupInfo, error) {
 	const offsetSize = 8
 	const lengthSize = 8
 
@@ -2837,7 +2916,7 @@ func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes map[string
 	}
 
 	// Create and write root group object header
-	rootGroupAddr, rootGroupSize, err := writeRootGroupHeader(fw, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize, rootAttributes)
+	rootGroupAddr, rootGroupSize, err := writeRootGroupHeader(fw, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize, 2, rootAttributes)
 	if err != nil {
 		return nil, err
 	}
@@ -2853,77 +2932,64 @@ func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes map[string
 }
 
 // createRootGroupStructureV0 creates root group for legacy format (v0).
-// Order: Object Header → B-tree → Heap (as per C library H5Gobj.c)
-// This matches the reference implementation where:
-// 1. H5O_create() creates object header first
-// 2. H5G__stab_create_components() creates B-tree, then heap.
-func createRootGroupStructureV0(fw *writer.FileWriter, rootAttributes map[string]interface{}) (*rootGroupInfo, error) {
+//
+// Layout: B-tree, symbol table node and local heap are written at fixed
+// addresses right after the 96-byte superblock; the allocator is then moved
+// past them so that the root object header (v1, whose size depends on the
+// root attributes), dense attribute storage and all later objects are
+// allocated after the fixed region instead of overwriting it.
+func createRootGroupStructureV0(fw *writer.FileWriter, rootAttributes []namedAttribute) (*rootGroupInfo, error) {
 	const offsetSize = 8
 	const lengthSize = 8
+	const superblockSize = 96
 
-	// Step 1: Calculate sizes for pre-allocation
-	// We need to know addresses before writing, so allocate space first
+	// B-tree node: full size for K=16 (as the C library reads it):
+	// 24-byte header + (2K+1) keys + 2K children.
+	btreeSize := uint64(24 + (2*16+1)*offsetSize + 2*16*offsetSize)
 
-	// Object Header size for v0 group with symbol table message
-	// Header: 16 bytes (signature + version + reserved + messages)
-	// Symbol Table Message: 4 (type+size+flags+reserved) + 16 (btree_addr + heap_addr)
-	// NULL message: 4 (type+size+flags+reserved) for padding
-	objHeaderSize := uint64(16 + 20 + 4)
-
-	// B-tree node size: signature(4) + node_type(1) + node_level(1) + entries_used(2) +
-	//                   left_sibling(8) + right_sibling(8) + key+child pairs
-	// For root with 1 child: 24 + (8+8)*2 = 56 bytes (minimum)
-	btreeSize := uint64(56)
-
-	// Symbol table node size: signature(4) + version(1) + reserved(1) + num_symbols(2) +
-	//                          entries (40 bytes each, capacity 32)
+	// Symbol table node: 8-byte header + 32 entries of 40 bytes.
 	stNodeSize := uint64(8 + 32*40)
 
-	// Local heap size: minimum ~256 bytes
-	heapSize := uint64(256)
+	// Local heap: 32-byte header + 256-byte data segment.
+	rootHeap := structures.NewLocalHeap(256)
 
-	// Step 2: Calculate fixed addresses (no Allocate - we write at fixed offsets)
-	// Superblock v0: 0x00-0x5F (96 bytes)
-	rootGroupAddr := uint64(96)                    // 0x60 - immediately after superblock
-	rootBTreeAddr := rootGroupAddr + objHeaderSize // After object header
-	rootStNodeAddr := rootBTreeAddr + btreeSize    // After B-tree
-	rootHeapAddr := rootStNodeAddr + stNodeSize    // After symbol table node
+	rootBTreeAddr := uint64(superblockSize)
+	rootStNodeAddr := rootBTreeAddr + btreeSize
+	rootHeapAddr := rootStNodeAddr + stNodeSize
+	fixedEnd := rootHeapAddr + rootHeap.Size()
 
-	// Step 3: Write structures in ASCENDING ADDRESS ORDER
-	// CRITICAL: Sequential write order prevents sparse file holes on Windows!
-	// Order: Object Header (96) → B-tree (136) → SNOD (192) → Heap (1480)
-
-	// 1. Write root group object header (offset 96)
-	// V0 superblock requires Object Header v1 (not v2!)
-	const objectHeaderVersion = 1
-	actualObjHeaderSize, err := writeRootGroupHeaderAt(fw, rootGroupAddr, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize, objectHeaderVersion, rootAttributes)
-	if err != nil {
-		return nil, err
+	// Reserve the fixed region in the allocator (it starts right after the superblock).
+	if start, err := fw.Allocate(fixedEnd - superblockSize); err != nil {
+		return nil, fmt.Errorf("failed to reserve root group structures: %w", err)
+	} else if start != superblockSize {
+		return nil, fmt.Errorf("unexpected allocator start %d (want %d)", start, superblockSize)
 	}
 
-	// 2. Write B-tree (offset 136, immediately after object header)
+	// Write structures in ascending address order (avoids sparse holes on Windows).
 	if err := writeBTreeNodeAt(fw, rootBTreeAddr, rootStNodeAddr, offsetSize); err != nil {
 		return nil, err
 	}
-
-	// 3. Write symbol table node (offset 192, after B-tree)
 	if err := writeSymbolTableNodeAt(fw, rootStNodeAddr, offsetSize); err != nil {
 		return nil, err
 	}
-
-	// 4. Write local heap (offset 1480, after symbol table node)
-	rootHeap := structures.NewLocalHeap(256)
 	if err := rootHeap.WriteTo(fw, rootHeapAddr); err != nil {
 		return nil, fmt.Errorf("failed to write root heap: %w", err)
 	}
 
+	// V0 superblock requires Object Header v1 (not v2!)
+	const objectHeaderVersion = 1
+	rootGroupAddr, rootGroupSize, err := writeRootGroupHeader(fw, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize, objectHeaderVersion, rootAttributes)
+	if err != nil {
+		return nil, err
+	}
+
 	return &rootGroupInfo{
 		groupAddr:  rootGroupAddr,
-		groupSize:  actualObjHeaderSize,
+		groupSize:  rootGroupSize,
 		btreeAddr:  rootBTreeAddr,
 		heapAddr:   rootHeapAddr,
 		stNodeAddr: rootStNodeAddr,
-		heapSize:   heapSize, // For v0 EOF calculation
+		heapSize:   rootHeap.Size(),
 	}, nil
 }
 
@@ -3009,95 +3075,92 @@ func createBTreeNode(fw *writer.FileWriter, stNodeAddr uint64, offsetSize int) (
 	return rootBTreeAddr, nil
 }
 
-// writeRootGroupHeaderAt writes the root group object header at the specified address.
-// Returns the actual size written.
-// The objectHeaderVersion parameter determines which object header format to use (1 or 2).
-func writeRootGroupHeaderAt(fw *writer.FileWriter, addr, btreeAddr, heapAddr uint64, offsetSize, lengthSize int, objectHeaderVersion uint8, rootAttributes map[string]interface{}) (uint64, error) {
-	stMsg := core.EncodeSymbolTableMessage(btreeAddr, heapAddr, offsetSize, lengthSize)
-
-	// Start with Symbol Table message
-	messages := []core.MessageWriter{
-		{Type: core.MsgSymbolTable, Data: stMsg},
-	}
-
-	// Add attribute messages - use dense storage if >8 attributes
+// buildRootAttributeMessages encodes root group attributes as object header
+// messages: inline Attribute messages for up to MaxCompactAttributes
+// attributes, otherwise dense storage (fractal heap + B-tree v2, written now)
+// referenced by an Attribute Info message.
+func buildRootAttributeMessages(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes []namedAttribute) ([]core.MessageWriter, error) {
 	if len(rootAttributes) > MaxCompactAttributes {
-		// Dense storage: Use Fractal Heap + B-tree v2
-		denseWriter := writer.NewDenseAttributeWriter(addr)
+		return buildDenseRootAttributes(fw, offsetSize, lengthSize, rootAttributes)
+	}
 
-		// Create superblock for encoding
-		sb := &core.Superblock{
-			Version:    core.Version2,
-			OffsetSize: uint8(offsetSize),
-			LengthSize: uint8(lengthSize),
-			Endianness: binary.LittleEndian,
-		}
-
-		// Add all attributes to dense writer
-		for name, value := range rootAttributes {
-			datatype, dataspace, err := inferDatatypeFromValue(value)
-			if err != nil {
-				return 0, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
-			}
-
-			data, err := encodeAttributeValue(value)
-			if err != nil {
-				return 0, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
-			}
-
-			attr := &core.Attribute{
-				Name:      name,
-				Datatype:  datatype,
-				Dataspace: dataspace,
-				Data:      data,
-			}
-
-			if err := denseWriter.AddAttribute(attr, sb); err != nil {
-				return 0, fmt.Errorf("failed to add dense attribute %q: %w", name, err)
-			}
-		}
-
-		// Write dense storage to file
-		allocator := fw.Allocator()
-		attrInfoMsg, err := denseWriter.WriteToFile(fw, allocator, sb)
+	messages := make([]core.MessageWriter, 0, len(rootAttributes))
+	for _, na := range rootAttributes {
+		name := na.name
+		attr, err := newRootAttribute(name, na.value)
 		if err != nil {
-			return 0, fmt.Errorf("failed to write dense attributes: %w", err)
+			return nil, err
 		}
-
-		// Encode Attribute Info message
-		attrInfoData, err := core.EncodeAttributeInfoMessage(attrInfoMsg, sb)
+		attrMsg, err := core.EncodeAttributeMessage(attr.Name, attr.Datatype, attr.Dataspace, attr.Data)
 		if err != nil {
-			return 0, fmt.Errorf("failed to encode attribute info message: %w", err)
+			return nil, fmt.Errorf("failed to encode attribute message %q: %w", name, err)
 		}
+		messages = append(messages, core.MessageWriter{Type: core.MsgAttribute, Data: attrMsg})
+	}
+	return messages, nil
+}
 
-		messages = append(messages, core.MessageWriter{
-			Type: core.MsgAttributeInfo,
-			Data: attrInfoData,
-		})
-	} else if len(rootAttributes) > 0 {
-		// Compact storage: inline attribute messages (≤8 attributes)
-		for name, value := range rootAttributes {
-			datatype, dataspace, err := inferDatatypeFromValue(value)
-			if err != nil {
-				return 0, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
-			}
+// newRootAttribute infers the datatype/dataspace of value and encodes it.
+func newRootAttribute(name string, value interface{}) (*core.Attribute, error) {
+	datatype, dataspace, err := inferDatatypeFromValue(value)
+	if err != nil {
+		return nil, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
+	}
+	data, err := encodeAttributeValue(value)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
+	}
+	return &core.Attribute{Name: name, Datatype: datatype, Dataspace: dataspace, Data: data}, nil
+}
 
-			data, err := encodeAttributeValue(value)
-			if err != nil {
-				return 0, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
-			}
+// buildDenseRootAttributes writes the attributes to dense storage and returns
+// the Attribute Info message referencing it.
+func buildDenseRootAttributes(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes []namedAttribute) ([]core.MessageWriter, error) {
+	denseWriter := writer.NewDenseAttributeWriter(0)
 
-			attrMsg, err := core.EncodeAttributeMessage(name, datatype, dataspace, data)
-			if err != nil {
-				return 0, fmt.Errorf("failed to encode attribute message %q: %w", name, err)
-			}
+	// Superblock for encoding (dense attribute writer only needs sizes/endianness)
+	sb := &core.Superblock{
+		Version:    core.Version2,
+		OffsetSize: uint8(offsetSize), //nolint:gosec // G115: 8
+		LengthSize: uint8(lengthSize), //nolint:gosec // G115: 8
+		Endianness: binary.LittleEndian,
+	}
 
-			messages = append(messages, core.MessageWriter{
-				Type: core.MsgAttribute,
-				Data: attrMsg,
-			})
+	for _, na := range rootAttributes {
+		name := na.name
+		attr, err := newRootAttribute(name, na.value)
+		if err != nil {
+			return nil, err
+		}
+		if err := denseWriter.AddAttribute(attr, sb); err != nil {
+			return nil, fmt.Errorf("failed to add dense attribute %q: %w", name, err)
 		}
 	}
+
+	attrInfoMsg, err := denseWriter.WriteToFile(fw, fw.Allocator(), sb)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write dense attributes: %w", err)
+	}
+	attrInfoData, err := core.EncodeAttributeInfoMessage(attrInfoMsg, sb)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode attribute info message: %w", err)
+	}
+	return []core.MessageWriter{{Type: core.MsgAttributeInfo, Data: attrInfoData}}, nil
+}
+
+// writeRootGroupHeader creates, allocates and writes the root group object
+// header (symbol table message + attributes). objectHeaderVersion is 1 for
+// superblock v0 files and 2 otherwise.
+// Returns the address where the header was written and its size.
+func writeRootGroupHeader(fw *writer.FileWriter, btreeAddr, heapAddr uint64, offsetSize, lengthSize int, objectHeaderVersion uint8, rootAttributes []namedAttribute) (uint64, uint64, error) {
+	stMsg := core.EncodeSymbolTableMessage(btreeAddr, heapAddr, offsetSize, lengthSize)
+	messages := []core.MessageWriter{{Type: core.MsgSymbolTable, Data: stMsg}}
+
+	attrMsgs, err := buildRootAttributeMessages(fw, offsetSize, lengthSize, rootAttributes)
+	if err != nil {
+		return 0, 0, err
+	}
+	messages = append(messages, attrMsgs...)
 
 	rootGroupHeader := &core.ObjectHeaderWriter{
 		Version:  objectHeaderVersion,
@@ -3106,138 +3169,16 @@ func writeRootGroupHeaderAt(fw *writer.FileWriter, addr, btreeAddr, heapAddr uin
 		RefCount: 1, // Always 1 for new files (used by v1, ignored by v2)
 	}
 
-	// Write root group object header
-	writtenSize, err := rootGroupHeader.WriteTo(fw, addr)
-	if err != nil {
-		return 0, fmt.Errorf("failed to write root group header: %w", err)
-	}
-
-	return writtenSize, nil
-}
-
-// writeRootGroupHeader creates and writes the root group object header.
-// Returns the address where the header was written and its size.
-// Uses Object Header v2 (for superblock v2).
-func writeRootGroupHeader(fw *writer.FileWriter, btreeAddr, heapAddr uint64, offsetSize, lengthSize int, rootAttributes map[string]interface{}) (uint64, uint64, error) {
-	stMsg := core.EncodeSymbolTableMessage(btreeAddr, heapAddr, offsetSize, lengthSize)
-
-	// Start with Symbol Table message
-	messages := []core.MessageWriter{
-		{Type: core.MsgSymbolTable, Data: stMsg},
-	}
-
-	// Add attribute messages - use dense storage if >8 attributes
-	if len(rootAttributes) > MaxCompactAttributes {
-		// Dense storage: Use Fractal Heap + B-tree v2
-		// Create a temporary root group address (will be updated after allocation)
-		tempRootAddr := uint64(48) // Placeholder, actual address determined after writing
-
-		denseWriter := writer.NewDenseAttributeWriter(tempRootAddr)
-
-		// Create superblock for encoding (minimal, just for dense attribute writer)
-		sb := &core.Superblock{
-			Version:    core.Version2,
-			OffsetSize: uint8(offsetSize),
-			LengthSize: uint8(lengthSize),
-			Endianness: binary.LittleEndian,
-		}
-
-		// Add all attributes to dense writer
-		for name, value := range rootAttributes {
-			// Infer datatype and dataspace from value
-			datatype, dataspace, err := inferDatatypeFromValue(value)
-			if err != nil {
-				return 0, 0, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
-			}
-
-			// Encode attribute value
-			data, err := encodeAttributeValue(value)
-			if err != nil {
-				return 0, 0, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
-			}
-
-			// Create attribute struct
-			attr := &core.Attribute{
-				Name:      name,
-				Datatype:  datatype,
-				Dataspace: dataspace,
-				Data:      data,
-			}
-
-			// Add to dense writer
-			if err := denseWriter.AddAttribute(attr, sb); err != nil {
-				return 0, 0, fmt.Errorf("failed to add dense attribute %q: %w", name, err)
-			}
-		}
-
-		// Write dense storage to file
-		allocator := fw.Allocator() // Get allocator from FileWriter
-		attrInfoMsg, err := denseWriter.WriteToFile(fw, allocator, sb)
-		if err != nil {
-			return 0, 0, fmt.Errorf("failed to write dense attributes: %w", err)
-		}
-
-		// Encode Attribute Info message
-		attrInfoData, err := core.EncodeAttributeInfoMessage(attrInfoMsg, sb)
-		if err != nil {
-			return 0, 0, fmt.Errorf("failed to encode attribute info message: %w", err)
-		}
-
-		// Add Attribute Info message to header
-		messages = append(messages, core.MessageWriter{
-			Type: core.MsgAttributeInfo,
-			Data: attrInfoData,
-		})
-	} else if len(rootAttributes) > 0 {
-		// Compact storage: inline attribute messages (≤8 attributes)
-		for name, value := range rootAttributes {
-			// Infer datatype and dataspace from value
-			datatype, dataspace, err := inferDatatypeFromValue(value)
-			if err != nil {
-				return 0, 0, fmt.Errorf("failed to infer datatype for attribute %q: %w", name, err)
-			}
-
-			// Encode attribute value
-			data, err := encodeAttributeValue(value)
-			if err != nil {
-				return 0, 0, fmt.Errorf("failed to encode value for attribute %q: %w", name, err)
-			}
-
-			// Encode attribute message
-			attrMsg, err := core.EncodeAttributeMessage(name, datatype, dataspace, data)
-			if err != nil {
-				return 0, 0, fmt.Errorf("failed to encode attribute message %q: %w", name, err)
-			}
-
-			messages = append(messages, core.MessageWriter{
-				Type: core.MsgAttribute,
-				Data: attrMsg,
-			})
-		}
-	}
-
-	rootGroupHeader := &core.ObjectHeaderWriter{
-		Version:  2, // V2 superblock uses Object Header v2
-		Flags:    0,
-		Messages: messages,
-		RefCount: 1, // Always 1 for new files
-	}
-
-	// Calculate root group object header size
 	rootGroupSize := rootGroupHeader.Size()
-
-	// Allocate space for root group object header
 	rootGroupAddr, err := fw.Allocate(rootGroupSize)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to allocate root group header: %w", err)
 	}
 
-	// Write root group object header
 	writtenSize, err := rootGroupHeader.WriteTo(fw, rootGroupAddr)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to write root group header: %w", err)
 	}
-
 	if writtenSize != rootGroupSize {
 		return 0, 0, fmt.Errorf("root group size mismatch: expected %d, wrote %d", rootGroupSize, writtenSize)
 	}

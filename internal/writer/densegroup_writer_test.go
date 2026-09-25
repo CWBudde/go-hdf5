@@ -384,19 +384,24 @@ func TestDenseGroupWriter_LinkMessage(t *testing.T) {
 		t.Errorf("Link message version mismatch: got %d, want 1", msg[0])
 	}
 
-	// Verify type (second byte should be 0 for hard link)
+	// Flags: only the name-length size code (0 = 1-byte length); no link
+	// type (hard link), creation order or charset fields.
 	if msg[1] != 0 {
-		t.Errorf("Link type mismatch: got %d, want 0 (hard link)", msg[1])
+		t.Errorf("Link message flags mismatch: got 0x%02x, want 0", msg[1])
 	}
 
-	// Verify flags (third byte should have character set bit set)
-	if msg[2]&0x04 == 0 {
-		t.Error("Character set flag not set")
+	// Name length (1 byte), name, then the 8-byte target address.
+	if int(msg[2]) != len("testlink") {
+		t.Errorf("Link name length mismatch: got %d, want %d", msg[2], len("testlink"))
 	}
-
-	// Verify encoding (fourth byte should be 0 for UTF-8)
-	if msg[3] != 0 {
-		t.Errorf("Character encoding mismatch: got %d, want 0 (UTF-8)", msg[3])
+	if string(msg[3:3+len("testlink")]) != "testlink" {
+		t.Errorf("Link name mismatch: got %q", msg[3:3+len("testlink")])
+	}
+	if got := binary.LittleEndian.Uint64(msg[3+len("testlink"):]); got != 0x123456 {
+		t.Errorf("Target address mismatch: got 0x%x", got)
+	}
+	if len(msg) != 3+len("testlink")+8 {
+		t.Errorf("Link message size mismatch: got %d", len(msg))
 	}
 
 	// Verify message contains link name

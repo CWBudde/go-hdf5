@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"unsafe"
 
 	"github.com/cwbudde/go-hdf5/internal/utils"
@@ -179,6 +180,13 @@ func (a *Attribute) ReadValue() (interface{}, error) {
 	if totalElements == 0 || len(a.Data) == 0 {
 		// Empty attribute - return empty slice instead of nil.
 		return []interface{}{}, nil
+	}
+
+	// Every element occupies at least one byte of attribute data; reject
+	// dataspaces that claim more elements than the data can hold before
+	// allocating any result slice.
+	if totalElements > uint64(len(a.Data)) {
+		return nil, fmt.Errorf("attribute data size mismatch: %d elements, %d bytes", totalElements, len(a.Data))
 	}
 
 	// For scalar attributes, return single value.
@@ -593,7 +601,7 @@ func readDenseAttributes(r io.ReaderAt, attrInfo *AttributeInfoMessage, sb *Supe
 	}
 
 	// Step 2: Read B-tree leaf node to get all heap IDs
-	heapIDs, err := readBTreeV2LeafRecords(r, btreeHeader.RootNodeAddr, btreeHeader.NumRecordsRoot, sb)
+	heapIDs, err := readBTreeV2LeafRecords(r, btreeHeader.RootNodeAddr, btreeHeader.NumRecordsRoot, btreeHeader.Type, btreeHeader.RecordSize, sb)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read B-tree leaf: %w", err)
 	}
@@ -618,7 +626,12 @@ func readDenseAttributes(r io.ReaderAt, attrInfo *AttributeInfoMessage, sb *Supe
 		}
 
 		// Read object from direct block
-		objectData, err := readHeapObject(r, heapHeader.RootBlockAddress, offset, length, sb, heapHeader)
+		// Spec-compliant attribute name indexes (type 8, as written by the HDF5
+		// library) use heap offsets measured from the start of the direct
+		// block. Legacy go-hdf5 files used a type 5 index with offsets
+		// relative to the block's data area.
+		specOffsets := btreeHeader.Type == 8
+		objectData, err := readHeapObject(r, heapHeader.RootBlockAddress, offset, length, sb, heapHeader, specOffsets)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read heap object %d: %w", i, err)
 		}
@@ -740,20 +753,28 @@ func readBTreeV2HeaderRaw(r io.ReaderAt, addr uint64, sb *Superblock) (*btreeV2H
 //   - Records (N × record size):
 //     Each record: Name Hash (4 bytes) + Heap ID (7 bytes)
 //   - Checksum (4 bytes)
-func readBTreeV2LeafRecords(r io.ReaderAt, addr uint64, numRecords uint16, _ *Superblock) ([][7]byte, error) {
-	// Each record: 4 (hash) + 7 (heap ID) = 11 bytes
+func readBTreeV2LeafRecords(r io.ReaderAt, addr uint64, numRecords uint16, btreeType uint8, recordSize uint16, _ *Superblock) ([][7]byte, error) {
+	// Record layouts:
+	//   type 8 (attribute name index): heap ID (8) + flags (1) + creation order (4) + hash (4)
+	//   legacy go-hdf5 (type 5 layout): hash (4) + heap ID (7)
+	recSize := 11
+	heapIDPos := 4
+	if btreeType == 8 {
+		recSize = int(recordSize)
+		heapIDPos = 0
+		if recSize < 7 {
+			return nil, fmt.Errorf("attribute name record size %d too small", recSize)
+		}
+	}
+
 	// Header: 4 (sig) + 1 (ver) + 1 (type) = 6 bytes
 	// Checksum: 4 bytes
-	bufSize := 6 + int(numRecords)*11 + 4
-	buf := make([]byte, bufSize)
-
-	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-	n, err := r.ReadAt(buf, int64(addr))
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("read failed at 0x%X: %w", addr, err)
-	}
-	if n < 10 {
-		return nil, fmt.Errorf("leaf node too short: %d bytes", n)
+	// The size is computed in uint64 (at most ~4 GiB for uint16 fields) and
+	// checked against the file size before anything is allocated.
+	bufSize := 6 + uint64(numRecords)*uint64(recSize) + 4
+	buf, err := utils.ReadAtChecked(r, addr, bufSize, "B-tree v2 leaf")
+	if err != nil {
+		return nil, err
 	}
 
 	// Check signature
@@ -767,14 +788,12 @@ func readBTreeV2LeafRecords(r io.ReaderAt, addr uint64, numRecords uint16, _ *Su
 	// Read records
 	heapIDs := make([][7]byte, numRecords)
 	for i := uint16(0); i < numRecords; i++ {
-		if offset+11 > len(buf) {
+		if offset+recSize > len(buf) {
 			return nil, fmt.Errorf("buffer too short for record %d", i)
 		}
 
-		// Skip name hash (4 bytes), copy heap ID (7 bytes)
-		offset += 4
-		copy(heapIDs[i][:], buf[offset:offset+7])
-		offset += 7
+		copy(heapIDs[i][:], buf[offset+heapIDPos:offset+heapIDPos+7])
+		offset += recSize
 	}
 
 	return heapIDs, nil
@@ -962,7 +981,7 @@ func parseHeapID(heapID [7]byte, header *fractalHeapHeaderRaw) (offset, length u
 //   - Block Offset (heapOffsetSize bytes from heap header)
 //   - Managed Objects Data (variable)
 //   - Optional Checksum (4 bytes if ChecksumDirBlocks flag set)
-func readHeapObject(r io.ReaderAt, blockAddr, offset, length uint64, sb *Superblock, header *fractalHeapHeaderRaw) ([]byte, error) {
+func readHeapObject(r io.ReaderAt, blockAddr, offset, length uint64, sb *Superblock, header *fractalHeapHeaderRaw, specOffsets bool) ([]byte, error) {
 	// Read direct block header to determine object data start
 	// Header size: 4 (sig) + 1 (ver) + offsetSize (heap addr) + heapOffsetSize (block offset)
 	headerSize := 4 + 1 + int(sb.OffsetSize) + int(header.HeapOffsetSize)
@@ -1005,17 +1024,18 @@ func readHeapObject(r io.ReaderAt, blockAddr, offset, length uint64, sb *Superbl
 	// Now we're at the start of managed objects data
 	// Read the object at the relative offset within this block
 	//nolint:gosec // G115: headerOffset bounded by header size specification
-	objectAddr := blockAddr + uint64(headerOffset) + relativeOffset
-	objectData := make([]byte, length)
-
-	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-	n, err = r.ReadAt(objectData, int64(objectAddr))
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("read object failed at 0x%X: %w", objectAddr, err)
+	objectAddr := blockAddr + uint64(headerOffset)
+	if specOffsets {
+		// Offset already includes the direct block header.
+		objectAddr = blockAddr
 	}
-	//nolint:gosec // G115: Safe comparison, length bounded by heap object size
-	if uint64(n) < length {
-		return nil, fmt.Errorf("object data too short: got %d bytes, expected %d", n, length)
+	if relativeOffset > math.MaxUint64-objectAddr {
+		return nil, fmt.Errorf("object offset 0x%X overflows", relativeOffset)
+	}
+	objectAddr += relativeOffset
+	objectData, err := utils.ReadAtChecked(r, objectAddr, length, "heap object")
+	if err != nil {
+		return nil, err
 	}
 
 	return objectData, nil

@@ -241,10 +241,16 @@ func parseV2Header(r io.ReaderAt, headerAddr uint64, flags uint8, sb *Superblock
 
 	//nolint:gosec // G115: Safe conversion for HDF5 structure sizes
 	current += uint64(chunkSizeBytes)
+	if err := utils.CheckReadBounds(r, current, chunkSize, "object header chunk"); err != nil {
+		return nil, "", err
+	}
 	// V2 headers have a 4-byte CRC32 checksum at the end of each chunk.
 	// The chunkSize includes the checksum, so we subtract 4 to get the
 	// end-of-messages boundary (H5O_SIZEOF_CHKSUM = 4).
-	end := current + chunkSize - 4
+	end := current
+	if chunkSize >= 4 {
+		end = current + chunkSize - 4
+	}
 
 	// Determine message header size based on flags.
 	// V2 message format: Type (1) + Size (2) + Flags (1) = 4 bytes
@@ -283,10 +289,10 @@ func parseV2Header(r io.ReaderAt, headerAddr uint64, flags uint8, sb *Superblock
 			continue
 		}
 
-		data := utils.GetBuffer(int(msgSize))
+		// Message data is retained by the message, so it is not pooled.
+		data := make([]byte, msgSize)
 		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
 		if _, err := r.ReadAt(data, int64(current+msgHeaderSize)); err != nil {
-			utils.ReleaseBuffer(data)
 			return nil, "", utils.WrapError("message data read failed", err)
 		}
 
@@ -351,11 +357,15 @@ func parseV2ContinuationBlock(r io.ReaderAt, blockAddr, blockSize, msgHeaderSize
 		return nil, fmt.Errorf("invalid continuation signature %q at 0x%x", string(sig), blockAddr)
 	}
 
+	if err := utils.CheckReadBounds(r, blockAddr, blockSize, "object header continuation block"); err != nil {
+		return nil, err
+	}
 	current := blockAddr + ochkSignatureSize
 	end := blockAddr + blockSize - checksumSize
 
 	var messages []*HeaderMessage
-	for current < end {
+	// A gap smaller than a message header may remain at the end of the chunk.
+	for current+msgHeaderSize <= end {
 		headerBuf := utils.GetBuffer(6)
 		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
 		if _, err := r.ReadAt(headerBuf, int64(current)); err != nil {
@@ -376,10 +386,10 @@ func parseV2ContinuationBlock(r io.ReaderAt, blockAddr, blockSize, msgHeaderSize
 			continue
 		}
 
-		data := utils.GetBuffer(int(msgSize))
+		// Message data is retained by the message, so it is not pooled.
+		data := make([]byte, msgSize)
 		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
 		if _, err := r.ReadAt(data, int64(current+msgHeaderSize)); err != nil {
-			utils.ReleaseBuffer(data)
 			return nil, utils.WrapError("continuation message data read failed", err)
 		}
 

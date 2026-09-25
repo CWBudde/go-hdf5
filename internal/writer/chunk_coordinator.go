@@ -207,7 +207,8 @@ func (cc *ChunkCoordinator) GetChunkSize(coord []uint64) []uint64 {
 //   - elemSize: Size of each element in bytes
 //
 // Returns:
-//   - []byte: Extracted chunk data (contiguous buffer)
+//   - []byte: Extracted chunk data (full chunk size, row-major; elements
+//     outside the dataset are zero)
 //
 // Example (2D, dataset 20x30 uint32, chunks 10x10):
 //
@@ -222,11 +223,11 @@ func (cc *ChunkCoordinator) GetChunkSize(coord []uint64) []uint64 {
 //	  2. Calculate linear offset in dataset buffer
 //	  3. Copy element to chunk buffer
 func (cc *ChunkCoordinator) ExtractChunkData(data []byte, coord []uint64, elemSize uint32) []byte {
-	chunkSize := cc.GetChunkSize(coord)
-
-	// Calculate total number of elements in chunk
+	// HDF5 always stores full-size chunks: edge chunks that extend past the
+	// dataset boundary keep the full chunk layout, with the part outside
+	// the dataset zero-filled (H5D__chunk_write).
 	numElements := uint64(1)
-	for _, dim := range chunkSize {
+	for _, dim := range cc.chunkDims {
 		numElements *= dim
 	}
 
@@ -273,10 +274,10 @@ func (cc *ChunkCoordinator) extractRecursive(src, dst []byte, coord []uint64, di
 	}
 	dsStride *= uint64(elemSize)
 
-	// Chunk stride: number of bytes to skip in chunk buffer
+	// Chunk stride: number of bytes to skip in the (full-size) chunk buffer
 	chunkStride := uint64(1)
-	for i := dim + 1; i < len(chunkSize); i++ {
-		chunkStride *= chunkSize[i]
+	for i := dim + 1; i < len(cc.chunkDims); i++ {
+		chunkStride *= cc.chunkDims[i]
 	}
 	chunkStride *= uint64(elemSize)
 

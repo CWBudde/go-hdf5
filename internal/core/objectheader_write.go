@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // ObjectHeaderWriter provides functionality for writing HDF5 object headers.
@@ -64,6 +66,13 @@ func NewMinimalRootGroupHeader() *ObjectHeaderWriter {
 	}
 }
 
+// ObjectHeaderV2ChecksumSize is the size of the checksum that terminates every
+// version 2 object header chunk (H5O_SIZEOF_CHKSUM).
+const ObjectHeaderV2ChecksumSize = 4
+
+// objectHeaderV2Signature is the signature of version 2 object headers.
+const objectHeaderV2Signature = "OHDR"
+
 // Size calculates the total size of the object header in bytes.
 // This is used for pre-allocation before writing.
 //
@@ -75,8 +84,9 @@ func NewMinimalRootGroupHeader() *ObjectHeaderWriter {
 //   - Messages: sum of (2 + 2 + 1 + 3 + len(data)) for each message (8-byte aligned)
 //
 // For object header v2:
-//   - Header: 4 (signature) + 1 (version) + 1 (flags) + 1 (chunk size) = 7 bytes
+//   - Header: 4 (signature) + 1 (version) + 1 (flags) + 1/2/4 (chunk size)
 //   - Messages: sum of (1 + 2 + 1 + len(data)) for each message
+//   - Checksum: 4 bytes
 func (ohw *ObjectHeaderWriter) Size() uint64 {
 	switch ohw.Version {
 	case 1:
@@ -145,8 +155,10 @@ func (ohw *ObjectHeaderWriter) sizeV2() uint64 {
 		chunkSizeBytes = 4
 	}
 
-	// Header size: Signature (4) + Version (1) + Flags (1) + Chunk Size (1/2/4) + Messages
-	return 4 + 1 + 1 + chunkSizeBytes + messageDataSize
+	// Signature (4) + Version (1) + Flags (1) + Chunk Size (1/2/4) + Messages + Checksum (4).
+	// The "Size of Chunk #0" field covers only the messages; the trailing
+	// Jenkins lookup3 checksum is NOT part of it but is part of the on-disk header.
+	return 4 + 1 + 1 + chunkSizeBytes + messageDataSize + ObjectHeaderV2ChecksumSize
 }
 
 // WriteTo writes the object header to the writer at the specified address.
@@ -203,10 +215,10 @@ func (ohw *ObjectHeaderWriter) writeToV1(w io.WriterAt, address uint64) (uint64,
 	totalSize := ohw.sizeV1()
 	buf := make([]byte, totalSize)
 
-	// Calculate "Object Header Size" field value
-	// This field includes ONLY: 16-byte header + message headers (8 bytes each)
-	// It does NOT include message data!
-	objectHeaderSize := uint32(16 + (len(ohw.Messages) * 8)) //nolint:gosec // G115: Safe - message count limited by HDF5 spec
+	// "Object Header Size" field: number of bytes of message data (message
+	// headers + 8-byte aligned message bodies) that follow the 16-byte prefix
+	// (H5O__cache_deserialize: chunk0_size).
+	objectHeaderSize := uint32(totalSize - 16) //nolint:gosec // G115: Safe - header size limited by HDF5 spec
 
 	offset := 0
 
@@ -240,8 +252,11 @@ func (ohw *ObjectHeaderWriter) writeToV1(w io.WriterAt, address uint64) (uint64,
 		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(msg.Type))
 		offset += 2
 
-		// Message data size (2 bytes, little-endian)
-		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(len(msg.Data))) //nolint:gosec // G115: Safe - message size validated
+		// Message data size (2 bytes, little-endian). In version 1 headers the
+		// size includes the padding to a multiple of 8 bytes; the C library
+		// rejects unaligned sizes ("message not aligned").
+		alignedSize := (len(msg.Data) + 7) &^ 7
+		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(alignedSize)) //nolint:gosec // G115: Safe - message size validated
 		offset += 2
 
 		// Message flags (1 byte)
@@ -313,14 +328,17 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 	}
 
 	// Build header
-	// Signature (4) + Version (1) + Flags (1) + Chunk Size (1/2/4) + Messages (variable)
-	headerSize := 4 + 1 + 1 + uint64(chunkSizeBytes) + chunkSize
+	// Signature (4) + Version (1) + Flags (1) + Chunk Size (1/2/4) + Messages (variable) + Checksum (4).
+	// "Size of Chunk #0" excludes the checksum (H5O_SIZEOF_CHKSUM), but the checksum
+	// is part of the header on disk and MUST be present: the HDF5 C library reads
+	// prefix + chunk0 size + 4 bytes and verifies the checksum.
+	headerSize := 4 + 1 + 1 + uint64(chunkSizeBytes) + chunkSize + ObjectHeaderV2ChecksumSize
 	buf := make([]byte, headerSize)
 
 	offset := 0
 
 	// Write signature "OHDR" (4 bytes, little-endian format).
-	copy(buf[offset:offset+4], "OHDR")
+	copy(buf[offset:offset+4], objectHeaderV2Signature)
 	offset += 4
 
 	// Version
@@ -364,6 +382,9 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 		offset += len(msg.Data)
 	}
 
+	// Checksum (Jenkins lookup3) over everything from the signature up to here.
+	binary.LittleEndian.PutUint32(buf[offset:offset+ObjectHeaderV2ChecksumSize], utils.JenkinsChecksum(buf[:offset]))
+
 	// Write to file
 	n, err := w.WriteAt(buf, int64(address)) //nolint:gosec // Safe: address within file bounds
 	if err != nil {
@@ -377,8 +398,13 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 	return headerSize, nil
 }
 
+// maxHeaderMessageSize is the largest message body an object header message
+// can hold (2-byte size field).
+const maxHeaderMessageSize = 0xFFFF
+
 // AddMessageToObjectHeader adds a message to an object header.
-// For MVP (v0.11.1-beta): Only supports object header v2 without continuation blocks.
+// Only object header v2 is supported. The header may grow beyond its
+// allocated chunk #0; WriteObjectHeader spills into a continuation chunk.
 //
 // Parameters:
 //   - oh: Object header to modify
@@ -389,7 +415,6 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 //   - error: Non-nil if header full or add fails
 //
 // Limitations:
-//   - No continuation blocks (returns error if header would overflow)
 //   - Only object header v2 supported
 //   - No message flags (always 0)
 //
@@ -403,28 +428,14 @@ func AddMessageToObjectHeader(oh *ObjectHeader, msgType MessageType, msgData []b
 		return fmt.Errorf("only object header version 2 is supported for modification, got version %d", oh.Version)
 	}
 
-	// For MVP: We don't support continuation blocks
-	// Calculate the space needed for the new message
-	// Message format in v2: Type(1) + Size(2) + Flags(1) + Data(variable)
-	messageHeaderSize := 4 // Type(1) + Size(2) + Flags(1)
-	totalMessageSize := messageHeaderSize + len(msgData)
-
-	// For MVP: We check if adding this message would exceed a reasonable header size
-	// HDF5 typically limits object header chunk 0 to 255 bytes (1-byte size encoding)
-	// We'll check the total size of all messages
-	currentMessagesSize := 0
-	for _, msg := range oh.Messages {
-		currentMessagesSize += 4 + len(msg.Data)
-	}
-
-	newTotalSize := currentMessagesSize + totalMessageSize
-
-	// For MVP: Limit to 255 bytes (max size for 1-byte chunk size encoding)
-	// In practice, headers with continuation blocks can be larger,
-	// but we're not implementing that yet
-	if newTotalSize > 255 {
-		return fmt.Errorf("object header full (current: %d bytes, new message: %d bytes, max: 255 bytes); continuation blocks not yet supported",
-			currentMessagesSize, totalMessageSize)
+	// Header messages carry a 2-byte size field. Like libhdf5
+	// (H5O_MESG_MAX_SIZE), larger messages cannot live in the header; the
+	// caller moves attributes to dense storage instead. There is no limit on
+	// the total size: WriteObjectHeader moves messages that do not fit into
+	// chunk #0 into a continuation chunk.
+	if len(msgData) > maxHeaderMessageSize {
+		return fmt.Errorf("object header full: message of %d bytes exceeds the %d byte header message limit",
+			len(msgData), maxHeaderMessageSize)
 	}
 
 	// Create new message
@@ -470,10 +481,21 @@ func WriteObjectHeader(w io.WriterAt, addr uint64, oh *ObjectHeader, sb *Superbl
 		return fmt.Errorf("only object header version 2 is supported for writing, got version %d", oh.Version)
 	}
 
+	// When the destination can be read back, rewrite the header inside the
+	// space it already occupies (spilling into a continuation chunk if
+	// needed). Writing a larger header at the same address would overwrite
+	// whatever object was allocated right after it.
+	if rw, ok := w.(ReaderWriterAt); ok {
+		if capacity, _, err := readV2Chunk0Layout(rw, addr); err == nil && capacity > 0 {
+			alloc, _ := w.(SpaceAllocator)
+			return rewriteObjectHeaderV2InPlace(rw, alloc, addr, oh, sb)
+		}
+	}
+
 	// Build object header writer from the object header
 	ohw := &ObjectHeaderWriter{
 		Version:  oh.Version,
-		Flags:    oh.Flags,
+		Flags:    oh.Flags &^ 0x03, // chunk size width is recomputed by WriteTo
 		Messages: make([]MessageWriter, len(oh.Messages)),
 	}
 
@@ -543,4 +565,291 @@ func RewriteObjectHeaderV2(w io.WriterAt, r io.ReaderAt, addr uint64, sb *Superb
 	}
 
 	return nil
+}
+
+// ReaderWriterAt combines io.ReaderAt and io.WriterAt.
+type ReaderWriterAt interface {
+	io.ReaderAt
+	io.WriterAt
+}
+
+// RefreshObjectHeaderV2Checksum recomputes and rewrites the checksum of the
+// first chunk of a version 2 object header located at addr.
+//
+// It must be called after any in-place patch of bytes inside an already
+// written v2 object header (for example updating an address stored in a
+// layout message), otherwise the HDF5 C library rejects the header with a
+// checksum mismatch.
+func RefreshObjectHeaderV2Checksum(rw ReaderWriterAt, addr uint64) error {
+	prefix := make([]byte, 6)
+	if _, err := rw.ReadAt(prefix, int64(addr)); err != nil { //nolint:gosec // Safe: address within file bounds
+		return fmt.Errorf("failed to read object header prefix at %d: %w", addr, err)
+	}
+	if string(prefix[0:4]) != objectHeaderV2Signature || prefix[4] != 2 {
+		return fmt.Errorf("no version 2 object header at address %d", addr)
+	}
+	flags := prefix[5]
+
+	pos := uint64(6)
+	if flags&0x20 != 0 { // times stored
+		pos += 16
+	}
+	if flags&0x10 != 0 { // non-default attribute phase change values
+		pos += 4
+	}
+	sizeBytes := uint64(1) << (flags & 0x03)
+	sizeBuf := make([]byte, 8)
+	if _, err := rw.ReadAt(sizeBuf[:sizeBytes], int64(addr+pos)); err != nil { //nolint:gosec // Safe: address within file bounds
+		return fmt.Errorf("failed to read chunk size at %d: %w", addr+pos, err)
+	}
+	chunkSize := binary.LittleEndian.Uint64(sizeBuf)
+	pos += sizeBytes
+
+	const maxChunk = 1 << 32
+	if chunkSize > maxChunk {
+		return fmt.Errorf("object header chunk size %d too large", chunkSize)
+	}
+
+	buf := make([]byte, pos+chunkSize)
+	if _, err := rw.ReadAt(buf, int64(addr)); err != nil { //nolint:gosec // Safe: address within file bounds
+		return fmt.Errorf("failed to read object header at %d: %w", addr, err)
+	}
+
+	sum := make([]byte, ObjectHeaderV2ChecksumSize)
+	binary.LittleEndian.PutUint32(sum, utils.JenkinsChecksum(buf))
+	if _, err := rw.WriteAt(sum, int64(addr+pos+chunkSize)); err != nil { //nolint:gosec // Safe: address within file bounds
+		return fmt.Errorf("failed to write object header checksum: %w", err)
+	}
+	return nil
+}
+
+// SpaceAllocator allocates file space (implemented by writer.FileWriter).
+type SpaceAllocator interface {
+	Allocate(size uint64) (uint64, error)
+}
+
+// readV2Chunk0Layout returns the chunk #0 size (excluding the checksum) and
+// the prefix length (signature through the chunk-size field) of the v2 object
+// header at addr.
+func readV2Chunk0Layout(r io.ReaderAt, addr uint64) (chunkSize, prefixLen uint64, err error) {
+	prefix := make([]byte, 6)
+	if _, err := r.ReadAt(prefix, int64(addr)); err != nil { //nolint:gosec // Safe: address within file bounds
+		return 0, 0, err
+	}
+	if string(prefix[0:4]) != objectHeaderV2Signature || prefix[4] != 2 {
+		return 0, 0, fmt.Errorf("no version 2 object header at %d", addr)
+	}
+	flags := prefix[5]
+	pos := uint64(6)
+	if flags&0x20 != 0 {
+		pos += 16
+	}
+	if flags&0x10 != 0 {
+		pos += 4
+	}
+	width := uint64(1) << (flags & 0x03)
+	sizeBuf := make([]byte, 8)
+	if _, err := r.ReadAt(sizeBuf[:width], int64(addr+pos)); err != nil { //nolint:gosec // Safe: address within file bounds
+		return 0, 0, err
+	}
+	return binary.LittleEndian.Uint64(sizeBuf), pos + width, nil
+}
+
+// encodeV2Messages encodes messages as v2 header messages (type, size, flags, data).
+func encodeV2Messages(msgs []*HeaderMessage) ([]byte, error) {
+	size := 0
+	for _, m := range msgs {
+		size += 4 + len(m.Data)
+	}
+	out := make([]byte, 0, size)
+	for _, m := range msgs {
+		if len(m.Data) > 0xFFFF {
+			return nil, fmt.Errorf("message type %d too large (%d bytes)", m.Type, len(m.Data))
+		}
+		out = append(out, byte(m.Type))
+		out = binary.LittleEndian.AppendUint16(out, uint16(len(m.Data))) //nolint:gosec // G115: checked above
+		out = append(out, 0)
+		out = append(out, m.Data...)
+	}
+	return out, nil
+}
+
+// appendV2Gap pads a v2 chunk with gap bytes, using NIL messages where possible.
+func appendV2Gap(buf []byte, gap uint64) []byte {
+	for gap >= 4 {
+		n := gap - 4
+		if n > 0xFFFF {
+			n = 0xFFFF
+		}
+		buf = append(buf, byte(MsgNil))
+		buf = binary.LittleEndian.AppendUint16(buf, uint16(n)) //nolint:gosec // G115: n <= 0xFFFF
+		buf = append(buf, 0)
+		buf = append(buf, make([]byte, n)...)
+		gap -= 4 + n
+	}
+	// A gap smaller than a message header is allowed at the end of a chunk.
+	return append(buf, make([]byte, gap)...)
+}
+
+// rewriteObjectHeaderV2InPlace rewrites the messages of the existing v2
+// object header at addr without changing the size of chunk #0. Messages that
+// do not fit are moved into a newly allocated continuation chunk ("OCHK").
+func rewriteObjectHeaderV2InPlace(rw ReaderWriterAt, alloc SpaceAllocator, addr uint64, oh *ObjectHeader, sb *Superblock) error {
+	capacity, prefixLen, err := readV2Chunk0Layout(rw, addr)
+	if err != nil {
+		return err
+	}
+	prefix := make([]byte, prefixLen)
+	if _, err := rw.ReadAt(prefix, int64(addr)); err != nil { //nolint:gosec // Safe: address within file bounds
+		return fmt.Errorf("failed to read object header prefix: %w", err)
+	}
+	if prefix[5]&0x04 != 0 {
+		return fmt.Errorf("object header at %d tracks attribute creation order; rewriting not supported", addr)
+	}
+
+	// Drop NIL and continuation messages: layout is recomputed from scratch.
+	// A single existing continuation chunk is reused when the spilled
+	// messages still fit, so repeated attribute writes do not leak space.
+	msgs := make([]*HeaderMessage, 0, len(oh.Messages))
+	var reuse *continuationChunk
+	conts := 0
+	for _, m := range oh.Messages {
+		if m.Type == MsgContinuation {
+			conts++
+			if c, ok := parseContinuation(m.Data, sb); ok {
+				reuse = &c
+			}
+		}
+		if m.Type == MsgNil || m.Type == MsgContinuation {
+			continue
+		}
+		msgs = append(msgs, m)
+	}
+	if conts != 1 {
+		reuse = nil
+	}
+
+	all, err := encodeV2Messages(msgs)
+	if err != nil {
+		return err
+	}
+
+	chunk := all
+	if uint64(len(all)) > capacity {
+		chunk, err = spillToContinuationChunk(rw, alloc, addr, capacity, msgs, sb, reuse)
+		if err != nil {
+			return err
+		}
+	}
+	chunk = appendV2Gap(chunk, capacity-uint64(len(chunk)))
+
+	buf := make([]byte, 0, uint64(len(prefix))+capacity+ObjectHeaderV2ChecksumSize)
+	buf = append(buf, prefix...)
+	buf = append(buf, chunk...)
+	buf = binary.LittleEndian.AppendUint32(buf, utils.JenkinsChecksum(buf))
+	if _, err := rw.WriteAt(buf, int64(addr)); err != nil { //nolint:gosec // Safe: address within file bounds
+		return fmt.Errorf("failed to write object header at %d: %w", addr, err)
+	}
+	return nil
+}
+
+// continuationChunk is the location of an object header continuation chunk.
+type continuationChunk struct {
+	addr, length uint64
+}
+
+// parseContinuation decodes a continuation message (address, length).
+func parseContinuation(data []byte, sb *Superblock) (continuationChunk, bool) {
+	offsetSize, lengthSize := 8, 8
+	if sb != nil && sb.OffsetSize != 0 {
+		offsetSize, lengthSize = int(sb.OffsetSize), int(sb.LengthSize)
+	}
+	if len(data) < offsetSize+lengthSize {
+		return continuationChunk{}, false
+	}
+	c := continuationChunk{
+		addr:   readUintN(data[:offsetSize]),
+		length: readUintN(data[offsetSize : offsetSize+lengthSize]),
+	}
+	return c, c.addr != 0 && c.length > 0
+}
+
+// readUintN decodes a little-endian unsigned integer of 1-8 bytes.
+func readUintN(b []byte) uint64 {
+	var v uint64
+	for i := len(b) - 1; i >= 0; i-- {
+		v = v<<8 | uint64(b[i])
+	}
+	return v
+}
+
+// spillToContinuationChunk keeps the leading messages that fit into chunk #0
+// (together with a continuation message), writes the rest into a new "OCHK"
+// continuation chunk and returns the encoded (unpadded) chunk #0 messages.
+func spillToContinuationChunk(rw ReaderWriterAt, alloc SpaceAllocator, addr, capacity uint64,
+	msgs []*HeaderMessage, sb *Superblock, reuse *continuationChunk,
+) ([]byte, error) {
+	offsetSize, lengthSize := uint64(8), uint64(8)
+	if sb != nil && sb.OffsetSize != 0 {
+		offsetSize, lengthSize = uint64(sb.OffsetSize), uint64(sb.LengthSize)
+	}
+	contMsgSize := 4 + offsetSize + lengthSize
+	if capacity < contMsgSize {
+		return nil, fmt.Errorf("object header at %d too small (%d bytes) for a continuation message", addr, capacity)
+	}
+
+	var used uint64
+	split := 0
+	for split < len(msgs) {
+		sz := 4 + uint64(len(msgs[split].Data))
+		if used+sz > capacity-contMsgSize {
+			break
+		}
+		used += sz
+		split++
+	}
+	head, err := encodeV2Messages(msgs[:split])
+	if err != nil {
+		return nil, err
+	}
+	tail, err := encodeV2Messages(msgs[split:])
+	if err != nil {
+		return nil, err
+	}
+
+	// Continuation chunk: "OCHK" + messages (+ gap) + checksum.
+	need := uint64(4 + len(tail) + ObjectHeaderV2ChecksumSize)
+	var blockAddr, blockLen uint64
+	if reuse != nil && reuse.length >= need {
+		blockAddr, blockLen = reuse.addr, reuse.length
+	} else {
+		if alloc == nil {
+			return nil, fmt.Errorf("object header at %d is full and no allocator is available for a continuation chunk", addr)
+		}
+		blockAddr, err = alloc.Allocate(need)
+		if err != nil {
+			return nil, fmt.Errorf("failed to allocate continuation chunk: %w", err)
+		}
+		blockLen = need
+	}
+	block := make([]byte, 0, blockLen)
+	block = append(block, "OCHK"...)
+	block = append(block, tail...)
+	block = appendV2Gap(block, blockLen-need)
+	block = binary.LittleEndian.AppendUint32(block, utils.JenkinsChecksum(block))
+	if _, err := rw.WriteAt(block, int64(blockAddr)); err != nil { //nolint:gosec // Safe: allocated address
+		return nil, fmt.Errorf("failed to write continuation chunk: %w", err)
+	}
+
+	cont := make([]byte, offsetSize+lengthSize)
+	writeUint64(cont[:offsetSize], blockAddr, int(offsetSize), binary.LittleEndian)          //nolint:gosec // G115: 2..8
+	writeUint64(cont[offsetSize:], uint64(len(block)), int(lengthSize), binary.LittleEndian) //nolint:gosec // G115: 2..8
+	contEnc, err := encodeV2Messages([]*HeaderMessage{{Type: MsgContinuation, Data: cont}})
+	if err != nil {
+		return nil, err
+	}
+
+	chunk := make([]byte, 0, len(head)+len(contEnc))
+	chunk = append(chunk, head...)
+	return append(chunk, contEnc...), nil
 }

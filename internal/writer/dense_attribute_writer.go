@@ -45,8 +45,8 @@ type DenseAttributeWriter struct {
 func NewDenseAttributeWriter(objectAddr uint64) *DenseAttributeWriter {
 	return &DenseAttributeWriter{
 		objectAddr:  objectAddr,
-		fractalHeap: structures.NewWritableFractalHeap(64 * 1024), // 64KB heap for attributes
-		btree:       structures.NewWritableBTreeV2(4096),          // 4KB B-tree node
+		fractalHeap: structures.NewGrowableFractalHeap(structures.AttributeHeapStartBlockSize), // grows as needed
+		btree:       structures.NewWritableAttrBTreeV2(0),                                      // libhdf5 node size (512), grows as needed
 		attrInfo: &core.AttributeInfoMessage{
 			Version: 0,
 			Flags:   0, // No creation order tracking for MVP

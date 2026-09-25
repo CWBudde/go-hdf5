@@ -9,6 +9,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dimension scales (H5DS): `DatasetWriter.SetDimensionScale(name)` and
+  `DatasetWriter.AttachDimensionScale(dimIdx, scale)` write `CLASS`/`NAME`
+  and the `DIMENSION_LIST` / `REFERENCE_LIST` attributes (collected per
+  session, written on `Close`), so netCDF-C sees named dimensions.
+- `DatasetWriter.Address()` / `Reference()`, the `ObjectRef` and
+  `DimensionReference` types; `WriteAttribute` accepts `ObjectRef`,
+  `[]ObjectRef`, `[][]ObjectRef` (vlen of object references) and
+  `[]DimensionReference` (compound `{dataset, dimension}`).
+
+### Fixed
+
+- Chunked datasets: edge chunks are written at full chunk size (zero-filled
+  outside the dataset) as HDF5 requires; partial edge chunks were misread
+  when the last dimension was not a multiple of the chunk size.
+- Hyperslab reads of chunked datasets place each element at its position in
+  the selection; selections spanning several chunks came back reordered.
+- Reading a chunked dataset that was never written (undefined chunk index
+  address) returns zeros instead of failing.
+- Dense groups: link heaps use 7-byte heap IDs (maximum managed object size
+  4096, as libhdf5), matching the 7-byte name-index records, so this library
+  can read back dense groups it wrote. Older files with 8-byte heap IDs are
+  still read.
+- B-tree v2 leaf reads check the leaf size against the file before
+  allocating.
+
+- Chunked datasets whose creation-time object header exceeds 255 bytes
+  (wide chunk-size field) had their chunk index address patched at the wrong
+  offset, corrupting the header.
+- `AttachDimensionScale` on files opened with `OpenForWrite` keeps the
+  existing `DIMENSION_LIST` / `REFERENCE_LIST` entries (from libhdf5 or this
+  library) instead of overwriting them. Attribute Info messages without
+  dense storage (written by libhdf5 with `libver="latest"`) no longer send
+  new attributes down the dense path.
+- Filter pipelines whose intermediate decoded data is larger than the chunk
+  (e.g. Fletcher32 before deflate) are no longer rejected by the per-stage
+  decode limit.
+- Version 2 filter pipeline messages are parsed per the spec (name and name
+  length only for filter IDs >= 256, no padding).
+- LZF long back-references use liblzf's byte order (length byte before the
+  low offset byte) when compressing and decompressing, so LZF data is
+  interoperable with h5py/libhdf5.
+- A scalar `ObjectRef` attribute uses a scalar dataspace.
+
+- Attributes stay in compact storage up to `MaxCompactAttributes` (8), like
+  libhdf5's `max_compact`, even when they overflow the object header's first
+  chunk: the header grows through a continuation chunk (reused on later
+  rewrites) instead of switching to dense storage at 255 bytes of messages.
+  Upserting an existing attribute on an object with 8 compact attributes no
+  longer triggers a dense transition.
+- Dense attribute/link name-index B-trees start at libhdf5's 512-byte node
+  size and grow (relocating the leaf) when full, instead of a fixed 4 KiB
+  node.
+- The reader accepts a gap smaller than a message header at the end of a v2
+  continuation chunk.
+
+- `CreateDataset` accepts initial object headers larger than 255 bytes of
+  messages (e.g. several `WithAttribute` options); the chunk size field
+  widens to 2/4 bytes instead of failing with "MVP limitation".
+
+- Global heap collections: the free-space object's size now includes its
+  header, as in libhdf5. The previous value made libhdf5 loop forever when
+  reading vlen data from files written by this library.
+- Parsed (version >= 1) variable-length datatypes are re-encoded in the
+  HDF5 layout when attributes are migrated to dense storage.
+
 ---
 
 ## [v0.15.0] - 2026-05-09

@@ -2,10 +2,31 @@ package hdf5
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// chunkedMetadataOverhead returns the number of non-chunk-data bytes in a file
+// holding a single unfiltered 1D chunked dataset "/data" with 1000 elements of
+// elemSize bytes (chunk size 100). Compression tests subtract it from the compressed file size
+// so they measure the chunk payload rather than fixed metadata (superblock,
+// object headers, full-size chunk B-tree nodes, ...).
+func chunkedMetadataOverhead(t *testing.T, dtype Datatype, elemSize int) int {
+	t.Helper()
+	const n = 1000
+	tmp := t.TempDir() + "/overhead.h5"
+	fw, err := CreateForWrite(tmp, CreateTruncate)
+	require.NoError(t, err)
+	ds, err := fw.CreateDataset("/data", dtype, []uint64{n}, WithChunkDims([]uint64{100}))
+	require.NoError(t, err)
+	require.NoError(t, ds.WriteRaw(make([]byte, n*elemSize)))
+	require.NoError(t, fw.Close())
+	info, err := os.Stat(tmp)
+	require.NoError(t, err)
+	return int(info.Size()) - n*elemSize
+}
 
 func TestChunkedDatasetWithGZIP(t *testing.T) {
 	tmpFile := "test_gzip.h5"
@@ -80,7 +101,7 @@ func TestChunkedDatasetWithShuffleGZIP(t *testing.T) {
 	require.NoError(t, err)
 
 	uncompressedSize := 1000 * 8 // 8KB
-	compressedSize := int(info.Size())
+	compressedSize := int(info.Size()) - chunkedMetadataOverhead(t, Float64, 8)
 
 	// Shuffle+GZIP should compress better than GZIP alone
 	// Expect at least 1.5:1 ratio for this data
@@ -428,7 +449,7 @@ func TestChunkedDatasetBinaryPatterns(t *testing.T) {
 	require.NoError(t, err)
 
 	uncompressedSize := 1000 * 4
-	compressionRatio := float64(uncompressedSize) / float64(info.Size())
+	compressionRatio := float64(uncompressedSize) / float64(int(info.Size())-chunkedMetadataOverhead(t, Uint32, 4))
 
 	// Binary pattern should compress reasonably with shuffle
 	require.Greater(t, compressionRatio, 0.9,
@@ -532,7 +553,7 @@ func TestChunkedDatasetIntegerSequences(t *testing.T) {
 	require.NoError(t, err)
 
 	uncompressedSize := 1000 * 8
-	compressionRatio := float64(uncompressedSize) / float64(info.Size())
+	compressionRatio := float64(uncompressedSize) / float64(int(info.Size())-chunkedMetadataOverhead(t, Int64, 8))
 
 	// Sequential values should compress reasonably
 	require.Greater(t, compressionRatio, 1.5,
@@ -606,7 +627,7 @@ func TestChunkedDatasetFloatingPoint(t *testing.T) {
 	require.NoError(t, err)
 
 	uncompressedSize := 1000 * 8
-	compressionRatio := float64(uncompressedSize) / float64(info.Size())
+	compressionRatio := float64(uncompressedSize) / float64(int(info.Size())-chunkedMetadataOverhead(t, Float64, 8))
 
 	// Floating-point with small variations may not compress as well as integers
 	require.Greater(t, compressionRatio, 0.8,
@@ -647,4 +668,43 @@ func TestChunkedDatasetMixedValues(t *testing.T) {
 	compressionRatio := float64(uncompressedSize) / float64(info.Size())
 
 	t.Logf("Mixed values compression: %.2f:1", compressionRatio)
+}
+
+// TestChunkedDatasetFilterOrder round-trips pipelines in both orders. With
+// Fletcher32 before deflate, the inflated intermediate output is the chunk
+// plus a 4-byte checksum, larger than the final chunk size.
+func TestChunkedDatasetFilterOrder(t *testing.T) {
+	orders := map[string][]DatasetOption{
+		"fletcher_then_gzip":    {WithFletcher32(), WithGZIPCompression(6)},
+		"gzip_then_fletcher":    {WithGZIPCompression(6), WithFletcher32()},
+		"shuffle_fletcher_gzip": {WithShuffle(), WithFletcher32(), WithGZIPCompression(6)},
+	}
+	for name, filters := range orders {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), name+".h5")
+			fw, err := CreateForWrite(path, CreateTruncate)
+			require.NoError(t, err)
+			opts := append([]DatasetOption{WithChunkDims([]uint64{16})}, filters...)
+			ds, err := fw.CreateDataset("/d", Float64, []uint64{40}, opts...)
+			require.NoError(t, err)
+			want := make([]float64, 40)
+			for i := range want {
+				want[i] = float64(i*i) / 7
+			}
+			require.NoError(t, ds.Write(want))
+			require.NoError(t, fw.Close())
+
+			f, err := Open(path)
+			require.NoError(t, err)
+			defer func() { _ = f.Close() }()
+			var got []float64
+			f.Walk(func(p string, obj Object) {
+				if d, ok := obj.(*Dataset); ok && p == "/d" {
+					got, err = d.Read()
+					require.NoError(t, err)
+				}
+			})
+			require.Equal(t, want, got)
+		})
+	}
 }

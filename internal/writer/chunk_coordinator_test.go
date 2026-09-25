@@ -327,12 +327,17 @@ func TestExtractChunkData(t *testing.T) {
 			require.Equal(t, i+4, val, "chunk1 element %d", i)
 		}
 
-		// Extract chunk 2 [8-9] (edge chunk, 2 elements)
+		// Extract chunk 2 [8-9] (edge chunk: full chunk size, 2 elements
+		// of data followed by zero fill, as HDF5 stores edge chunks)
 		chunk2 := cc.ExtractChunkData(data, []uint64{2}, elemSize)
-		require.Equal(t, 2*elemSize, uint32(len(chunk2)))
-		for i := uint32(0); i < 2; i++ {
+		require.Equal(t, 4*elemSize, uint32(len(chunk2)))
+		for i := uint32(0); i < 4; i++ {
+			want := i + 8
+			if i >= 2 {
+				want = 0
+			}
 			val := binary.LittleEndian.Uint32(chunk2[i*elemSize:])
-			require.Equal(t, i+8, val, "chunk2 element %d", i)
+			require.Equal(t, want, val, "chunk2 element %d", i)
 		}
 	})
 
@@ -423,13 +428,13 @@ func TestExtractChunkData(t *testing.T) {
 		//   Row 3: 21-27
 		//   Row 4: 28-34
 		// Elements: row3 col6 = 3*7+6=27, row4 col6 = 4*7+6=34
+		// The chunk keeps its full 3x3 layout: [27 0 0; 34 0 0; 0 0 0].
 		chunk := cc.ExtractChunkData(data, []uint64{1, 2}, elemSize)
-		require.Equal(t, 2*elemSize, uint32(len(chunk)))
-
-		val0 := binary.LittleEndian.Uint32(chunk[0:4])
-		val1 := binary.LittleEndian.Uint32(chunk[4:8])
-		require.Equal(t, uint32(27), val0)
-		require.Equal(t, uint32(34), val1)
+		require.Equal(t, 9*elemSize, uint32(len(chunk)))
+		want := []uint32{27, 0, 0, 34, 0, 0, 0, 0, 0}
+		for i, w := range want {
+			require.Equal(t, w, binary.LittleEndian.Uint32(chunk[i*4:]), "element %d", i)
+		}
 	})
 
 	t.Run("3D extraction", func(t *testing.T) {

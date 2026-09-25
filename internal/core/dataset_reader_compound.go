@@ -85,29 +85,9 @@ func ReadDatasetCompound(r io.ReaderAt, header *ObjectHeader, sb *Superblock) ([
 	}
 
 	// 7. Read raw data based on layout.
-	var rawData []byte
-
-	switch {
-	case layout.IsCompact():
-		rawData = layout.CompactData
-
-	case layout.IsContiguous():
-		dataSize := totalElements * uint64(datatype.Size)
-		rawData = make([]byte, dataSize)
-		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-		_, err := r.ReadAt(rawData, int64(layout.DataAddress))
-		if err != nil {
-			return nil, fmt.Errorf("failed to read contiguous data: %w", err)
-		}
-
-	case layout.IsChunked():
-		rawData, err = readChunkedData(r, layout, dataspace, datatype, sb, filterPipeline)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read chunked data: %w", err)
-		}
-
-	default:
-		return nil, fmt.Errorf("unsupported layout class: %d", layout.Class)
+	rawData, err := readRawData(r, layout, dataspace, datatype, sb, filterPipeline)
+	if err != nil {
+		return nil, err
 	}
 
 	// 8. Convert raw bytes to compound values.
@@ -116,8 +96,19 @@ func ReadDatasetCompound(r io.ReaderAt, header *ObjectHeader, sb *Superblock) ([
 
 // parseCompoundData parses raw bytes into array of compound values.
 func parseCompoundData(rawData []byte, compoundType *CompoundType, numElements uint64, r io.ReaderAt, sb *Superblock) ([]CompoundValue, error) {
-	result := make([]CompoundValue, numElements)
 	structSize := uint64(compoundType.Size)
+	if structSize == 0 || numElements > uint64(len(rawData))/structSize {
+		return nil, errors.New("compound data truncated")
+	}
+	// Each decoded element is a map; bound the in-memory representation
+	// (roughly 256 bytes per element) relative to the file size.
+	if numElements > math.MaxUint64/256 {
+		return nil, errors.New("compound dataset too large")
+	}
+	if err := utils.CheckDecodedSize(r, numElements*256, "compound dataset"); err != nil {
+		return nil, err
+	}
+	result := make([]CompoundValue, numElements)
 
 	for i := uint64(0); i < numElements; i++ {
 		structOffset := i * structSize
@@ -131,6 +122,10 @@ func parseCompoundData(rawData []byte, compoundType *CompoundType, numElements u
 
 		// Parse each member.
 		for _, member := range compoundType.Members {
+			if uint64(member.Offset) > structSize {
+				return nil, fmt.Errorf("compound member %s offset %d beyond struct size %d",
+					member.Name, member.Offset, structSize)
+			}
 			memberData := structData[member.Offset:]
 
 			memberValue, err := parseMemberValue(memberData, member.Type, r, sb)

@@ -5,6 +5,7 @@ package structures
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
@@ -323,11 +324,15 @@ func ParseIndirectBlock(reader io.ReaderAt, address uint64, numRows, tableWidth 
 	// Assume checksum present (common case)
 	totalSize := headerSize + entriesSize + 4
 
-	// Read block data
-	buf := make([]byte, totalSize)
-	//nolint:gosec // G115: uint64 to int64 conversion safe for file offsets
-	if _, err := reader.ReadAt(buf, int64(address)); err != nil {
-		return nil, fmt.Errorf("failed to read indirect block: %w", err)
+	if sizeofAddr == 0 {
+		return nil, errors.New("invalid address size 0")
+	}
+
+	// Read block data (bounded by the file size).
+	//nolint:gosec // G115: totalSize is non-negative
+	buf, err := utils.ReadAtChecked(reader, address, uint64(totalSize), "fractal heap indirect block")
+	if err != nil {
+		return nil, err
 	}
 
 	offset := 0

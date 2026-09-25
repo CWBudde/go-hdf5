@@ -57,10 +57,13 @@ type denseLink struct {
 //
 // Reference: H5Gdense.c - H5G_dense_create().
 func NewDenseGroupWriter(name string) *DenseGroupWriter {
+	heap := structures.NewGrowableFractalHeap(structures.LinkHeapStartBlockSize) // grows as needed
+	// Link name-index records hold 7-byte heap IDs (H5G_DENSE_FHEAP_ID_LEN).
+	heap.SetMaxManagedObjectSize(structures.LinkHeapMaxManagedObjectSize)
 	return &DenseGroupWriter{
 		name:        name,
-		fractalHeap: structures.NewWritableFractalHeap(512 * 1024), // 512KB default
-		btree:       structures.NewWritableBTreeV2(4096),           // 4KB node
+		fractalHeap: heap,
+		btree:       structures.NewWritableBTreeV2(0), // libhdf5 node size (512), grows as needed
 		linkInfo: &core.LinkInfoMessage{
 			Version: 0,
 			Flags:   0, // No creation order tracking for MVP
@@ -141,14 +144,14 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 			return 0, fmt.Errorf("failed to insert link %s into heap: %w", link.name, err)
 		}
 
-		// 1c. Convert heap ID to uint64 for B-tree
-		// Heap ID is 8 bytes, read as little-endian uint64
-		var heapIDUint64 uint64
-		if len(heapID) >= 8 {
-			heapIDUint64 = binary.LittleEndian.Uint64(heapID[:8])
-		} else {
+		// 1c. Convert heap ID to uint64 for B-tree (7-byte link heap IDs,
+		// zero-extended; the record stores the low 7 bytes)
+		if len(heapID) == 0 || len(heapID) > 7 {
 			return 0, fmt.Errorf("invalid heap ID length for link %s: %d bytes", link.name, len(heapID))
 		}
+		var idBuf [8]byte
+		copy(idBuf[:], heapID)
+		heapIDUint64 := binary.LittleEndian.Uint64(idBuf[:])
 
 		// 1d. Insert into B-tree v2
 		err = dgw.btree.InsertRecord(link.name, heapIDUint64)
@@ -197,51 +200,34 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 //
 // Reference: H5Ollink.c - H5O__link_encode().
 func (dgw *DenseGroupWriter) createLinkMessage(link denseLink, sb *core.Superblock) []byte {
+	// Link message, version 1 (H5O__link_encode):
+	//   version (1) | flags (1) | [link type] [creation order] [charset] |
+	//   name length (1/2/4/8 bytes, flags bits 0-1) | name | link info
+	// A hard link with an ASCII name needs no optional fields; the link
+	// info is the target object header address.
 	nameBytes := []byte(link.name)
 	nameLen := uint64(len(nameBytes))
 
-	// Calculate message size
-	// Version (1) + Type (1) + Flags (1) + Encoding (1) + Name Length (variable) + Name + Address
-	// For MVP: name length encoded as compact uint64 (1-8 bytes based on value)
-	nameLenSize := compactUint64Size(nameLen)
-	messageSize := 4 + nameLenSize + len(nameBytes) + int(sb.OffsetSize)
+	var sizeCode byte
+	lenBytes := 1
+	switch {
+	case nameLen > 0xFFFFFFFF:
+		sizeCode, lenBytes = 3, 8
+	case nameLen > 0xFFFF:
+		sizeCode, lenBytes = 2, 4
+	case nameLen > 0xFF:
+		sizeCode, lenBytes = 1, 2
+	}
 
-	buf := make([]byte, messageSize)
-	offset := 0
-
-	// Version (1 byte)
-	buf[offset] = 1 // Link message version 1
-	offset++
-
-	// Type (1 byte): 0 = Hard Link
-	buf[offset] = 0
-	offset++
-
-	// Flags (1 byte)
-	// Bit 0: creation order present (0 = no)
-	// Bit 1: link type field present (0 = no, type is in separate field)
-	// Bit 2: link name character set field present (1 = yes)
-	// Bit 3: link name is stored as a creation order (0 = no)
-	// For MVP: only bit 2 set (character set field present)
-	buf[offset] = 0x04 // Character set field present
-	offset++
-
-	// Link Name Character Set Encoding (1 byte)
-	buf[offset] = 0 // ASCII/UTF-8
-	offset++
-
-	// Link Name Length (compact uint64)
-	encodeCompactUint64(buf[offset:], nameLen)
-	offset += nameLenSize
-
-	// Link Name (UTF-8 bytes)
-	copy(buf[offset:], nameBytes)
-	offset += len(nameBytes)
-
-	// Link Info: For hard link, this is the target object header address
-	writeUint64(buf[offset:], link.targetAddr, int(sb.OffsetSize), sb.Endianness)
-
-	return buf
+	buf := make([]byte, 0, 2+lenBytes+len(nameBytes)+int(sb.OffsetSize))
+	buf = append(buf, 1, sizeCode)
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], nameLen)
+	buf = append(buf, lenBuf[:lenBytes]...)
+	buf = append(buf, nameBytes...)
+	addr := make([]byte, sb.OffsetSize)
+	writeUint64(addr, link.targetAddr, int(sb.OffsetSize), sb.Endianness)
+	return append(buf, addr...)
 }
 
 // createObjectHeader creates object header with Link Info Message.
@@ -272,16 +258,8 @@ func (dgw *DenseGroupWriter) createObjectHeader(fw *FileWriter, allocator *Alloc
 		},
 	}
 
-	// Calculate object header size
-	// Header: 4 (sig) + 1 (ver) + 1 (flags) + 1 (chunk size) = 7 bytes (v2 header)
-	// Each message: 1 (type) + 2 (size) + 1 (flags) + len(data)
-	var messageSize uint64
-	for _, msg := range ohw.Messages {
-		//nolint:gosec // G115: message size calculation, safe for HDF5 messages
-		messageSize += uint64(1 + 2 + 1 + len(msg.Data)) // type + size + flags + data
-	}
-
-	headerSize := 7 + messageSize // 7-byte header + messages
+	// Calculate object header size (prefix + messages + checksum)
+	headerSize := ohw.Size()
 
 	// Allocate space for object header
 	headerAddr, err := allocator.Allocate(headerSize)

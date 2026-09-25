@@ -52,6 +52,11 @@ const (
 //   - Attributes cannot be modified after creation (write-once)
 //   - No attribute deletion
 func (ds *DatasetWriter) WriteAttribute(name string, value interface{}) error {
+	value, err := ds.fileWriter.prepareAttributeValue(value)
+	if err != nil {
+		return fmt.Errorf("attribute %q: %w", name, err)
+	}
+
 	// For datasets opened with OpenForWrite, use cached object header and dense attr info
 	if ds.objectHeader != nil {
 		return writeAttributeWithCachedHeader(ds.fileWriter, ds.address, ds.objectHeader, ds.denseAttrInfo, name, value)
@@ -125,7 +130,7 @@ func (ds *DatasetWriter) RebalanceAttributeBTree() error {
 		sb := ds.fileWriter.file.Superblock()
 		reader := ds.fileWriter.writer.Reader()
 
-		btree := structures.NewWritableBTreeV2(4096)
+		btree := structures.NewWritableBTreeV2(0)
 		err := btree.LoadFromFile(reader, ds.denseAttrInfo.BTreeNameIndexAddr, sb)
 		if err != nil {
 			return fmt.Errorf("failed to load B-tree: %w", err)
@@ -169,7 +174,7 @@ func (ds *DatasetWriter) RebalanceAttributeBTree() error {
 	}
 
 	// Load and rebalance B-tree
-	btree := structures.NewWritableBTreeV2(4096)
+	btree := structures.NewWritableBTreeV2(0)
 	err = btree.LoadFromFile(reader, attrInfo.BTreeNameIndexAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load B-tree: %w", err)
@@ -215,15 +220,12 @@ func writeAttribute(fw *FileWriter, objectAddr uint64, name string, value interf
 
 	// Count existing attributes
 	compactCount := 0
-	hasDenseStorage := false
 	for _, msg := range oh.Messages {
 		if msg.Type == core.MsgAttribute {
 			compactCount++
 		}
-		if msg.Type == core.MsgAttributeInfo {
-			hasDenseStorage = true
-		}
 	}
+	hasDenseStorage := hasDenseAttributeStorage(oh, sb)
 
 	// Determine storage strategy
 	if hasDenseStorage {
@@ -231,13 +233,53 @@ func writeAttribute(fw *FileWriter, objectAddr uint64, name string, value interf
 		return writeDenseAttribute(fw, objectAddr, oh, name, value, sb)
 	}
 
-	if compactCount < MaxCompactAttributes {
-		// Still compact → add compact attribute
+	if compactCount < MaxCompactAttributes || hasCompactAttribute(oh, name, sb) {
+		// Still compact, or replacing an existing compact attribute
 		return writeCompactAttribute(fw, objectAddr, oh, name, value, sb)
 	}
 
 	// Transition needed → migrate to dense
 	return transitionToDenseAttributes(fw, objectAddr, oh, name, value, sb)
+}
+
+// hasDenseAttributeStorage reports whether the object header points to
+// dense attribute storage. libhdf5 may write an Attribute Info message with
+// undefined heap/B-tree addresses (e.g. with libver="latest"); such objects
+// still store their attributes compactly.
+func hasDenseAttributeStorage(oh *core.ObjectHeader, sb *core.Superblock) bool {
+	for _, msg := range oh.Messages {
+		if msg.Type != core.MsgAttributeInfo {
+			continue
+		}
+		info, err := core.ParseAttributeInfoMessage(msg.Data, sb)
+		if err != nil {
+			return true // let the dense path report the problem
+		}
+		if isDefinedAddress(info.FractalHeapAddr) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDefinedAddress reports whether addr is neither 0 nor the undefined
+// address (all bits set).
+func isDefinedAddress(addr uint64) bool {
+	return addr != 0 && addr != ^uint64(0)
+}
+
+// hasCompactAttribute reports whether the object header holds a compact
+// attribute message with the given name.
+func hasCompactAttribute(oh *core.ObjectHeader, name string, sb *core.Superblock) bool {
+	for _, msg := range oh.Messages {
+		if msg.Type != core.MsgAttribute {
+			continue
+		}
+		if attr, err := core.ParseAttributeMessage(msg.Data, sb.Endianness); err == nil && attr.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // writeCompactAttribute writes attribute to object header (compact storage).
@@ -356,12 +398,12 @@ func writeAttributeWithCachedHeader(fw *FileWriter, objectAddr uint64, oh *core.
 		}
 	}
 
-	if compactCount < MaxCompactAttributes {
-		// Still compact → add compact attribute
+	if compactCount < MaxCompactAttributes || hasCompactAttribute(oh, name, sb) {
+		// Still compact, or replacing an existing compact attribute
 		return writeCompactAttribute(fw, objectAddr, oh, name, value, sb)
 	}
 
-	// Need to transition to dense storage (8th attribute)
+	// Need to transition to dense storage (9th attribute)
 	return transitionToDenseAttributes(fw, objectAddr, oh, name, value, sb)
 }
 
@@ -377,14 +419,14 @@ func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
 	attrInfo *core.AttributeInfoMessage, name string, value interface{}, sb *core.Superblock,
 ) error {
 	// Load existing fractal heap from file
-	heap := structures.NewWritableFractalHeap(64 * 1024)
+	heap := structures.NewGrowableFractalHeap(structures.AttributeHeapStartBlockSize) // size comes from the file
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load fractal heap: %w", err)
 	}
 
 	// Load existing B-tree v2 from file
-	btree := structures.NewWritableBTreeV2(4096)
+	btree := structures.NewWritableBTreeV2(0)
 	err = btree.LoadFromFile(fw.writer.Reader(), attrInfo.BTreeNameIndexAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load B-tree: %w", err)
@@ -448,12 +490,12 @@ func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
 	}
 
 	// Write updated structures back to file (IN-PLACE using WriteAt)
-	err = heap.WriteAt(fw.writer, sb)
+	err = heap.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated heap: %w", err)
 	}
 
-	err = btree.WriteAt(fw.writer, sb)
+	err = btree.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated B-tree: %w", err)
 	}
@@ -598,14 +640,14 @@ func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessag
 	name string, sb *core.Superblock,
 ) error {
 	// Load existing fractal heap from file
-	heap := structures.NewWritableFractalHeap(64 * 1024)
+	heap := structures.NewGrowableFractalHeap(structures.AttributeHeapStartBlockSize) // size comes from the file
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load fractal heap: %w", err)
 	}
 
 	// Load existing B-tree v2 from file
-	btree := structures.NewWritableBTreeV2(4096)
+	btree := structures.NewWritableBTreeV2(0)
 	err = btree.LoadFromFile(fw.writer.Reader(), attrInfo.BTreeNameIndexAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load B-tree: %w", err)
@@ -620,13 +662,13 @@ func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessag
 	}
 
 	// Write updated heap back to file
-	err = heap.WriteAt(fw.writer, sb)
+	err = heap.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated heap: %w", err)
 	}
 
 	// Write updated B-tree back to file
-	err = btree.WriteAt(fw.writer, sb)
+	err = btree.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated B-tree: %w", err)
 	}
@@ -674,14 +716,14 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 	}
 
 	// Step 2: Load existing fractal heap from file
-	heap := structures.NewWritableFractalHeap(64 * 1024) // Match size from dense attribute writer
+	heap := structures.NewGrowableFractalHeap(structures.AttributeHeapStartBlockSize) // size comes from the file
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load fractal heap: %w", err)
 	}
 
 	// Step 3: Load existing B-tree v2 from file
-	btree := structures.NewWritableBTreeV2(4096) // Match size from dense attribute writer
+	btree := structures.NewWritableBTreeV2(0) // Match size from dense attribute writer
 	err = btree.LoadFromFile(fw.writer.Reader(), attrInfo.BTreeNameIndexAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load B-tree: %w", err)
@@ -748,13 +790,13 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 	// This is true Read-Modify-Write - no new allocations!
 
 	// Write heap in-place at loaded address
-	err = heap.WriteAt(fw.writer, sb)
+	err = heap.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated heap: %w", err)
 	}
 
 	// Write B-tree in-place at loaded address
-	err = btree.WriteAt(fw.writer, sb)
+	err = btree.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated B-tree: %w", err)
 	}
@@ -828,10 +870,11 @@ func transitionToDenseAttributes(fw *FileWriter, objectAddr uint64, oh *core.Obj
 		return fmt.Errorf("failed to add new attribute: %w", err)
 	}
 
-	// 6. Remove compact attributes from object header
+	// 6. Remove compact attributes (and any Attribute Info message without
+	// dense storage, as libhdf5 writes) from the object header
 	var newMessages []*core.HeaderMessage
 	for _, msg := range oh.Messages {
-		if msg.Type != core.MsgAttribute {
+		if msg.Type != core.MsgAttribute && msg.Type != core.MsgAttributeInfo {
 			newMessages = append(newMessages, msg)
 		}
 	}
@@ -920,6 +963,10 @@ func transitionToDenseAttributes(fw *FileWriter, objectAddr uint64, oh *core.Obj
 // inferDatatypeFromValue infers HDF5 datatype and dimensions from a Go value.
 // Returns datatype message, dataspace message, and error.
 func inferDatatypeFromValue(value interface{}) (*core.DatatypeMessage, *core.DataspaceMessage, error) {
+	if ev, ok := value.(*encodedAttributeValue); ok {
+		return ev.datatype, ev.dataspace, nil
+	}
+
 	v := reflect.ValueOf(value)
 
 	// Handle scalar types
@@ -1134,6 +1181,10 @@ func inferSlice(v reflect.Value) (*core.DatatypeMessage, *core.DataspaceMessage,
 
 // encodeAttributeValue encodes a Go value to bytes for attribute storage.
 func encodeAttributeValue(value interface{}) ([]byte, error) {
+	if ev, ok := value.(*encodedAttributeValue); ok {
+		return ev.data, nil
+	}
+
 	v := reflect.ValueOf(value)
 
 	switch v.Kind() {

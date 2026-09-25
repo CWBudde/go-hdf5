@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"testing"
 
+	"github.com/cwbudde/go-hdf5/internal/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -242,7 +243,7 @@ func TestApplyFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := applyFilter(tt.filter, tt.data)
+			got, err := applyFilter(tt.filter, tt.data, utils.MaxChunkSize)
 			if tt.wantErr {
 				require.Error(t, err)
 				return

@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // mockWriterAt implements io.WriterAt for testing.
@@ -82,8 +84,9 @@ func TestObjectHeaderWriter_WriteTo(t *testing.T) {
 			address: 48, // After superblock v2
 			// Header: 4 (sig) + 1 (ver) + 1 (flags) + 1 (chunk size) = 7
 			// Message: 1 (type) + 2 (size) + 1 (flags) + 18 (data) = 22
-			// Total: 7 + 22 = 29
-			wantSize: 29,
+			// Checksum: 4
+			// Total: 7 + 22 + 4 = 33
+			wantSize: 33,
 			wantErr:  false,
 			validateBytes: func(t *testing.T, data []byte) {
 				// Validate signature
@@ -118,6 +121,10 @@ func TestObjectHeaderWriter_WriteTo(t *testing.T) {
 
 				btreeAddr := binary.LittleEndian.Uint64(linkInfo[10:18])
 				assert.Equal(t, uint64(0xFFFFFFFFFFFFFFFF), btreeAddr, "B-tree address should be UNDEF")
+
+				// Jenkins lookup3 checksum over signature..last message.
+				assert.Equal(t, utils.JenkinsChecksum(data[0:29]), binary.LittleEndian.Uint32(data[29:33]),
+					"object header v2 must end with a checksum")
 			},
 		},
 		{
@@ -144,7 +151,7 @@ func TestObjectHeaderWriter_WriteTo(t *testing.T) {
 				},
 			},
 			address:  0,
-			wantSize: 4 + 1 + 1 + 2 + 304, // signature + version + flags + chunk_size(2 bytes) + messages
+			wantSize: 4 + 1 + 1 + 2 + 304 + 4, // signature + version + flags + chunk_size(2 bytes) + messages + checksum
 			wantErr:  false,
 		},
 	}
@@ -246,8 +253,9 @@ func TestObjectHeaderWriter_MultipleMessages(t *testing.T) {
 	// Message 1: 1+2+1+10 = 14
 	// Message 2: 1+2+1+4 = 8
 	// Total chunk: 14+8 = 22
-	// Total: 7 + 22 = 29
-	assert.Equal(t, uint64(29), size)
+	// Checksum: 4
+	// Total: 7 + 22 + 4 = 33
+	assert.Equal(t, uint64(33), size)
 
 	data := writer.Bytes()
 

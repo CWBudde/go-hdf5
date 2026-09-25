@@ -2,6 +2,7 @@ package hdf5
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
@@ -75,6 +76,10 @@ type GroupWriter struct {
 func (g *GroupWriter) WriteAttribute(name string, value interface{}) error {
 	// Delegate to existing attribute writing infrastructure
 	// This reuses the same code path as DatasetWriter.WriteAttribute
+	value, err := g.file.prepareAttributeValue(value)
+	if err != nil {
+		return fmt.Errorf("attribute %q: %w", name, err)
+	}
 	return writeAttribute(g.file, g.headerAddr, name, value)
 }
 
@@ -251,11 +256,8 @@ func (fw *FileWriter) CreateGroup(path string) (*GroupWriter, error) {
 		},
 	}
 
-	// Calculate object header size
-	// Header: 4 (sig) + 1 (ver) + 1 (flags) + 1 (chunk size) = 7 bytes
-	// Message: 1 (type) + 2 (size) + 1 (flags) + len(data)
-	messageDataSize := 1 + 2 + 1 + uint64(len(stMsg))
-	headerSize := 7 + messageDataSize
+	// Calculate object header size (prefix + messages + checksum)
+	headerSize := ohw.Size()
 
 	headerAddr, err := fw.writer.Allocate(headerSize)
 	if err != nil {
@@ -321,11 +323,11 @@ func parsePath(path string) (parent, name string) {
 //   - error: If linking fails
 func (fw *FileWriter) linkToParent(parentPath, childName string, childAddr uint64) error {
 	// Get parent group metadata
-	var heapAddr, stNodeAddr uint64
+	var heapAddr, btreeAddr uint64
 	if parentPath == "" || parentPath == "/" {
 		// Root group - use root metadata
 		heapAddr = fw.rootHeapAddr
-		stNodeAddr = fw.rootStNodeAddr
+		btreeAddr = fw.rootBTreeAddr
 	} else {
 		// Non-root group - look up metadata
 		meta, exists := fw.groups[parentPath]
@@ -333,49 +335,227 @@ func (fw *FileWriter) linkToParent(parentPath, childName string, childAddr uint6
 			return fmt.Errorf("parent group %q not found (create it first)", parentPath)
 		}
 		heapAddr = meta.heapAddr
-		stNodeAddr = meta.stNodeAddr
+		btreeAddr = meta.btreeAddr
 	}
 
-	// Step 1: Read existing local heap
+	// Step 1: Read the group B-tree (single leaf level) and all its symbol table nodes.
+	snodAddrs, err := fw.readGroupBTreeChildren(btreeAddr)
+	if err != nil {
+		return err
+	}
+	entries, err := fw.readGroupEntries(snodAddrs)
+	if err != nil {
+		return err
+	}
+
+	// Step 2: Read existing local heap and resolve existing names.
 	heap, err := fw.readLocalHeap(heapAddr)
 	if err != nil {
 		return fmt.Errorf("read local heap: %w", err)
 	}
+	names, err := resolveEntryNames(heap, entries)
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if n == childName {
+			return fmt.Errorf("link %q already exists in group %q", childName, parentPath)
+		}
+	}
 
-	// Step 2: Add child name to heap
+	// The HDF5 library reserves heap offset 0 for the empty string: it is the
+	// left-most key of the group B-tree (H5G__stab_create_components).
+	if len(entries) == 0 {
+		if _, err := heap.AddString(""); err != nil {
+			return fmt.Errorf("reserve empty name in heap: %w", err)
+		}
+	}
+
+	// Step 3: Add child name to heap and the new entry.
 	nameOffset, err := heap.AddString(childName)
 	if err != nil {
 		return fmt.Errorf("add string to heap: %w", err)
 	}
-
-	// Step 3: Read existing symbol table node
-	stNode, err := fw.readSymbolTableNode(stNodeAddr)
-	if err != nil {
-		return fmt.Errorf("read symbol table node: %w", err)
-	}
-
-	// Step 4: Add entry to symbol table
-	entry := structures.SymbolTableEntry{
+	names[nameOffset] = childName
+	entries = append(entries, structures.SymbolTableEntry{
 		LinkNameOffset: nameOffset,
 		ObjectAddress:  childAddr,
-		CacheType:      0, // No cache (MVP)
-		Reserved:       0,
-	}
-	if err := stNode.AddEntry(entry); err != nil {
-		return fmt.Errorf("add entry to symbol table: %w", err)
+	})
+
+	// Entries are sorted by name across the nodes: the HDF5 library
+	// binary-searches B-tree keys and node entries (H5G__node_found).
+	sort.SliceStable(entries, func(i, j int) bool {
+		return names[entries[i].LinkNameOffset] < names[entries[j].LinkNameOffset]
+	})
+	for i := range entries {
+		// Scratch-pad data is not preserved by the node writer, so no
+		// cached addresses may be advertised.
+		entries[i].CacheType = 0
 	}
 
-	// Step 5: Write updated heap
+	// Step 4: Write updated heap.
 	if err := heap.WriteTo(fw.writer, heapAddr); err != nil {
 		return fmt.Errorf("write heap: %w", err)
 	}
 
-	// Step 6: Write updated symbol table node
-	offsetSize := fw.file.sb.OffsetSize
-	if err := stNode.WriteAt(fw.writer, stNodeAddr, offsetSize, 32, fw.file.sb.Endianness); err != nil {
-		return fmt.Errorf("write symbol table: %w", err)
+	// Step 5: Distribute entries over symbol table nodes of at most 2*leafK
+	// entries (the C library reads nodes with exactly that capacity) and
+	// rewrite the group B-tree leaf.
+	return fw.writeGroupSymbolTable(btreeAddr, snodAddrs, entries)
+}
+
+// readGroupEntries collects the entries of all given symbol table nodes.
+func (fw *FileWriter) readGroupEntries(snodAddrs []uint64) ([]structures.SymbolTableEntry, error) {
+	var entries []structures.SymbolTableEntry
+	for _, a := range snodAddrs {
+		node, err := fw.readSymbolTableNode(a)
+		if err != nil {
+			return nil, fmt.Errorf("read symbol table node: %w", err)
+		}
+		entries = append(entries, node.Entries...)
+	}
+	return entries, nil
+}
+
+// resolveEntryNames maps each entry's heap offset to its link name.
+func resolveEntryNames(heap *structures.LocalHeap, entries []structures.SymbolTableEntry) (map[uint64]string, error) {
+	names := make(map[uint64]string, len(entries)+1)
+	for _, e := range entries {
+		n, err := heap.GetString(e.LinkNameOffset)
+		if err != nil {
+			return nil, fmt.Errorf("read link name at heap offset %d: %w", e.LinkNameOffset, err)
+		}
+		names[e.LinkNameOffset] = n
+	}
+	return names, nil
+}
+
+// Group B-tree / symbol table node parameters. Files written by this library
+// use the HDF5 defaults: group leaf node K = 4 (so a symbol table node holds
+// up to 8 entries) and group internal node K = 16 (up to 32 children).
+const (
+	groupLeafK     = 4
+	groupInternalK = 16
+)
+
+// readGroupBTreeChildren returns the symbol table node addresses referenced
+// by a single-level (leaf) v1 group B-tree.
+func (fw *FileWriter) readGroupBTreeChildren(btreeAddr uint64) ([]uint64, error) {
+	sb := fw.file.sb
+	o := int(sb.OffsetSize)
+	l := int(sb.LengthSize)
+	hdr := make([]byte, 8+2*o)
+	if _, err := fw.writer.ReadAt(hdr, int64(btreeAddr)); err != nil { //nolint:gosec // Safe: file address
+		return nil, fmt.Errorf("read group B-tree header: %w", err)
+	}
+	if string(hdr[0:4]) != "TREE" || hdr[4] != 0 {
+		return nil, fmt.Errorf("no group B-tree at address %d", btreeAddr)
+	}
+	if hdr[5] != 0 {
+		return nil, fmt.Errorf("group B-tree at %d has level %d; only single-level trees are supported", btreeAddr, hdr[5])
+	}
+	n := int(sb.Endianness.Uint16(hdr[6:8]))
+	body := make([]byte, n*(l+o))
+	if _, err := fw.writer.ReadAt(body, int64(btreeAddr)+int64(len(hdr))); err != nil { //nolint:gosec // Safe: file address
+		return nil, fmt.Errorf("read group B-tree entries: %w", err)
+	}
+	addrs := make([]uint64, n)
+	for i := 0; i < n; i++ {
+		pos := i*(l+o) + l // skip key i
+		addrs[i] = readUintN(body[pos:pos+o], sb)
+	}
+	return addrs, nil
+}
+
+func readUintN(b []byte, sb *core.Superblock) uint64 {
+	switch len(b) {
+	case 8:
+		return sb.Endianness.Uint64(b)
+	case 4:
+		return uint64(sb.Endianness.Uint32(b))
+	case 2:
+		return uint64(sb.Endianness.Uint16(b))
+	}
+	return 0
+}
+
+func putUintN(b []byte, v uint64, sb *core.Superblock) {
+	switch len(b) {
+	case 8:
+		sb.Endianness.PutUint64(b, v)
+	case 4:
+		sb.Endianness.PutUint32(b, uint32(v)) //nolint:gosec // G115: value fits the configured size
+	case 2:
+		sb.Endianness.PutUint16(b, uint16(v)) //nolint:gosec // G115: value fits the configured size
+	}
+}
+
+// writeGroupSymbolTable writes sorted entries into symbol table nodes
+// (reusing existingNodes, allocating more if needed) and rewrites the
+// single-leaf group B-tree at btreeAddr to reference them.
+func (fw *FileWriter) writeGroupSymbolTable(btreeAddr uint64, existingNodes []uint64, entries []structures.SymbolTableEntry) error {
+	sb := fw.file.sb
+	const perNode = 2 * groupLeafK
+	numNodes := (len(entries) + perNode - 1) / perNode
+	if numNodes == 0 {
+		numNodes = 1
+	}
+	if numNodes > 2*groupInternalK {
+		return fmt.Errorf("group is full: at most %d links are supported per symbol-table group", 2*groupInternalK*perNode)
 	}
 
+	entrySize := 2*int(sb.OffsetSize) + 4 + 4 + 16
+	nodes := append([]uint64(nil), existingNodes...)
+	for len(nodes) < numNodes {
+		addr, err := fw.writer.Allocate(uint64(8 + perNode*entrySize)) //nolint:gosec // G115: small constant
+		if err != nil {
+			return fmt.Errorf("allocate symbol table node: %w", err)
+		}
+		nodes = append(nodes, addr)
+	}
+
+	o := int(sb.OffsetSize)
+	l := int(sb.LengthSize)
+	bt := make([]byte, 8+2*o+numNodes*(l+o)+l)
+	copy(bt[0:4], "TREE")
+	bt[4] = 0                                          // node type: group
+	bt[5] = 0                                          // level: leaf
+	sb.Endianness.PutUint16(bt[6:8], uint16(numNodes)) //nolint:gosec // G115: <= 32
+	putUintN(bt[8:8+o], ^uint64(0), sb)                // left sibling: UNDEF
+	putUintN(bt[8+o:8+2*o], ^uint64(0), sb)            // right sibling: UNDEF
+	pos := 8 + 2*o
+	putUintN(bt[pos:pos+l], 0, sb) // key 0: empty string
+	pos += l
+
+	for i := 0; i < numNodes; i++ {
+		lo := i * perNode
+		hi := lo + perNode
+		if hi > len(entries) {
+			hi = len(entries)
+		}
+		node := structures.NewSymbolTableNode(perNode)
+		for _, e := range entries[lo:hi] {
+			if err := node.AddEntry(e); err != nil {
+				return fmt.Errorf("add entry to symbol table node: %w", err)
+			}
+		}
+		if err := node.WriteAt(fw.writer, nodes[i], sb.OffsetSize, perNode, sb.Endianness); err != nil {
+			return fmt.Errorf("write symbol table node: %w", err)
+		}
+
+		putUintN(bt[pos:pos+o], nodes[i], sb) // child i
+		pos += o
+		var maxKey uint64
+		if hi > lo {
+			maxKey = entries[hi-1].LinkNameOffset // key i+1: largest name in child i
+		}
+		putUintN(bt[pos:pos+l], maxKey, sb)
+		pos += l
+	}
+
+	if err := fw.writer.WriteAtAddress(bt, btreeAddr); err != nil {
+		return fmt.Errorf("write group B-tree: %w", err)
+	}
 	return nil
 }
 
@@ -451,8 +631,15 @@ func (fw *FileWriter) CreateDenseGroup(name string, links map[string]string) err
 	// Create DenseGroupWriter
 	dgw := writer.NewDenseGroupWriter(name)
 
-	// Add all links
-	for linkName, targetPath := range links {
+	// Add all links in name order: map iteration order is random and must
+	// not decide the on-disk layout (identical inputs -> identical files).
+	linkNames := make([]string, 0, len(links))
+	for linkName := range links {
+		linkNames = append(linkNames, linkName)
+	}
+	sort.Strings(linkNames)
+	for _, linkName := range linkNames {
+		targetPath := links[linkName]
 		// Resolve target path to object header address
 		targetAddr, err := fw.resolveObjectAddress(targetPath)
 		if err != nil {
@@ -513,10 +700,10 @@ func (fw *FileWriter) resolveObjectAddress(path string) (uint64, error) {
 	parent, name := parsePath(path)
 
 	// Get parent group metadata
-	var stNodeAddr, heapAddr uint64
+	var btreeAddr, heapAddr uint64
 	if parent == "" || parent == "/" {
 		// Root group
-		stNodeAddr = fw.rootStNodeAddr
+		btreeAddr = fw.rootBTreeAddr
 		heapAddr = fw.rootHeapAddr
 	} else {
 		// Non-root group - look up metadata
@@ -524,12 +711,12 @@ func (fw *FileWriter) resolveObjectAddress(path string) (uint64, error) {
 		if !exists {
 			return 0, fmt.Errorf("parent group %q not found", parent)
 		}
-		stNodeAddr = meta.stNodeAddr
+		btreeAddr = meta.btreeAddr
 		heapAddr = meta.heapAddr
 	}
 
-	// Read parent group's symbol table to find the object
-	stNode, err := fw.readSymbolTableNode(stNodeAddr)
+	// Read the parent group's symbol table nodes to find the object
+	snodAddrs, err := fw.readGroupBTreeChildren(btreeAddr)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read symbol table: %w", err)
 	}
@@ -539,16 +726,23 @@ func (fw *FileWriter) resolveObjectAddress(path string) (uint64, error) {
 		return 0, fmt.Errorf("failed to read local heap: %w", err)
 	}
 
-	// Search for object in symbol table
-	for _, entry := range stNode.Entries {
-		// Get link name from heap
-		linkName, err := heap.GetString(entry.LinkNameOffset)
+	for _, a := range snodAddrs {
+		stNode, err := fw.readSymbolTableNode(a)
 		if err != nil {
-			continue
+			return 0, fmt.Errorf("failed to read symbol table: %w", err)
 		}
 
-		if linkName == name {
-			return entry.ObjectAddress, nil
+		// Search for object in symbol table
+		for _, entry := range stNode.Entries {
+			// Get link name from heap
+			linkName, err := heap.GetString(entry.LinkNameOffset)
+			if err != nil {
+				continue
+			}
+
+			if linkName == name {
+				return entry.ObjectAddress, nil
+			}
 		}
 	}
 

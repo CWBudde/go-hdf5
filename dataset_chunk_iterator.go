@@ -111,10 +111,17 @@ func (d *Dataset) ChunkIteratorWithContext(ctx context.Context) (*ChunkIterator,
 		return nil, fmt.Errorf("failed to collect chunk coordinates: %w", err)
 	}
 
+	// The on-disk chunk dimensions carry an extra trailing "dimension" (the
+	// datatype size in bytes); expose only the dataset-rank dimensions.
+	chunkDims := layout.ChunkSize
+	if len(chunkDims) > len(dataspace.Dimensions) {
+		chunkDims = chunkDims[:len(dataspace.Dimensions)]
+	}
+
 	return &ChunkIterator{
 		dataset:     d,
 		chunkCoords: chunkCoords,
-		chunkDims:   layout.ChunkSize,
+		chunkDims:   chunkDims,
 		datasetDims: dataspace.Dimensions,
 		current:     0,
 		ctx:         ctx,
@@ -123,6 +130,16 @@ func (d *Dataset) ChunkIteratorWithContext(ctx context.Context) (*ChunkIterator,
 
 // collectChunkCoordinates retrieves all chunk coordinates from the B-tree.
 func (d *Dataset) collectChunkCoordinates(layout *core.DataLayoutMessage, dataspace *core.DataspaceMessage) ([][]uint64, error) {
+	ndims := len(dataspace.Dimensions)
+	if len(layout.ChunkSize) < ndims {
+		return nil, fmt.Errorf("chunk rank %d smaller than dataspace rank %d", len(layout.ChunkSize), ndims)
+	}
+
+	// No chunk was ever written (undefined chunk index address).
+	if layout.DataAddress == undefinedAddress {
+		return nil, nil
+	}
+
 	// Parse B-tree to get all chunks.
 	btreeNode, err := core.ParseBTreeV1Node(
 		d.file.osFile,
@@ -141,9 +158,11 @@ func (d *Dataset) collectChunkCoordinates(layout *core.DataLayoutMessage, datasp
 	}
 
 	// Extract coordinates.
-	ndims := len(dataspace.Dimensions)
 	coords := make([][]uint64, 0, len(allChunks))
 	for _, chunk := range allChunks {
+		if len(chunk.Key.Scaled) < ndims {
+			return nil, fmt.Errorf("chunk key has %d dimensions, need %d", len(chunk.Key.Scaled), ndims)
+		}
 		coord := make([]uint64, ndims)
 		copy(coord, chunk.Key.Scaled[:ndims])
 		coords = append(coords, coord)

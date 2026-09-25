@@ -3,6 +3,7 @@ package writer
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"fmt"
 	"io"
 )
@@ -50,12 +51,13 @@ func (f *GZIPFilter) Name() string {
 // Apply compresses data using GZIP/DEFLATE algorithm.
 // Returns compressed data suitable for storage.
 //
-// The compressed data includes GZIP headers and CRC32 checksum.
+// The HDF5 deflate filter (H5Z_FILTER_DEFLATE) stores zlib streams
+// (RFC 1950: 2-byte header + deflate data + Adler-32), not gzip files.
 func (f *GZIPFilter) Apply(data []byte) ([]byte, error) {
 	var buf bytes.Buffer
 
-	// Create gzip writer with specified compression level
-	w, err := gzip.NewWriterLevel(&buf, f.level)
+	// Create zlib writer with specified compression level
+	w, err := zlib.NewWriterLevel(&buf, f.level)
 	if err != nil {
 		return nil, fmt.Errorf("gzip writer creation failed: %w", err)
 	}
@@ -81,8 +83,15 @@ func (f *GZIPFilter) Apply(data []byte) ([]byte, error) {
 func (f *GZIPFilter) Remove(data []byte) ([]byte, error) {
 	buf := bytes.NewReader(data)
 
-	// Create gzip reader
-	r, err := gzip.NewReader(buf)
+	// HDF5 deflate data is a zlib stream. Older versions of this library
+	// wrote gzip streams; accept those too (gzip magic 0x1f 0x8b).
+	var r io.ReadCloser
+	var err error
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		r, err = gzip.NewReader(buf)
+	} else {
+		r, err = zlib.NewReader(buf)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("gzip reader creation failed: %w", err)
 	}

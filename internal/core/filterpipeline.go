@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // FilterID represents HDF5 filter identifiers.
@@ -69,8 +71,14 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 	}
 
 	// Parse each filter.
+	//
+	// Version 1: ID, name length, flags, #client data (2 bytes each), name
+	// padded to a multiple of 8, client data padded to a multiple of 8.
+	// Version 2 (H5O__pline_decode): ID; name length only for IDs >= 256;
+	// flags; #client data; name (not padded) only for IDs >= 256; client
+	// data (not padded).
 	for i := uint8(0); i < numFilters; i++ {
-		if offset+8 > len(data) {
+		if offset+2 > len(data) {
 			return nil, fmt.Errorf("filter pipeline truncated at filter %d", i)
 		}
 
@@ -80,9 +88,17 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 		filter.ID = FilterID(binary.LittleEndian.Uint16(data[offset : offset+2]))
 		offset += 2
 
-		// Name length (2 bytes) - for version 1, optional.
+		hasName := version == 1 || filter.ID >= 256
+		fixed := 4
+		if hasName {
+			fixed = 6
+		}
+		if offset+fixed > len(data) {
+			return nil, fmt.Errorf("filter pipeline truncated at filter %d", i)
+		}
+
 		var nameLength uint16
-		if version == 1 {
+		if hasName {
 			nameLength = binary.LittleEndian.Uint16(data[offset : offset+2])
 			offset += 2
 		}
@@ -96,31 +112,28 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 		filter.NumClientData = binary.LittleEndian.Uint16(data[offset : offset+2])
 		offset += 2
 
-		// Filter name (variable length, only in version 1).
-		if version == 1 && nameLength > 0 {
-			// Name is null-terminated and padded to 8-byte boundary.
-			padded := nameLength
-			if padded%8 != 0 {
+		// Filter name (null-terminated; padded to 8 bytes only in version 1).
+		if nameLength > 0 {
+			padded := int(nameLength)
+			if version == 1 && padded%8 != 0 {
 				padded += 8 - (padded % 8)
 			}
 
-			if offset+int(padded) > len(data) {
+			if offset+padded > len(data) {
 				return nil, fmt.Errorf("filter name truncated at filter %d", i)
 			}
 
 			// Extract name (up to first null).
 			nameBytes := data[offset : offset+int(nameLength)]
+			filter.Name = string(nameBytes)
 			for idx, b := range nameBytes {
 				if b == 0 {
 					filter.Name = string(nameBytes[:idx])
 					break
 				}
 			}
-			if filter.Name == "" {
-				filter.Name = string(nameBytes)
-			}
 
-			offset += int(padded)
+			offset += padded
 		}
 
 		// Client data (array of uint32).
@@ -151,7 +164,20 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 }
 
 // ApplyFilters applies filter pipeline to decompress/decode chunk data.
+// The decoded output is limited to utils.MaxChunkSize bytes; use
+// ApplyFiltersLimit when the expected chunk size is known.
 func (fp *FilterPipelineMessage) ApplyFilters(data []byte) ([]byte, error) {
+	return fp.ApplyFiltersLimit(data, utils.MaxChunkSize)
+}
+
+// ApplyFiltersLimit applies the filter pipeline to decode chunk data, refusing
+// to produce more than limit bytes at any stage (protects against
+// decompression bombs). limit is normally the expected uncompressed chunk size.
+func (fp *FilterPipelineMessage) ApplyFiltersLimit(data []byte, limit uint64) ([]byte, error) {
+	if limit > utils.MaxChunkSize {
+		limit = utils.MaxChunkSize
+	}
+	maxOut := int(limit) //nolint:gosec // G115: bounded by MaxChunkSize above
 	if fp == nil || len(fp.Filters) == 0 {
 		return data, nil
 	}
@@ -159,7 +185,6 @@ func (fp *FilterPipelineMessage) ApplyFilters(data []byte) ([]byte, error) {
 	// Filters are applied in REVERSE order during decompression.
 	// (they were applied forward during compression).
 	result := data
-	var err error
 
 	for i := len(fp.Filters) - 1; i >= 0; i-- {
 		filter := fp.Filters[i]
@@ -167,7 +192,10 @@ func (fp *FilterPipelineMessage) ApplyFilters(data []byte) ([]byte, error) {
 		// Skip optional filters if they fail.
 		isOptional := (filter.Flags & 0x0001) != 0
 
-		result, err = applyFilter(filter, result)
+		// The output of this stage is the input the earlier filters
+		// produced, which may be larger than the final chunk (Fletcher32
+		// adds a checksum, compressors can expand incompressible data).
+		decoded, err := applyFilter(filter, result, stageLimit(fp.Filters[:i], maxOut))
 		if err != nil {
 			if isOptional {
 				// Optional filter - log and continue.
@@ -175,6 +203,7 @@ func (fp *FilterPipelineMessage) ApplyFilters(data []byte) ([]byte, error) {
 			}
 			return nil, fmt.Errorf("filter %d (%s) failed: %w", filter.ID, filterName(filter.ID), err)
 		}
+		result = decoded
 
 		// LZF filter: ensure output matches expected size from cd_values[2].
 		// The HDF5 LZF filter stores the expected uncompressed chunk size in cd_values[2].
@@ -182,7 +211,7 @@ func (fp *FilterPipelineMessage) ApplyFilters(data []byte) ([]byte, error) {
 		// This can happen with sparse chunks or chunks at dataset boundaries.
 		if filter.ID == FilterLZF && len(filter.ClientData) >= 3 && filter.ClientData[2] > 0 {
 			expectedSize := int(filter.ClientData[2])
-			if len(result) < expectedSize {
+			if len(result) < expectedSize && expectedSize <= maxOut {
 				// Pad with zeros to match expected size
 				padded := make([]byte, expectedSize)
 				copy(padded, result)
@@ -194,11 +223,36 @@ func (fp *FilterPipelineMessage) ApplyFilters(data []byte) ([]byte, error) {
 	return result, nil
 }
 
+// stageLimit returns the output size limit for a decoding stage whose output
+// is still to be decoded by the given (earlier) filters: the final limit plus
+// a bounded allowance for what each of those filters may add, capped at
+// utils.MaxChunkSize.
+func stageLimit(remaining []Filter, final int) int {
+	limit := uint64(final) //nolint:gosec // G115: final is non-negative
+	for _, f := range remaining {
+		switch f.ID {
+		case FilterFletcher:
+			limit += 4
+		case FilterShuffle, FilterNBit, FilterScaleOffset:
+			// Size-preserving (or shrinking) on encode.
+		default:
+			// Compressors may expand incompressible input slightly
+			// (deflate: 5 bytes per 16 KiB block plus header; bzip2 and
+			// LZF have similar small bounds).
+			limit += limit/64 + 1024
+		}
+		if limit >= utils.MaxChunkSize {
+			return int(utils.MaxChunkSize)
+		}
+	}
+	return int(limit) //nolint:gosec // G115: bounded by MaxChunkSize above
+}
+
 // applyFilter applies a single filter.
-func applyFilter(filter Filter, data []byte) ([]byte, error) {
+func applyFilter(filter Filter, data []byte, maxOut int) ([]byte, error) {
 	switch filter.ID {
 	case FilterDeflate:
-		return applyDeflate(data)
+		return applyDeflateLimit(data, maxOut)
 
 	case FilterShuffle:
 		return applyShuffle(data, filter.ClientData)
@@ -208,7 +262,7 @@ func applyFilter(filter Filter, data []byte) ([]byte, error) {
 		return applyFletcher32(data)
 
 	case FilterBZIP2:
-		return applyBZIP2(data)
+		return applyBZIP2Limit(data, maxOut)
 
 	case FilterLZF:
 		// LZF filter: check if data is actually uncompressed.
@@ -221,7 +275,7 @@ func applyFilter(filter Filter, data []byte) ([]byte, error) {
 				return data, nil
 			}
 		}
-		return applyLZF(data)
+		return applyLZFLimit(data, maxOut)
 
 	case FilterSZIP:
 		return applySZIP(data)
@@ -234,6 +288,23 @@ func applyFilter(filter Filter, data []byte) ([]byte, error) {
 // applyDeflate decompresses GZIP/deflate compressed data.
 // HDF5 uses raw deflate (zlib), not gzip format.
 func applyDeflate(data []byte) ([]byte, error) {
+	return applyDeflateLimit(data, utils.MaxChunkSize)
+}
+
+// readAllLimited reads all of r but fails if more than limit bytes are produced.
+func readAllLimited(r io.Reader, limit int) ([]byte, error) {
+	out, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > limit {
+		return nil, fmt.Errorf("decompressed data exceeds expected size %d", limit)
+	}
+	return out, nil
+}
+
+// applyDeflateLimit decompresses deflate data, producing at most limit bytes.
+func applyDeflateLimit(data []byte, limit int) ([]byte, error) {
 	reader, err := zlib.NewReader(io.NopCloser(io.NewSectionReader(
 		&bytesReaderAt{data}, 0, int64(len(data)))))
 	if err != nil {
@@ -242,7 +313,7 @@ func applyDeflate(data []byte) ([]byte, error) {
 	defer func() { _ = reader.Close() }()
 
 	// Read all decompressed data.
-	decompressed, err := io.ReadAll(reader)
+	decompressed, err := readAllLimited(reader, limit)
 	if err != nil {
 		return nil, fmt.Errorf("zlib decompression failed: %w", err)
 	}
@@ -298,15 +369,16 @@ func applyFletcher32(data []byte) ([]byte, error) {
 	return data[:len(data)-4], nil
 }
 
-// applyBZIP2 decompresses BZIP2-compressed data.
+// applyBZIP2Limit decompresses BZIP2-compressed data.
 // BZIP2 is a high-compression algorithm providing better compression than GZIP.
 // Uses stdlib compress/bzip2 for decompression.
-func applyBZIP2(data []byte) ([]byte, error) {
+// It produces at most limit bytes of output.
+func applyBZIP2Limit(data []byte, limit int) ([]byte, error) {
 	reader := bzip2.NewReader(io.NopCloser(io.NewSectionReader(
 		&bytesReaderAt{data}, 0, int64(len(data)))))
 
 	// Read all decompressed data.
-	decompressed, err := io.ReadAll(reader)
+	decompressed, err := readAllLimited(reader, limit)
 	if err != nil {
 		return nil, fmt.Errorf("bzip2 decompression failed: %w", err)
 	}
@@ -314,14 +386,15 @@ func applyBZIP2(data []byte) ([]byte, error) {
 	return decompressed, nil
 }
 
-// applyLZF decompresses LZF-compressed data.
+// applyLZFLimit decompresses LZF-compressed data.
 // LZF is a very fast compression algorithm used by PyTables and h5py.
-func applyLZF(data []byte) ([]byte, error) {
+// It produces at most limit bytes of output.
+func applyLZFLimit(data []byte, limit int) ([]byte, error) {
 	if len(data) == 0 {
 		return data, nil
 	}
 
-	decompressed, err := lzfDecompress(data)
+	decompressed, err := lzfDecompressLimit(data, limit)
 	if err != nil {
 		return nil, fmt.Errorf("lzf decompression failed: %w", err)
 	}
@@ -343,19 +416,21 @@ func applySZIP(_ []byte) ([]byte, error) {
 		"alternatively, re-save the file with GZIP compression (filter ID 1)")
 }
 
-// lzfDecompress decompresses LZF-compressed data.
+// lzfDecompressLimit decompresses LZF-compressed data.
 // LZF format consists of segments:
 //   - Literal run (000LLLLL): L+1 bytes of uncompressed data
 //   - Short backref (RRROXXXX XXXXXXXX): 3-8 bytes from offset 1-8192
-//   - Long backref (111OXXXX XXXXXXXX RRRRRRRR): 9-264 bytes from offset 1-8192
-func lzfDecompress(input []byte) ([]byte, error) {
+//   - Long backref (111OXXXX RRRRRRRR XXXXXXXX): 9-264 bytes from offset 1-8192
+//
+// It fails if the output would exceed limit bytes.
+func lzfDecompressLimit(input []byte, limit int) ([]byte, error) {
 	inLen := len(input)
 	if inLen == 0 {
 		return input, nil
 	}
 
 	// Pre-allocate output buffer (LZF typically achieves 40-50% compression).
-	output := make([]byte, 0, inLen*2)
+	output := make([]byte, 0, min(inLen*2, limit))
 	inPos := 0
 
 	for inPos < inLen {
@@ -372,40 +447,38 @@ func lzfDecompress(input []byte) ([]byte, error) {
 				return nil, errors.New("lzf: truncated literal run")
 			}
 
+			if len(output)+runLen > limit {
+				return nil, fmt.Errorf("lzf: decompressed data exceeds expected size %d", limit)
+			}
 			output = append(output, input[inPos:inPos+runLen]...)
 			inPos += runLen
 		} else {
-			// Backreference (short or long).
-			if inPos >= inLen {
-				return nil, errors.New("lzf: truncated backreference")
-			}
-
-			// Read offset (13 bits across 2 bytes).
+			// Backreference (liblzf lzf_d.c): length = ctrl>>5; for 7 an
+			// extra length byte follows the control byte; then the low
+			// offset byte. Offset is 1-based, length is len+2.
 			offsetHigh := int(ctrl & 0x1F)
-			offsetLow := int(input[inPos])
-			inPos++
-
-			offset := (offsetHigh << 8) | offsetLow
-			offset++ // Offset is 1-based in encoding
-
-			// Determine run length.
-			var runLen int
-			if (ctrl & 0xE0) == 0xE0 {
-				// Long backreference: 111OXXXX XXXXXXXX RRRRRRRR
+			runLen := int(ctrl >> 5)
+			if runLen == 7 {
 				if inPos >= inLen {
 					return nil, errors.New("lzf: truncated long backreference")
 				}
-				runLen = int(input[inPos]) + 9
+				runLen += int(input[inPos])
 				inPos++
-			} else {
-				// Short backreference: RRROXXXX XXXXXXXX
-				runBits := (ctrl >> 5) & 0x07
-				runLen = int(runBits) + 2
 			}
+			if inPos >= inLen {
+				return nil, errors.New("lzf: truncated backreference")
+			}
+			offset := (offsetHigh<<8 | int(input[inPos])) + 1
+			inPos++
+			runLen += 2
 
 			// Validate offset.
 			if offset > len(output) {
 				return nil, fmt.Errorf("lzf: invalid offset %d (output size: %d)", offset, len(output))
+			}
+
+			if len(output)+runLen > limit {
+				return nil, fmt.Errorf("lzf: decompressed data exceeds expected size %d", limit)
 			}
 
 			// Copy from earlier position in output.

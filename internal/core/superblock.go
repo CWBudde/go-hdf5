@@ -439,3 +439,90 @@ func (sb *Superblock) writeV0(w io.WriterAt, eofAddress uint64) error {
 
 	return nil
 }
+
+// UpdateEOA rewrites the end-of-file address stored in the superblock at
+// offset 0 of rw so that it is at least eoa (relative to the base address),
+// recomputing the superblock checksum for version 2/3.
+//
+// The HDF5 C library refuses to read anything located at or beyond the EOA
+// ("addr overflow" / "actual len exceeds EOA"), so the EOA must be refreshed
+// after all objects have been written, i.e. when the file is closed.
+// The stored value is never decreased.
+func (sb *Superblock) UpdateEOA(rw interface {
+	io.ReaderAt
+	io.WriterAt
+}, eoa uint64,
+) error {
+	o := uint64(sb.OffsetSize)
+	if o != 2 && o != 4 && o != 8 {
+		return fmt.Errorf("unsupported offset size %d", o)
+	}
+
+	var eoaPos, checksumPos uint64
+	switch sb.Version {
+	case Version0:
+		// sig(8) + versions/sizes(8) + K values(4) + flags(4) + base, freespace
+		eoaPos = 24 + 2*o
+	case Version2, Version3:
+		// sig(8) + version/sizes/flags(4) + base, extension
+		eoaPos = 12 + 2*o
+		checksumPos = 12 + 4*o
+	default:
+		return fmt.Errorf("unsupported superblock version %d for EOA update", sb.Version)
+	}
+
+	if eoa >= sb.BaseAddress {
+		eoa -= sb.BaseAddress
+	}
+
+	end := eoaPos + o
+	if checksumPos > 0 {
+		end = checksumPos
+	}
+	buf := make([]byte, end)
+	if _, err := rw.ReadAt(buf, 0); err != nil {
+		return fmt.Errorf("failed to read superblock: %w", err)
+	}
+
+	current := readUintLE(buf[eoaPos : eoaPos+o])
+	if current >= eoa && current != undefinedAddressOfSize(o) {
+		return nil
+	}
+	putUintLE(buf[eoaPos:eoaPos+o], eoa)
+
+	if checksumPos > 0 {
+		out := make([]byte, checksumPos-eoaPos+4)
+		copy(out, buf[eoaPos:])
+		binary.LittleEndian.PutUint32(out[checksumPos-eoaPos:], utils.JenkinsChecksum(buf))
+		if _, err := rw.WriteAt(out, int64(eoaPos)); err != nil { //nolint:gosec // Safe: small constant offset
+			return fmt.Errorf("failed to write superblock EOA: %w", err)
+		}
+		return nil
+	}
+
+	if _, err := rw.WriteAt(buf[eoaPos:eoaPos+o], int64(eoaPos)); err != nil { //nolint:gosec // Safe: small constant offset
+		return fmt.Errorf("failed to write superblock EOA: %w", err)
+	}
+	return nil
+}
+
+func readUintLE(b []byte) uint64 {
+	var v uint64
+	for i := len(b) - 1; i >= 0; i-- {
+		v = v<<8 | uint64(b[i])
+	}
+	return v
+}
+
+func putUintLE(b []byte, v uint64) {
+	for i := range b {
+		b[i] = byte(v >> (8 * i))
+	}
+}
+
+func undefinedAddressOfSize(size uint64) uint64 {
+	if size >= 8 {
+		return ^uint64(0)
+	}
+	return (uint64(1) << (8 * size)) - 1
+}

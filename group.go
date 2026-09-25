@@ -320,6 +320,10 @@ func loadModernGroup(file *File, address uint64) (*Group, error) {
 	// it has no messages (symbol table info is cached in superblock).
 	isGroup := header.Type == core.ObjectTypeGroup ||
 		(header.Type == core.ObjectTypeUnknown && sb.Version == core.Version0)
+	if isGroup && !file.markGroupExpanded(address) {
+		// Already expanded elsewhere (cycle or shared group): no children.
+		return group, nil
+	}
 	if isGroup {
 		// First, try to parse Link messages (modern format).
 		hasLinkMessages := false
@@ -464,6 +468,10 @@ func loadTraditionalGroup(file *File, address uint64) (*Group, error) {
 		name:      "/",
 		localHeap: heap,
 	}
+	if !file.markGroupExpanded(address) {
+		// Already expanded elsewhere (cycle or shared group): no children.
+		return group, nil
+	}
 
 	// Load children from SNOD entries.
 	for _, entry := range node.Entries {
@@ -514,7 +522,14 @@ func loadDenseGroupChildren(file *File, group *Group, linkInfo *core.LinkInfoMes
 		// Read the link message data from the fractal heap.
 		// Use spec-compliant read: official HDF5 files encode heap offsets
 		// from the start of the direct block (including header).
-		linkData, err := fh.ReadObjectSpecCompliant(rec.HeapID[:])
+		// Name-index records hold 7-byte heap IDs. Older go-hdf5 files use
+		// 8-byte heap IDs whose last (length) byte is zero for link-sized
+		// objects: pad the record to the heap's ID length.
+		heapID := rec.HeapID[:]
+		if n := int(fh.Header.HeapIDLen); n > len(heapID) {
+			heapID = append(append(make([]byte, 0, n), heapID...), make([]byte, n-len(heapID))...)
+		}
+		linkData, err := fh.ReadObjectSpecCompliant(heapID)
 		if err != nil {
 			continue
 		}
@@ -649,6 +664,14 @@ func (g *Group) loadChildren() error {
 }
 
 func loadObject(file *File, address uint64, name string) (Object, error) {
+	// Bound recursion: corrupted files can describe arbitrarily deep or
+	// cyclic hierarchies.
+	file.loadDepth++
+	defer func() { file.loadDepth-- }()
+	if file.loadDepth > maxLoadDepth {
+		return nil, fmt.Errorf("object hierarchy deeper than %d levels", maxLoadDepth)
+	}
+
 	// Check signature first - SNOD means traditional group format.
 	sig := readSignature(file.osFile, address)
 	if sig == SignatureSNOD {

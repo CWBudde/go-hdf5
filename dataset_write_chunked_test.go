@@ -1,8 +1,10 @@
 package hdf5
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -206,4 +208,36 @@ func TestChunkedDataset_SmallChunks(t *testing.T) {
 
 	err = fw.Close()
 	require.NoError(t, err)
+}
+
+// TestChunkedDatasetLargeInitialHeader reads back a chunked dataset whose
+// creation-time header exceeds 255 bytes (2-byte chunk-size field).
+func TestChunkedDatasetLargeInitialHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chunked_attrs.h5")
+	fw, err := CreateForWrite(path, CreateTruncate)
+	require.NoError(t, err)
+	opts := []DatasetOption{WithChunkDims([]uint64{4})}
+	for i := 0; i < 4; i++ {
+		opts = append(opts, WithAttribute(fmt.Sprintf("a%d", i), strings.Repeat("z", 100)))
+	}
+	ds, err := fw.CreateDataset("/kc", Float64, []uint64{10}, opts...)
+	require.NoError(t, err)
+	want := make([]float64, 10)
+	for i := range want {
+		want[i] = float64(i) + 0.5
+	}
+	require.NoError(t, ds.Write(want))
+	require.NoError(t, fw.Close())
+
+	f, err := Open(path)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	var got []float64
+	f.Walk(func(p string, obj Object) {
+		if d, ok := obj.(*Dataset); ok && p == "/kc" {
+			got, err = d.Read()
+			require.NoError(t, err)
+		}
+	})
+	require.Equal(t, want, got)
 }
