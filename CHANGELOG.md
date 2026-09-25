@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differently from libhdf5, so libhdf5, h5py and netCDF-C could not open
   such attributes in dense storage (more than 8 attributes) or such links
   in dense groups. The name hash now uses the same lookup3 port as the
-  metadata checksums.
+  metadata checksums. Records that earlier versions wrote with the old hash
+  are still found when a file is modified (upsert, update, delete) and are
+  rewritten with the correct hash, so no duplicate attribute is added.
 
 ## [v0.16.0] - 2026-09-25
 

@@ -301,16 +301,7 @@ func (bt *WritableBTreeV2) InsertRecord(linkName string, heapID uint64) error {
 //
 // For MVP: searches single leaf node by name hash.
 func (bt *WritableBTreeV2) HasKey(name string) bool {
-	hash := jenkinsHash(name)
-
-	// Search in records
-	for _, record := range bt.records {
-		if record.NameHash == hash {
-			return true
-		}
-	}
-
-	return false
+	return bt.findRecord(name) >= 0
 }
 
 // SearchRecord searches for a record by name and returns the heap ID.
@@ -329,20 +320,16 @@ func (bt *WritableBTreeV2) HasKey(name string) bool {
 //
 // Reference: H5Adense.c - H5A__dense_write() searches B-tree by name.
 func (bt *WritableBTreeV2) SearchRecord(name string) ([]byte, bool) {
-	hash := jenkinsHash(name)
-
-	// Search in records
-	for _, record := range bt.records {
-		if record.NameHash == hash {
-			// Convert 7-byte heap ID to 8-byte format
-			heapID := make([]byte, 8)
-			copy(heapID, record.HeapID[:])
-			// Last byte is 0 (7-byte format pads to 8 bytes)
-			return heapID, true
-		}
+	i := bt.findRecord(name)
+	if i < 0 {
+		return nil, false
 	}
 
-	return nil, false
+	// Convert 7-byte heap ID to 8-byte format
+	heapID := make([]byte, 8)
+	copy(heapID, bt.records[i].HeapID[:])
+	// Last byte is 0 (7-byte format pads to 8 bytes)
+	return heapID, true
 }
 
 // UpdateRecord updates an existing record's heap ID.
@@ -363,27 +350,21 @@ func (bt *WritableBTreeV2) SearchRecord(name string) ([]byte, bool) {
 //
 // Reference: H5Adense.c - H5A__dense_write() updates B-tree when size changes.
 func (bt *WritableBTreeV2) UpdateRecord(name string, newHeapID uint64) error {
-	hash := jenkinsHash(name)
-
-	// Find record
-	for i, record := range bt.records {
-		if record.NameHash != hash {
-			continue
-		}
-
-		// Convert 8-byte heap ID to 7-byte format
-		var heapIDBytes [7]byte
-		var temp [8]byte
-		binary.LittleEndian.PutUint64(temp[:], newHeapID)
-		copy(heapIDBytes[:], temp[:7])
-
-		// Update record
-		bt.records[i].HeapID = heapIDBytes
-		bt.leaf.Records = bt.records
-		return nil
+	i := bt.findRecord(name)
+	if i < 0 {
+		return fmt.Errorf("record not found for name: %s", name)
 	}
 
-	return fmt.Errorf("record not found for name: %s", name)
+	// Convert 8-byte heap ID to 7-byte format
+	var heapIDBytes [7]byte
+	var temp [8]byte
+	binary.LittleEndian.PutUint64(temp[:], newHeapID)
+	copy(heapIDBytes[:], temp[:7])
+
+	// Update record
+	bt.records[i].HeapID = heapIDBytes
+	bt.leaf.Records = bt.records
+	return nil
 }
 
 // DeleteRecord removes a record from the B-tree by name.
@@ -1069,6 +1050,41 @@ func readUint64(buf []byte, size int, endianness binary.ByteOrder) uint64 {
 //   - []LinkNameRecord: slice of all link name records in the B-tree
 func (bt *WritableBTreeV2) GetRecords() []LinkNameRecord {
 	return bt.records
+}
+
+// findRecord returns the index of name's record, or -1 when there is none.
+//
+// Files written by go-hdf5 up to v0.16.0 carry legacyJenkinsHash for names
+// of 12, 24, ... bytes. When no record has the correct hash, a record with
+// the legacy hash is taken instead and migrated to the correct hash (keeping
+// the records sorted), so the tree written back is readable by libhdf5 and
+// an upsert replaces the attribute instead of adding a duplicate.
+func (bt *WritableBTreeV2) findRecord(name string) int {
+	hash := jenkinsHash(name)
+	for i, record := range bt.records {
+		if record.NameHash == hash {
+			return i
+		}
+	}
+
+	legacy := legacyJenkinsHash(name)
+	if legacy == hash {
+		return -1
+	}
+	for i, record := range bt.records {
+		if record.NameHash != legacy {
+			continue
+		}
+		record.NameHash = hash
+		bt.records = insertRecordSorted(append(bt.records[:i], bt.records[i+1:]...), record)
+		bt.leaf.Records = bt.records
+		for j := range bt.records {
+			if bt.records[j].NameHash == hash {
+				return j
+			}
+		}
+	}
+	return -1
 }
 
 // jenkinsHash computes the Jenkins lookup3 hash of a link or attribute
