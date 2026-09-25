@@ -137,6 +137,22 @@ func compatScenarios() []writeScenario {
 			require.NoError(t, ds.WriteAttribute("later", "added"))
 			closeOK(t, fw)
 		}},
+		{"compact_attrs_continuation", func(t *testing.T, p string) {
+			// 8 attributes that overflow the header's first chunk stay
+			// compact (continuation chunk); repeated rewrites reuse it.
+			fw, err := CreateForWrite(p, CreateTruncate)
+			require.NoError(t, err)
+			ds, err := fw.CreateDataset("/c", Float64, []uint64{2})
+			require.NoError(t, err)
+			require.NoError(t, ds.Write([]float64{1, 2}))
+			for i := 0; i < 8; i++ {
+				require.NoError(t, ds.WriteAttribute(fmt.Sprintf("k%d", i), strings.Repeat("c", 60)+fmt.Sprint(i)))
+			}
+			for i := 0; i < 5; i++ {
+				require.NoError(t, ds.WriteAttribute("k7", int32(i)))
+			}
+			closeOK(t, fw)
+		}},
 		{"dense_attrs_growing_heap", func(t *testing.T, p string) {
 			long := strings.Repeat("x", 300)
 			opts := make([]interface{}, 0, 200)

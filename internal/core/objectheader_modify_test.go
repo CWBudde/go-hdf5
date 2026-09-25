@@ -53,7 +53,9 @@ func TestAddMessageToObjectHeader_Multiple(t *testing.T) {
 	}
 }
 
-// TestAddMessageToObjectHeader_HeaderFull tests error when header is full.
+// TestAddMessageToObjectHeader_HeaderFull tests that headers may grow past
+// 255 bytes (continuation chunks) but a single message is limited to the
+// 2-byte message size field.
 func TestAddMessageToObjectHeader_HeaderFull(t *testing.T) {
 	oh := &ObjectHeader{
 		Version:  2,
@@ -62,15 +64,14 @@ func TestAddMessageToObjectHeader_HeaderFull(t *testing.T) {
 		Messages: []*HeaderMessage{},
 	}
 
-	// Add a large message that would exceed 255 bytes
-	// Each message has 4-byte header + data
-	// To exceed 255: message size > 255 - 4 = 251 bytes
-	largeMessage := make([]byte, 252)
+	require.NoError(t, AddMessageToObjectHeader(oh, MsgAttribute, make([]byte, 252)))
+	require.NoError(t, AddMessageToObjectHeader(oh, MsgAttribute, make([]byte, 1000)))
+	require.Len(t, oh.Messages, 2)
 
-	err := AddMessageToObjectHeader(oh, MsgAttribute, largeMessage)
+	err := AddMessageToObjectHeader(oh, MsgAttribute, make([]byte, 0x10000))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "object header full")
-	assert.Contains(t, err.Error(), "continuation blocks not yet supported")
+	require.Len(t, oh.Messages, 2)
 }
 
 // TestAddMessageToObjectHeader_NilHeader tests error with nil header.

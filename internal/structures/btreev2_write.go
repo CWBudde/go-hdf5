@@ -36,9 +36,10 @@ const (
 	BTreeV2TypeLinkNameIndex = uint8(5) // Type 5 = Link Name Index for dense groups
 	BTreeV2TypeAttrNameIndex = uint8(8) // Type 8 = Attribute Name Index for dense attributes
 
-	DefaultBTreeV2NodeSize     = uint32(4096) // 4KB default node size
-	DefaultBTreeV2SplitPercent = uint8(100)   // Split at 100% full
-	DefaultBTreeV2MergePercent = uint8(40)    // Merge at 40% full
+	DefaultBTreeV2NodeSize     = uint32(512) // libhdf5 node size for link/attribute name indexes
+	maxGrowableBTreeNodeSize   = uint32(1 << 21)
+	DefaultBTreeV2SplitPercent = uint8(100) // Split at 100% full
+	DefaultBTreeV2MergePercent = uint8(40)  // Merge at 40% full
 )
 
 // B-tree v2 error definitions.
@@ -135,6 +136,10 @@ type WritableBTreeV2 struct {
 	// Addresses loaded from file (for RMW scenarios)
 	loadedHeaderAddress uint64
 	loadedLeafAddress   uint64
+
+	// leafMoved is set when the (single) leaf grew after the tree was loaded
+	// from file: the larger node must be written to newly allocated space.
+	leafMoved bool
 
 	// Lazy rebalancing state (nil if disabled)
 	lazyState *LazyRebalancingState
@@ -263,10 +268,18 @@ func (bt *WritableBTreeV2) InsertRecord(linkName string, heapID uint64) error {
 		HeapID:   heapIDBytes,
 	}
 
-	// Check if node will be full
-	maxRecords := bt.calculateMaxRecords()
-	if len(bt.records) >= maxRecords {
-		return ErrBTreeNodeFull
+	// The tree is a single leaf. When it is full, double the node size
+	// (like the growable fractal heap root block) instead of splitting, so
+	// small indexes stay at libhdf5's 512-byte node size.
+	for len(bt.records) >= bt.calculateMaxRecords() {
+		if bt.nodeSize >= maxGrowableBTreeNodeSize || len(bt.records) >= 0xFFFF {
+			return ErrBTreeNodeFull
+		}
+		bt.nodeSize *= 2
+		bt.header.NodeSize = bt.nodeSize
+		if bt.loadedLeafAddress != 0 {
+			bt.leafMoved = true
+		}
 	}
 
 	// Insert sorted by hash
@@ -477,6 +490,13 @@ func (bt *WritableBTreeV2) WriteToFile(writer Writer, allocator Allocator, sb *c
 //
 // Reference: Same as WriteToFile, but uses stored addresses.
 func (bt *WritableBTreeV2) WriteAt(writer Writer, sb *core.Superblock) error {
+	return bt.WriteAtWithAllocator(writer, nil, sb)
+}
+
+// WriteAtWithAllocator is WriteAt for trees whose leaf may have grown since
+// loading: the enlarged leaf is written to newly allocated space (the old
+// node is abandoned) and the header is updated to point to it.
+func (bt *WritableBTreeV2) WriteAtWithAllocator(writer Writer, allocator Allocator, sb *core.Superblock) error {
 	if writer == nil || sb == nil {
 		return errors.New("writer or superblock is nil")
 	}
@@ -484,6 +504,18 @@ func (bt *WritableBTreeV2) WriteAt(writer Writer, sb *core.Superblock) error {
 	// Verify this B-tree was loaded from file
 	if bt.loadedHeaderAddress == 0 {
 		return errors.New("cannot use WriteAt: B-tree not loaded from file (use WriteToFile for new B-trees)")
+	}
+
+	if bt.leafMoved {
+		if allocator == nil {
+			return errors.New("b-tree leaf grew: an allocator is required to relocate it")
+		}
+		addr, err := allocator.Allocate(uint64(bt.nodeSize))
+		if err != nil {
+			return fmt.Errorf("failed to allocate grown leaf node: %w", err)
+		}
+		bt.loadedLeafAddress = addr
+		bt.leafMoved = false
 	}
 
 	// Encode leaf node

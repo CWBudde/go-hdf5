@@ -60,7 +60,7 @@ func NewDenseGroupWriter(name string) *DenseGroupWriter {
 	return &DenseGroupWriter{
 		name:        name,
 		fractalHeap: structures.NewGrowableFractalHeap(structures.LinkHeapStartBlockSize), // grows as needed
-		btree:       structures.NewWritableBTreeV2(4096),                                  // 4KB node
+		btree:       structures.NewWritableBTreeV2(0),                                     // libhdf5 node size (512), grows as needed
 		linkInfo: &core.LinkInfoMessage{
 			Version: 0,
 			Flags:   0, // No creation order tracking for MVP

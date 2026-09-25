@@ -364,7 +364,8 @@ func parseV2ContinuationBlock(r io.ReaderAt, blockAddr, blockSize, msgHeaderSize
 	end := blockAddr + blockSize - checksumSize
 
 	var messages []*HeaderMessage
-	for current < end {
+	// A gap smaller than a message header may remain at the end of the chunk.
+	for current+msgHeaderSize <= end {
 		headerBuf := utils.GetBuffer(6)
 		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
 		if _, err := r.ReadAt(headerBuf, int64(current)); err != nil {

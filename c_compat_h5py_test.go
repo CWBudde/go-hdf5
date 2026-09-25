@@ -119,6 +119,10 @@ func TestInteropH5py(t *testing.T) {
 				require.Equal(t, []interface{}{float64(4)}, got["/wide"].Attrs["_Netcdf4Dimid"])
 				require.Equal(t, []interface{}{"added"}, got["/wide"].Attrs["later"])
 				require.InDelta(t, 6.0, got["/wide"].Sum, 1e-9)
+			case "compact_attrs_continuation":
+				require.Len(t, got["/c"].Attrs, 8)
+				require.Equal(t, []interface{}{strings.Repeat("c", 60) + "0"}, got["/c"].Attrs["k0"])
+				require.Equal(t, []interface{}{float64(4)}, got["/c"].Attrs["k7"])
 			case "dense_attrs_growing_heap":
 				require.Len(t, got["/"].Attrs, 200)
 				require.Len(t, got["/v"].Attrs, 200)

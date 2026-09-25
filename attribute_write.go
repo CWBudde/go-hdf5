@@ -130,7 +130,7 @@ func (ds *DatasetWriter) RebalanceAttributeBTree() error {
 		sb := ds.fileWriter.file.Superblock()
 		reader := ds.fileWriter.writer.Reader()
 
-		btree := structures.NewWritableBTreeV2(4096)
+		btree := structures.NewWritableBTreeV2(0)
 		err := btree.LoadFromFile(reader, ds.denseAttrInfo.BTreeNameIndexAddr, sb)
 		if err != nil {
 			return fmt.Errorf("failed to load B-tree: %w", err)
@@ -174,7 +174,7 @@ func (ds *DatasetWriter) RebalanceAttributeBTree() error {
 	}
 
 	// Load and rebalance B-tree
-	btree := structures.NewWritableBTreeV2(4096)
+	btree := structures.NewWritableBTreeV2(0)
 	err = btree.LoadFromFile(reader, attrInfo.BTreeNameIndexAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load B-tree: %w", err)
@@ -236,13 +236,27 @@ func writeAttribute(fw *FileWriter, objectAddr uint64, name string, value interf
 		return writeDenseAttribute(fw, objectAddr, oh, name, value, sb)
 	}
 
-	if compactCount < MaxCompactAttributes {
-		// Still compact → add compact attribute
+	if compactCount < MaxCompactAttributes || hasCompactAttribute(oh, name, sb) {
+		// Still compact, or replacing an existing compact attribute
 		return writeCompactAttribute(fw, objectAddr, oh, name, value, sb)
 	}
 
 	// Transition needed → migrate to dense
 	return transitionToDenseAttributes(fw, objectAddr, oh, name, value, sb)
+}
+
+// hasCompactAttribute reports whether the object header holds a compact
+// attribute message with the given name.
+func hasCompactAttribute(oh *core.ObjectHeader, name string, sb *core.Superblock) bool {
+	for _, msg := range oh.Messages {
+		if msg.Type != core.MsgAttribute {
+			continue
+		}
+		if attr, err := core.ParseAttributeMessage(msg.Data, sb.Endianness); err == nil && attr.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // writeCompactAttribute writes attribute to object header (compact storage).
@@ -361,12 +375,12 @@ func writeAttributeWithCachedHeader(fw *FileWriter, objectAddr uint64, oh *core.
 		}
 	}
 
-	if compactCount < MaxCompactAttributes {
-		// Still compact → add compact attribute
+	if compactCount < MaxCompactAttributes || hasCompactAttribute(oh, name, sb) {
+		// Still compact, or replacing an existing compact attribute
 		return writeCompactAttribute(fw, objectAddr, oh, name, value, sb)
 	}
 
-	// Need to transition to dense storage (8th attribute)
+	// Need to transition to dense storage (9th attribute)
 	return transitionToDenseAttributes(fw, objectAddr, oh, name, value, sb)
 }
 
@@ -389,7 +403,7 @@ func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
 	}
 
 	// Load existing B-tree v2 from file
-	btree := structures.NewWritableBTreeV2(4096)
+	btree := structures.NewWritableBTreeV2(0)
 	err = btree.LoadFromFile(fw.writer.Reader(), attrInfo.BTreeNameIndexAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load B-tree: %w", err)
@@ -458,7 +472,7 @@ func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
 		return fmt.Errorf("failed to write updated heap: %w", err)
 	}
 
-	err = btree.WriteAt(fw.writer, sb)
+	err = btree.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated B-tree: %w", err)
 	}
@@ -610,7 +624,7 @@ func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessag
 	}
 
 	// Load existing B-tree v2 from file
-	btree := structures.NewWritableBTreeV2(4096)
+	btree := structures.NewWritableBTreeV2(0)
 	err = btree.LoadFromFile(fw.writer.Reader(), attrInfo.BTreeNameIndexAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load B-tree: %w", err)
@@ -631,7 +645,7 @@ func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessag
 	}
 
 	// Write updated B-tree back to file
-	err = btree.WriteAt(fw.writer, sb)
+	err = btree.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated B-tree: %w", err)
 	}
@@ -686,7 +700,7 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 	}
 
 	// Step 3: Load existing B-tree v2 from file
-	btree := structures.NewWritableBTreeV2(4096) // Match size from dense attribute writer
+	btree := structures.NewWritableBTreeV2(0) // Match size from dense attribute writer
 	err = btree.LoadFromFile(fw.writer.Reader(), attrInfo.BTreeNameIndexAddr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to load B-tree: %w", err)
@@ -759,7 +773,7 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 	}
 
 	// Write B-tree in-place at loaded address
-	err = btree.WriteAt(fw.writer, sb)
+	err = btree.WriteAtWithAllocator(fw.writer, fw.writer.Allocator(), sb)
 	if err != nil {
 		return fmt.Errorf("failed to write updated B-tree: %w", err)
 	}

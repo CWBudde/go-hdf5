@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Attributes stay in compact storage up to `MaxCompactAttributes` (8), like
+  libhdf5's `max_compact`, even when they overflow the object header's first
+  chunk: the header grows through a continuation chunk (reused on later
+  rewrites) instead of switching to dense storage at 255 bytes of messages.
+  Upserting an existing attribute on an object with 8 compact attributes no
+  longer triggers a dense transition.
+- Dense attribute/link name-index B-trees start at libhdf5's 512-byte node
+  size and grow (relocating the leaf) when full, instead of a fixed 4 KiB
+  node.
+- The reader accepts a gap smaller than a message header at the end of a v2
+  continuation chunk.
+
 - `CreateDataset` accepts initial object headers larger than 255 bytes of
   messages (e.g. several `WithAttribute` options); the chunk size field
   widens to 2/4 bytes instead of failing with "MVP limitation".

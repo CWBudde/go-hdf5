@@ -398,8 +398,13 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 	return headerSize, nil
 }
 
+// maxHeaderMessageSize is the largest message body an object header message
+// can hold (2-byte size field).
+const maxHeaderMessageSize = 0xFFFF
+
 // AddMessageToObjectHeader adds a message to an object header.
-// For MVP (v0.11.1-beta): Only supports object header v2 without continuation blocks.
+// Only object header v2 is supported. The header may grow beyond its
+// allocated chunk #0; WriteObjectHeader spills into a continuation chunk.
 //
 // Parameters:
 //   - oh: Object header to modify
@@ -410,7 +415,6 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 //   - error: Non-nil if header full or add fails
 //
 // Limitations:
-//   - No continuation blocks (returns error if header would overflow)
 //   - Only object header v2 supported
 //   - No message flags (always 0)
 //
@@ -424,33 +428,14 @@ func AddMessageToObjectHeader(oh *ObjectHeader, msgType MessageType, msgData []b
 		return fmt.Errorf("only object header version 2 is supported for modification, got version %d", oh.Version)
 	}
 
-	// For MVP: We don't support continuation blocks
-	// Calculate the space needed for the new message
-	// Message format in v2: Type(1) + Size(2) + Flags(1) + Data(variable)
-	messageHeaderSize := 4 // Type(1) + Size(2) + Flags(1)
-	totalMessageSize := messageHeaderSize + len(msgData)
-
-	// For MVP: We check if adding this message would exceed a reasonable header size
-	// HDF5 typically limits object header chunk 0 to 255 bytes (1-byte size encoding)
-	// We'll check the total size of all messages
-	currentMessagesSize := 0
-	for _, msg := range oh.Messages {
-		// NIL (padding) and continuation messages are layout artifacts that
-		// are dropped when the header is rewritten.
-		if msg.Type == MsgNil || msg.Type == MsgContinuation {
-			continue
-		}
-		currentMessagesSize += 4 + len(msg.Data)
-	}
-
-	newTotalSize := currentMessagesSize + totalMessageSize
-
-	// For MVP: Limit to 255 bytes (max size for 1-byte chunk size encoding)
-	// In practice, headers with continuation blocks can be larger,
-	// but we're not implementing that yet
-	if newTotalSize > 255 {
-		return fmt.Errorf("object header full (current: %d bytes, new message: %d bytes, max: 255 bytes); continuation blocks not yet supported",
-			currentMessagesSize, totalMessageSize)
+	// Header messages carry a 2-byte size field. Like libhdf5
+	// (H5O_MESG_MAX_SIZE), larger messages cannot live in the header; the
+	// caller moves attributes to dense storage instead. There is no limit on
+	// the total size: WriteObjectHeader moves messages that do not fit into
+	// chunk #0 into a continuation chunk.
+	if len(msgData) > maxHeaderMessageSize {
+		return fmt.Errorf("object header full: message of %d bytes exceeds the %d byte header message limit",
+			len(msgData), maxHeaderMessageSize)
 	}
 
 	// Create new message
@@ -723,12 +708,25 @@ func rewriteObjectHeaderV2InPlace(rw ReaderWriterAt, alloc SpaceAllocator, addr 
 	}
 
 	// Drop NIL and continuation messages: layout is recomputed from scratch.
+	// A single existing continuation chunk is reused when the spilled
+	// messages still fit, so repeated attribute writes do not leak space.
 	msgs := make([]*HeaderMessage, 0, len(oh.Messages))
+	var reuse *continuationChunk
+	conts := 0
 	for _, m := range oh.Messages {
+		if m.Type == MsgContinuation {
+			conts++
+			if c, ok := parseContinuation(m.Data, sb); ok {
+				reuse = &c
+			}
+		}
 		if m.Type == MsgNil || m.Type == MsgContinuation {
 			continue
 		}
 		msgs = append(msgs, m)
+	}
+	if conts != 1 {
+		reuse = nil
 	}
 
 	all, err := encodeV2Messages(msgs)
@@ -738,7 +736,7 @@ func rewriteObjectHeaderV2InPlace(rw ReaderWriterAt, alloc SpaceAllocator, addr 
 
 	chunk := all
 	if uint64(len(all)) > capacity {
-		chunk, err = spillToContinuationChunk(rw, alloc, addr, capacity, msgs, sb)
+		chunk, err = spillToContinuationChunk(rw, alloc, addr, capacity, msgs, sb, reuse)
 		if err != nil {
 			return err
 		}
@@ -755,13 +753,42 @@ func rewriteObjectHeaderV2InPlace(rw ReaderWriterAt, alloc SpaceAllocator, addr 
 	return nil
 }
 
+// continuationChunk is the location of an object header continuation chunk.
+type continuationChunk struct {
+	addr, length uint64
+}
+
+// parseContinuation decodes a continuation message (address, length).
+func parseContinuation(data []byte, sb *Superblock) (continuationChunk, bool) {
+	offsetSize, lengthSize := 8, 8
+	if sb != nil && sb.OffsetSize != 0 {
+		offsetSize, lengthSize = int(sb.OffsetSize), int(sb.LengthSize)
+	}
+	if len(data) < offsetSize+lengthSize {
+		return continuationChunk{}, false
+	}
+	c := continuationChunk{
+		addr:   readUintN(data[:offsetSize]),
+		length: readUintN(data[offsetSize : offsetSize+lengthSize]),
+	}
+	return c, c.addr != 0 && c.length > 0
+}
+
+// readUintN decodes a little-endian unsigned integer of 1-8 bytes.
+func readUintN(b []byte) uint64 {
+	var v uint64
+	for i := len(b) - 1; i >= 0; i-- {
+		v = v<<8 | uint64(b[i])
+	}
+	return v
+}
+
 // spillToContinuationChunk keeps the leading messages that fit into chunk #0
 // (together with a continuation message), writes the rest into a new "OCHK"
 // continuation chunk and returns the encoded (unpadded) chunk #0 messages.
-func spillToContinuationChunk(rw ReaderWriterAt, alloc SpaceAllocator, addr, capacity uint64, msgs []*HeaderMessage, sb *Superblock) ([]byte, error) {
-	if alloc == nil {
-		return nil, fmt.Errorf("object header at %d is full and no allocator is available for a continuation chunk", addr)
-	}
+func spillToContinuationChunk(rw ReaderWriterAt, alloc SpaceAllocator, addr, capacity uint64,
+	msgs []*HeaderMessage, sb *Superblock, reuse *continuationChunk,
+) ([]byte, error) {
 	offsetSize, lengthSize := uint64(8), uint64(8)
 	if sb != nil && sb.OffsetSize != 0 {
 		offsetSize, lengthSize = uint64(sb.OffsetSize), uint64(sb.LengthSize)
@@ -790,15 +817,26 @@ func spillToContinuationChunk(rw ReaderWriterAt, alloc SpaceAllocator, addr, cap
 		return nil, err
 	}
 
-	// Continuation chunk: "OCHK" + messages + checksum.
-	block := make([]byte, 0, 4+len(tail)+ObjectHeaderV2ChecksumSize)
+	// Continuation chunk: "OCHK" + messages (+ gap) + checksum.
+	need := uint64(4 + len(tail) + ObjectHeaderV2ChecksumSize)
+	var blockAddr, blockLen uint64
+	if reuse != nil && reuse.length >= need {
+		blockAddr, blockLen = reuse.addr, reuse.length
+	} else {
+		if alloc == nil {
+			return nil, fmt.Errorf("object header at %d is full and no allocator is available for a continuation chunk", addr)
+		}
+		blockAddr, err = alloc.Allocate(need)
+		if err != nil {
+			return nil, fmt.Errorf("failed to allocate continuation chunk: %w", err)
+		}
+		blockLen = need
+	}
+	block := make([]byte, 0, blockLen)
 	block = append(block, "OCHK"...)
 	block = append(block, tail...)
+	block = appendV2Gap(block, blockLen-need)
 	block = binary.LittleEndian.AppendUint32(block, utils.JenkinsChecksum(block))
-	blockAddr, err := alloc.Allocate(uint64(len(block)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to allocate continuation chunk: %w", err)
-	}
 	if _, err := rw.WriteAt(block, int64(blockAddr)); err != nil { //nolint:gosec // Safe: allocated address
 		return nil, fmt.Errorf("failed to write continuation chunk: %w", err)
 	}
