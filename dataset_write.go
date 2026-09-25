@@ -1253,22 +1253,10 @@ func calculateObjectHeaderSize(ohw *core.ObjectHeaderWriter) (uint64, error) {
 		return 0, fmt.Errorf("only object header version 2 supported")
 	}
 
-	// Calculate message data size
-	var messageDataSize uint64
-	for _, msg := range ohw.Messages {
-		// Each message: Type (1) + Size (2) + Flags (1) + Data (variable)
-		messageDataSize += 1 + 2 + 1 + uint64(len(msg.Data))
-	}
-
-	// Validate chunk size fits in 1 byte (MVP limitation)
-	if messageDataSize > 255 {
-		return 0, fmt.Errorf("message data size %d exceeds 255 bytes (MVP limitation)", messageDataSize)
-	}
-
-	// Header: Signature (4) + Version (1) + Flags (1) + Chunk Size (1) + Messages + Checksum (4)
-	headerSize := 4 + 1 + 1 + 1 + messageDataSize + core.ObjectHeaderV2ChecksumSize
-
-	return headerSize, nil
+	// The chunk size field widens to 2 or 4 bytes as needed (see
+	// ObjectHeaderWriter.sizeV2), so large initial headers (e.g. several
+	// attributes given with WithAttribute) are supported.
+	return ohw.Size(), nil
 }
 
 // DatasetWriter provides write access to a dataset.

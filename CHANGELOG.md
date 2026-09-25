@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `CreateDataset` accepts initial object headers larger than 255 bytes of
+  messages (e.g. several `WithAttribute` options); the chunk size field
+  widens to 2/4 bytes instead of failing with "MVP limitation".
+
 - Global heap collections: the free-space object's size now includes its
   header, as in libhdf5. The previous value made libhdf5 loop forever when
   reading vlen data from files written by this library.

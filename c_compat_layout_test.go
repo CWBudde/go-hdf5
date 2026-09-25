@@ -124,6 +124,19 @@ func compatScenarios() []writeScenario {
 			require.NoError(t, g.WriteAttribute("title", "hello"))
 			closeOK(t, fw)
 		}},
+		{"large_initial_header", func(t *testing.T, p string) {
+			// Object header chunk > 255 bytes at creation (2-byte size field).
+			fw, err := CreateForWrite(p, CreateTruncate)
+			require.NoError(t, err)
+			ds, err := fw.CreateDataset("/wide", Float32, []uint64{3},
+				WithAttribute("CLASS", "DIMENSION_SCALE"),
+				WithAttribute("NAME", strings.Repeat("n", 200)),
+				WithAttribute("_Netcdf4Dimid", int32(4)))
+			require.NoError(t, err)
+			require.NoError(t, ds.Write([]float32{1, 2, 3}))
+			require.NoError(t, ds.WriteAttribute("later", "added"))
+			closeOK(t, fw)
+		}},
 		{"dense_attrs_growing_heap", func(t *testing.T, p string) {
 			long := strings.Repeat("x", 300)
 			opts := make([]interface{}, 0, 200)
