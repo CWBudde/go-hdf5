@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- B-tree v2 name index: link and attribute names whose length is a
+  multiple of 12 bytes (e.g. `DateModified`, `Organization`) were hashed
+  differently from libhdf5, so libhdf5, h5py and netCDF-C could not open
+  such attributes in dense storage (more than 8 attributes) or such links
+  in dense groups. The name hash now uses the same lookup3 port as the
+  metadata checksums.
+
 ## [v0.16.0] - 2026-09-25
 
 ### Added

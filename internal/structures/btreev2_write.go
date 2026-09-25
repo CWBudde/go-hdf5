@@ -1071,103 +1071,22 @@ func (bt *WritableBTreeV2) GetRecords() []LinkNameRecord {
 	return bt.records
 }
 
-// jenkinsHash computes Jenkins hash (lookup3) for a string.
+// jenkinsHash computes the Jenkins lookup3 hash of a link or attribute
+// name, the key of HDF5's B-tree v2 name index (initval 0).
 //
-// This is the hash function used by HDF5 for link name indexing.
-// Based on Bob Jenkins' lookup3 hash algorithm.
+// It must match the HDF5 library bit for bit, or libhdf5 cannot find the
+// name. It is utils.JenkinsLookup3, the same port that computes metadata
+// checksums; a separate copy used to mix the last full 12-byte block like
+// an inner one, so names of 12, 24, ... bytes got a different hash.
 //
 // Reference:
 //   - H5checksum.c - H5_checksum_lookup3()
-//   - http://burtleburtle.net/bob/hash/doobs.html
+//   - http://burtleburtle.net/bob/c/lookup3.c
 func jenkinsHash(name string) uint32 {
-	// Jenkins lookup3 hash implementation
-	// This is a simplified version for MVP; full implementation matches C library
-
-	length := len(name)
-	a, b, c := uint32(0xdeadbeef)+uint32(length), uint32(0xdeadbeef)+uint32(length), uint32(0xdeadbeef)+uint32(length) //nolint:gosec // G115: Jenkins hash algorithm, length is string length
-
-	// Process 12-byte chunks
-	i := 0
-	for i+12 <= length {
-		a += uint32(name[i]) | uint32(name[i+1])<<8 | uint32(name[i+2])<<16 | uint32(name[i+3])<<24
-		b += uint32(name[i+4]) | uint32(name[i+5])<<8 | uint32(name[i+6])<<16 | uint32(name[i+7])<<24
-		c += uint32(name[i+8]) | uint32(name[i+9])<<8 | uint32(name[i+10])<<16 | uint32(name[i+11])<<24
-
-		// Mix
-		a -= c
-		a ^= (c << 4) | (c >> 28)
-		c += b
-		b -= a
-		b ^= (a << 6) | (a >> 26)
-		a += c
-		c -= b
-		c ^= (b << 8) | (b >> 24)
-		b += a
-		a -= c
-		a ^= (c << 16) | (c >> 16)
-		c += b
-		b -= a
-		b ^= (a << 19) | (a >> 13)
-		a += c
-		c -= b
-		c ^= (b << 4) | (b >> 28)
-		b += a
-
-		i += 12
+	if name == "" {
+		// lookup3 returns its seed for empty input; utils.JenkinsLookup3,
+		// written for checksums, returns 0 instead.
+		return 0xdeadbeef
 	}
-
-	// Handle remaining bytes
-	remaining := length - i
-	switch remaining {
-	case 11:
-		c += uint32(name[i+10]) << 16
-		fallthrough
-	case 10:
-		c += uint32(name[i+9]) << 8
-		fallthrough
-	case 9:
-		c += uint32(name[i+8])
-		fallthrough
-	case 8:
-		b += uint32(name[i+7]) << 24
-		fallthrough
-	case 7:
-		b += uint32(name[i+6]) << 16
-		fallthrough
-	case 6:
-		b += uint32(name[i+5]) << 8
-		fallthrough
-	case 5:
-		b += uint32(name[i+4])
-		fallthrough
-	case 4:
-		a += uint32(name[i+3]) << 24
-		fallthrough
-	case 3:
-		a += uint32(name[i+2]) << 16
-		fallthrough
-	case 2:
-		a += uint32(name[i+1]) << 8
-		fallthrough
-	case 1:
-		a += uint32(name[i])
-	}
-
-	// Final mix
-	c ^= b
-	c -= (b << 14) | (b >> 18)
-	a ^= c
-	a -= (c << 11) | (c >> 21)
-	b ^= a
-	b -= (a << 25) | (a >> 7)
-	c ^= b
-	c -= (b << 16) | (b >> 16)
-	a ^= c
-	a -= (c << 4) | (c >> 28)
-	b ^= a
-	b -= (a << 14) | (a >> 18)
-	c ^= b
-	c -= (b << 24) | (b >> 8)
-
-	return c
+	return utils.JenkinsLookup3([]byte(name), 0)
 }
