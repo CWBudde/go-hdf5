@@ -57,10 +57,13 @@ type denseLink struct {
 //
 // Reference: H5Gdense.c - H5G_dense_create().
 func NewDenseGroupWriter(name string) *DenseGroupWriter {
+	heap := structures.NewGrowableFractalHeap(structures.LinkHeapStartBlockSize) // grows as needed
+	// Link name-index records hold 7-byte heap IDs (H5G_DENSE_FHEAP_ID_LEN).
+	heap.SetMaxManagedObjectSize(structures.LinkHeapMaxManagedObjectSize)
 	return &DenseGroupWriter{
 		name:        name,
-		fractalHeap: structures.NewGrowableFractalHeap(structures.LinkHeapStartBlockSize), // grows as needed
-		btree:       structures.NewWritableBTreeV2(0),                                     // libhdf5 node size (512), grows as needed
+		fractalHeap: heap,
+		btree:       structures.NewWritableBTreeV2(0), // libhdf5 node size (512), grows as needed
 		linkInfo: &core.LinkInfoMessage{
 			Version: 0,
 			Flags:   0, // No creation order tracking for MVP
@@ -141,14 +144,14 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 			return 0, fmt.Errorf("failed to insert link %s into heap: %w", link.name, err)
 		}
 
-		// 1c. Convert heap ID to uint64 for B-tree
-		// Heap ID is 8 bytes, read as little-endian uint64
-		var heapIDUint64 uint64
-		if len(heapID) >= 8 {
-			heapIDUint64 = binary.LittleEndian.Uint64(heapID[:8])
-		} else {
+		// 1c. Convert heap ID to uint64 for B-tree (7-byte link heap IDs,
+		// zero-extended; the record stores the low 7 bytes)
+		if len(heapID) == 0 || len(heapID) > 7 {
 			return 0, fmt.Errorf("invalid heap ID length for link %s: %d bytes", link.name, len(heapID))
 		}
+		var idBuf [8]byte
+		copy(idBuf[:], heapID)
+		heapIDUint64 := binary.LittleEndian.Uint64(idBuf[:])
 
 		// 1d. Insert into B-tree v2
 		err = dgw.btree.InsertRecord(link.name, heapIDUint64)

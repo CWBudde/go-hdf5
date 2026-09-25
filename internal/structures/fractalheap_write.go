@@ -79,8 +79,10 @@ type WritableFractalHeap struct {
 const (
 	AttributeHeapStartBlockSize = 1024
 	LinkHeapStartBlockSize      = 512
-	DefaultMaxDirectBlockSize   = 64 * 1024
-	maxGrowableDirectBlockSize  = 1 << 30
+	// LinkHeapMaxManagedObjectSize is libhdf5's H5G_FHEAP_MAX_MAN_SIZE.
+	LinkHeapMaxManagedObjectSize = 4096
+	DefaultMaxDirectBlockSize    = 64 * 1024
+	maxGrowableDirectBlockSize   = 1 << 30
 )
 
 // NewGrowableFractalHeap creates a fractal heap whose root is a single direct
@@ -98,6 +100,18 @@ func NewGrowableFractalHeap(startBlockSize uint64) *WritableFractalHeap {
 		fh.MaxDirectBlockSize = DefaultMaxDirectBlockSize
 	}
 	return fh
+}
+
+// SetMaxManagedObjectSize sets the largest object stored in the heap (must
+// be called before any insert) and recomputes the heap ID layout: the
+// length field needs as many bytes as that size, and the heap ID length is
+// 1 (flags) + offset bytes + length bytes. Dense link storage uses 4096,
+// like libhdf5 (H5G_FHEAP_MAX_MAN_SIZE), so link heap IDs fit the 7 bytes
+// a link name-index B-tree record holds.
+func (fh *WritableFractalHeap) SetMaxManagedObjectSize(size uint32) {
+	fh.Header.MaxManagedObjectSize = size
+	fh.Header.HeapLengthSize = computeOffsetSize(uint64(size))
+	fh.Header.HeapIDLength = 1 + uint16(fh.Header.HeapOffsetSize) + uint16(fh.Header.HeapLengthSize)
 }
 
 // EnableDirectRootGrowth enables root direct block growth (see

@@ -769,16 +769,12 @@ func readBTreeV2LeafRecords(r io.ReaderAt, addr uint64, numRecords uint16, btree
 
 	// Header: 4 (sig) + 1 (ver) + 1 (type) = 6 bytes
 	// Checksum: 4 bytes
-	bufSize := 6 + int(numRecords)*recSize + 4
-	buf := make([]byte, bufSize)
-
-	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-	n, err := r.ReadAt(buf, int64(addr))
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("read failed at 0x%X: %w", addr, err)
-	}
-	if n < 10 {
-		return nil, fmt.Errorf("leaf node too short: %d bytes", n)
+	// The size is computed in uint64 (at most ~4 GiB for uint16 fields) and
+	// checked against the file size before anything is allocated.
+	bufSize := 6 + uint64(numRecords)*uint64(recSize) + 4
+	buf, err := utils.ReadAtChecked(r, addr, bufSize, "B-tree v2 leaf")
+	if err != nil {
+		return nil, err
 	}
 
 	// Check signature

@@ -715,6 +715,11 @@ func (d *Dataset) readHyperslabChunked(
 		return nil, err
 	}
 
+	// No chunk was ever written: the selection is all fill values (zero).
+	if layout.DataAddress == undefinedAddress {
+		return convertToFloat64(make([]byte, outputElements*uint64(datatype.Size)), datatype, outputElements)
+	}
+
 	// Parse B-tree to get chunk addresses
 	btreeNode, err := core.ParseBTreeV1Node(
 		d.file.osFile,
@@ -772,6 +777,10 @@ func (d *Dataset) readHyperslabChunked(
 	// Convert bytes to float64
 	return convertToFloat64(outputData, datatype, outputElements)
 }
+
+// undefinedAddress is HDF5's undefined address (HADDR_UNDEF), used e.g. as
+// the chunk index address of a chunked dataset that was never written.
+const undefinedAddress = ^uint64(0)
 
 // chunkIndexEntry stores chunk location information.
 type chunkIndexEntry struct {
@@ -918,7 +927,7 @@ func extractChunkPortion(
 
 	extractChunkPortionRecursive(
 		chunkData, chunkStart, chunkEnd, chunkDims,
-		selection, coords, 0,
+		selection, coords, make([]uint64, ndims), 0,
 		elementSize, outputData, outputIdx,
 	)
 }
@@ -932,6 +941,7 @@ func extractChunkPortionRecursive(
 	chunkDims []uint64,
 	selection *HyperslabSelection,
 	coords []uint64,
+	selPos []uint64,
 	dim int,
 	elementSize uint64,
 	outputData []byte,
@@ -962,9 +972,15 @@ func extractChunkPortionRecursive(
 			chunkStride *= chunkDims[i]
 		}
 
-		// Copy element from chunk to output
+		// Copy element from chunk to its row-major position in the output
+		// (chunks are visited one at a time, so the position must come
+		// from the selection coordinates, not from a running counter).
+		outIndex := uint64(0)
+		for i := 0; i < ndims; i++ {
+			outIndex = outIndex*(selection.Count[i]*selection.Block[i]) + selPos[i]
+		}
 		srcOffset := chunkOffset * elementSize
-		dstOffset := (*outputIdx) * elementSize
+		dstOffset := outIndex * elementSize
 
 		if srcOffset+elementSize <= uint64(len(chunkData)) &&
 			dstOffset+elementSize <= uint64(len(outputData)) {
@@ -982,15 +998,19 @@ func extractChunkPortionRecursive(
 
 		for b := uint64(0); b < selection.Block[dim]; b++ {
 			coords[dim] = blockStart + b
+			selPos[dim] = c*selection.Block[dim] + b
 
 			if coords[dim] >= chunkEnd[dim] {
 				// Beyond this chunk, skip rest of this dimension
 				return
 			}
+			if coords[dim] < chunkStart[dim] {
+				continue // before this chunk
+			}
 
 			extractChunkPortionRecursive(
 				chunkData, chunkStart, chunkEnd, chunkDims,
-				selection, coords, dim+1,
+				selection, coords, selPos, dim+1,
 				elementSize, outputData, outputIdx,
 			)
 		}

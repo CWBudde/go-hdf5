@@ -914,18 +914,16 @@ func readBTreeV2Header(r io.ReaderAt, address uint64, sb *core.Superblock) (*BTr
 func readBTreeV2LeafNode(r io.ReaderAt, address uint64, numRecords int, btreeType uint8, _ *core.Superblock) (*BTreeV2LeafNode, []LinkNameRecord, error) {
 	recSize := recordSizeForType(btreeType)
 
-	// Calculate leaf size
-	size := 4 + 1 + 1 + (numRecords * recSize) + 4
-
-	// Read leaf data
-	buf := make([]byte, size)
-	//nolint:gosec // G115: address conversion, valid for file I/O
-	n, err := r.ReadAt(buf, int64(address))
-	if err != nil && err != io.EOF {
-		return nil, nil, fmt.Errorf("failed to read leaf at 0x%X: %w", address, err)
+	if numRecords < 0 {
+		return nil, nil, fmt.Errorf("invalid record count %d", numRecords)
 	}
-	if n < size {
-		return nil, nil, fmt.Errorf("incomplete leaf read: got %d bytes, want %d", n, size)
+	// Leaf size in uint64, checked against the file size before the buffer
+	// is allocated (a crafted record count must not trigger a huge
+	// allocation).
+	size := 4 + 1 + 1 + uint64(numRecords)*uint64(recSize) + 4 //nolint:gosec // G115: both non-negative
+	buf, err := utils.ReadAtChecked(r, address, size, "B-tree v2 leaf")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read leaf at 0x%X: %w", address, err)
 	}
 
 	offset := 0
@@ -998,10 +996,15 @@ func ReadBTreeV2AttrNameRecords(r io.ReaderAt, headerAddr uint64, sb *core.Super
 	// Read leaf node raw data
 	recordSize := int(header.RecordSize)
 	numRecords := int(header.NumRecordsRoot)
-	leafSize := 4 + 1 + 1 + (numRecords * recordSize) + 4
-
-	//nolint:gosec // G115: leafSize is non-negative
-	buf, err := utils.ReadAtChecked(r, header.RootNodeAddr, uint64(leafSize), "B-tree v2 leaf")
+	// Computed in uint64 so it cannot overflow; a leaf never exceeds the
+	// node size. ReadAtChecked validates it against the file size before
+	// allocating.
+	leafSize := 4 + 1 + 1 + uint64(numRecords)*uint64(recordSize) + 4 //nolint:gosec // G115: both non-negative
+	if leafSize > uint64(header.NodeSize) {
+		return nil, fmt.Errorf("B-tree v2 leaf of %d records (%d bytes) exceeds node size %d",
+			numRecords, leafSize, header.NodeSize)
+	}
+	buf, err := utils.ReadAtChecked(r, header.RootNodeAddr, leafSize, "B-tree v2 leaf")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read leaf at 0x%X: %w", header.RootNodeAddr, err)
 	}

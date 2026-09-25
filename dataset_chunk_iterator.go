@@ -135,6 +135,11 @@ func (d *Dataset) collectChunkCoordinates(layout *core.DataLayoutMessage, datasp
 		return nil, fmt.Errorf("chunk rank %d smaller than dataspace rank %d", len(layout.ChunkSize), ndims)
 	}
 
+	// No chunk was ever written (undefined chunk index address).
+	if layout.DataAddress == undefinedAddress {
+		return nil, nil
+	}
+
 	// Parse B-tree to get all chunks.
 	btreeNode, err := core.ParseBTreeV1Node(
 		d.file.osFile,

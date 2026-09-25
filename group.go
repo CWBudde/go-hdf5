@@ -522,7 +522,14 @@ func loadDenseGroupChildren(file *File, group *Group, linkInfo *core.LinkInfoMes
 		// Read the link message data from the fractal heap.
 		// Use spec-compliant read: official HDF5 files encode heap offsets
 		// from the start of the direct block (including header).
-		linkData, err := fh.ReadObjectSpecCompliant(rec.HeapID[:])
+		// Name-index records hold 7-byte heap IDs. Older go-hdf5 files use
+		// 8-byte heap IDs whose last (length) byte is zero for link-sized
+		// objects: pad the record to the heap's ID length.
+		heapID := rec.HeapID[:]
+		if n := int(fh.Header.HeapIDLen); n > len(heapID) {
+			heapID = append(append(make([]byte, 0, n), heapID...), make([]byte, n-len(heapID))...)
+		}
+		linkData, err := fh.ReadObjectSpecCompliant(heapID)
 		if err != nil {
 			continue
 		}

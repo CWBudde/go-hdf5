@@ -286,11 +286,6 @@ func readChunkedData(r io.ReaderAt, layout *DataLayoutMessage, dataspace *Datasp
 		return nil, fmt.Errorf("chunk size %d exceeds limit %d", expectedChunkBytes, utils.MaxChunkSize)
 	}
 
-	btree, err := ParseBTreeV1Node(r, layout.DataAddress, sb.OffsetSize, ndims, layout.ChunkSize)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse B-tree: %w", err)
-	}
-
 	// Calculate total data size.
 	totalElements := dataspace.TotalElements()
 	elementSize := uint64(datatype.Size)
@@ -309,6 +304,17 @@ func readChunkedData(r io.ReaderAt, layout *DataLayoutMessage, dataspace *Datasp
 
 	// Allocate output buffer.
 	rawData := make([]byte, totalBytes)
+
+	// No chunk was ever written (undefined chunk index address): every
+	// element has the fill value (zero).
+	if layout.DataAddress == undefinedAddress {
+		return rawData, nil
+	}
+
+	btree, err := ParseBTreeV1Node(r, layout.DataAddress, sb.OffsetSize, ndims, layout.ChunkSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse B-tree: %w", err)
+	}
 
 	// Collect all chunks from B-tree (handles both leaf and non-leaf nodes).
 	chunks, err := btree.CollectAllChunks(r, sb.OffsetSize, layout.ChunkSize)

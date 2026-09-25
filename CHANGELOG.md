@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Chunked datasets: edge chunks are written at full chunk size (zero-filled
+  outside the dataset) as HDF5 requires; partial edge chunks were misread
+  when the last dimension was not a multiple of the chunk size.
+- Hyperslab reads of chunked datasets place each element at its position in
+  the selection; selections spanning several chunks came back reordered.
+- Reading a chunked dataset that was never written (undefined chunk index
+  address) returns zeros instead of failing.
+- Dense groups: link heaps use 7-byte heap IDs (maximum managed object size
+  4096, as libhdf5), matching the 7-byte name-index records, so this library
+  can read back dense groups it wrote. Older files with 8-byte heap IDs are
+  still read.
+- B-tree v2 leaf reads check the leaf size against the file before
+  allocating.
+
 - Chunked datasets whose creation-time object header exceeds 255 bytes
   (wide chunk-size field) had their chunk index address patched at the wrong
   offset, corrupting the header.
