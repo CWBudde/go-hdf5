@@ -19,7 +19,7 @@ import (
 //   - [][]ObjectRef: 1D array of variable-length sequences of
 //     H5T_STD_REF_OBJ (the layout of the DIMENSION_LIST attribute)
 //   - []DimensionReference: 1D array of the compound
-//     {"dataset": H5T_STD_REF_OBJ, "dimension": int32} (the layout of the
+//     {"dataset": H5T_STD_REF_OBJ, "dimension": H5T_STD_U32LE} (the layout of the
 //     REFERENCE_LIST attribute)
 type ObjectRef uint64
 
@@ -232,7 +232,7 @@ func readReferenceSequence(reader io.ReaderAt, heaps map[uint64]*core.GlobalHeap
 }
 
 // readReferenceList decodes an existing REFERENCE_LIST attribute (a 1D
-// array of the compound {dataset reference, int32 dimension}).
+// array of the compound {dataset reference, uint32 dimension}).
 func (fw *FileWriter) readReferenceList(addr uint64) ([]DimensionReference, error) {
 	attr, err := fw.readObjectAttribute(addr, referenceListAttr)
 	if errors.Is(err, errNoAttribute) {
@@ -401,7 +401,7 @@ func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef) (*encodedA
 }
 
 // encodeDimensionReferences encodes a REFERENCE_LIST style compound array,
-// laid out like libhdf5's ds_list_t: {hobj_ref_t dataset; int dimension}
+// laid out like libhdf5's ds_list_t: {hobj_ref_t dataset; unsigned dimension}
 // with 8-byte alignment (16 bytes per element).
 func encodeDimensionReferences(refs []DimensionReference) (*encodedAttributeValue, error) {
 	if len(refs) == 0 {
@@ -412,7 +412,8 @@ func encodeDimensionReferences(refs []DimensionReference) (*encodedAttributeValu
 	props, err := encodeCompoundV1Members([]compoundMemberV1{
 		{name: "dataset", offset: 0, datatype: objectReferenceDatatype()},
 		{name: "dimension", offset: 8, datatype: &core.DatatypeMessage{
-			Class: core.DatatypeFixed, Version: 1, Size: 4, ClassBitField: 0x08, // little-endian int32
+			// H5T_STD_U32LE, as libhdf5 writes it (see h5ex_ds1.ddl)
+			Class: core.DatatypeFixed, Version: 1, Size: 4, ClassBitField: 0, // little-endian uint32
 		}},
 	})
 	if err != nil {

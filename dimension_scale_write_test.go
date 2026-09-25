@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cwbudde/go-hdf5/internal/core"
 	"github.com/stretchr/testify/require"
 )
 
@@ -106,6 +107,29 @@ func TestAttachDimensionScaleReadBack(t *testing.T) {
 		}
 	})
 	require.ElementsMatch(t, []string{"/M", "/N", "/Data.IR", "/Dense", "/Partial"}, names)
+
+	// REFERENCE_LIST's "dimension" member is H5T_STD_U32LE, as libhdf5
+	// writes it; the "dataset" reference must not swallow it.
+	f.Walk(func(p string, obj Object) {
+		ds, ok := obj.(*Dataset)
+		if !ok || p != "/M" {
+			return
+		}
+		attrs, err := ds.Attributes()
+		require.NoError(t, err)
+		for _, a := range attrs {
+			if a.Name != referenceListAttr {
+				continue
+			}
+			ct, err := core.ParseCompoundType(a.Datatype)
+			require.NoError(t, err)
+			require.Len(t, ct.Members, 2)
+			require.Equal(t, "dimension", ct.Members[1].Name)
+			require.Equal(t, uint32(0), ct.Members[1].Type.ClassBitField&0x08, "dimension must be unsigned")
+			return
+		}
+		t.Fatalf("/M has no %s", referenceListAttr)
+	})
 }
 
 func TestDeterministicDimensionScales(t *testing.T) {
