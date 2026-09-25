@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.16.0] - 2026-09-25
+
 ### Added
 
 - Dimension scales (H5DS): `DatasetWriter.SetDimensionScale(name)` and
@@ -75,6 +77,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reading vlen data from files written by this library.
 - Parsed (version >= 1) variable-length datatypes are re-encoded in the
   HDF5 layout when attributes are migrated to dense storage.
+- Variable-length datasets are written with a version 1 datatype and
+  16-byte elements (length, global heap address, object index), the layout
+  libhdf5 reads; h5py rejected them before ("bad version number").
+- Reference datatypes in a compound no longer consume the following
+  members' bytes as properties, so `REFERENCE_LIST` decodes fully.
+- `REFERENCE_LIST`'s `dimension` member is unsigned (`H5T_STD_U32LE`), as
+  libhdf5 writes it.
 
 ---
 
