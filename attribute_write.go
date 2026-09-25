@@ -52,6 +52,11 @@ const (
 //   - Attributes cannot be modified after creation (write-once)
 //   - No attribute deletion
 func (ds *DatasetWriter) WriteAttribute(name string, value interface{}) error {
+	value, err := ds.fileWriter.prepareAttributeValue(value)
+	if err != nil {
+		return fmt.Errorf("attribute %q: %w", name, err)
+	}
+
 	// For datasets opened with OpenForWrite, use cached object header and dense attr info
 	if ds.objectHeader != nil {
 		return writeAttributeWithCachedHeader(ds.fileWriter, ds.address, ds.objectHeader, ds.denseAttrInfo, name, value)
@@ -920,6 +925,10 @@ func transitionToDenseAttributes(fw *FileWriter, objectAddr uint64, oh *core.Obj
 // inferDatatypeFromValue infers HDF5 datatype and dimensions from a Go value.
 // Returns datatype message, dataspace message, and error.
 func inferDatatypeFromValue(value interface{}) (*core.DatatypeMessage, *core.DataspaceMessage, error) {
+	if ev, ok := value.(*encodedAttributeValue); ok {
+		return ev.datatype, ev.dataspace, nil
+	}
+
 	v := reflect.ValueOf(value)
 
 	// Handle scalar types
@@ -1134,6 +1143,10 @@ func inferSlice(v reflect.Value) (*core.DatatypeMessage, *core.DataspaceMessage,
 
 // encodeAttributeValue encodes a Go value to bytes for attribute storage.
 func encodeAttributeValue(value interface{}) ([]byte, error) {
+	if ev, ok := value.(*encodedAttributeValue); ok {
+		return ev.data, nil
+	}
+
 	v := reflect.ValueOf(value)
 
 	switch v.Kind() {

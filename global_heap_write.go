@@ -210,9 +210,11 @@ func (ghw *globalHeapWriter) encodeHeapCollection() []byte {
 
 		offset += 4 // Reserved
 
-		// Free space size (remaining space minus this header)
-		freeSpaceSize := heap.freeSpace - 16
-		binary.LittleEndian.PutUint64(buf[offset:], freeSpaceSize)
+		// Free space size. Like libhdf5 (H5HG_create), the size of object 0
+		// covers the whole free region including this header; a size that
+		// excludes the header makes libhdf5 parse a zero-sized object 0 at
+		// the tail of the collection and loop forever.
+		binary.LittleEndian.PutUint64(buf[offset:], heap.freeSpace)
 		offset += 8
 	}
 

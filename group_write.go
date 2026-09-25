@@ -76,6 +76,10 @@ type GroupWriter struct {
 func (g *GroupWriter) WriteAttribute(name string, value interface{}) error {
 	// Delegate to existing attribute writing infrastructure
 	// This reuses the same code path as DatasetWriter.WriteAttribute
+	value, err := g.file.prepareAttributeValue(value)
+	if err != nil {
+		return fmt.Errorf("attribute %q: %w", name, err)
+	}
 	return writeAttribute(g.file, g.headerAddr, name, value)
 }
 

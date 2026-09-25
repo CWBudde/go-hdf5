@@ -354,8 +354,22 @@ func encodeDatatypeVLen(dt *DatatypeMessage) ([]byte, error) {
 	//   - Byte 1: Padding (0x00)
 	//   - Bytes 2-3: Character set (for strings, 0x00=ASCII, 0x01=UTF-8)
 	// Base type message (variable length, nested datatype)
+	//
+	// A message with Version >= 1 (as produced by the parser or by writers
+	// that build spec-conformant types) is encoded in the HDF5 format:
+	// class/version/bit-field in bytes 0-3, size in bytes 4-7, followed by
+	// the base type. Version 0 keeps the legacy layout used by this
+	// library's vlen dataset writer.
+	if dt.Version >= 1 {
+		buf := make([]byte, 8+len(dt.Properties))
+		classAndVersion := uint32(dt.Class) | (uint32(dt.Version) << 4) | ((dt.ClassBitField & 0xFFFFFF) << 8)
+		binary.LittleEndian.PutUint32(buf[0:4], classAndVersion)
+		binary.LittleEndian.PutUint32(buf[4:8], dt.Size)
+		copy(buf[8:], dt.Properties)
+		return buf, nil
+	}
 
-	// For version 0 VLen (most common)
+	// Legacy version 0 layout
 	version := uint8(0)
 
 	// Build header (8 bytes)

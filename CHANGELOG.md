@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dimension scales (H5DS): `DatasetWriter.SetDimensionScale(name)` and
+  `DatasetWriter.AttachDimensionScale(dimIdx, scale)` write `CLASS`/`NAME`
+  and the `DIMENSION_LIST` / `REFERENCE_LIST` attributes (collected per
+  session, written on `Close`), so netCDF-C sees named dimensions.
+- `DatasetWriter.Address()` / `Reference()`, the `ObjectRef` and
+  `DimensionReference` types; `WriteAttribute` accepts `ObjectRef`,
+  `[]ObjectRef`, `[][]ObjectRef` (vlen of object references) and
+  `[]DimensionReference` (compound `{dataset, dimension}`).
+
+### Fixed
+
+- Global heap collections: the free-space object's size now includes its
+  header, as in libhdf5. The previous value made libhdf5 loop forever when
+  reading vlen data from files written by this library.
+- Parsed (version >= 1) variable-length datatypes are re-encoded in the
+  HDF5 layout when attributes are migrated to dense storage.
+
 ---
 
 ## [v0.15.0] - 2026-05-09

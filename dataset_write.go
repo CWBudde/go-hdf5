@@ -564,6 +564,10 @@ type FileWriter struct {
 	// Global heap writer for variable-length data (vlen strings, ragged arrays)
 	globalHeapWriter *globalHeapWriter
 
+	// Dimension scale attachments, written as DIMENSION_LIST /
+	// REFERENCE_LIST attributes on Close.
+	dimScales *dimensionScaleState
+
 	// Rebalancing configurations (Phase 3)
 	// These are set via functional options: WithLazyRebalancing(), WithIncrementalRebalancing(), WithSmartRebalancing()
 	lazyRebalancingConfig        *structures.LazyRebalancingConfig
@@ -2449,6 +2453,11 @@ func (fw *FileWriter) Close() error {
 	// Note: For MVP, this is a no-op (incremental mode is per-dataset).
 	// Future: Will stop all tracked BTrees automatically.
 	_ = fw.StopIncrementalRebalancing() // Ignore error - likely "not enabled" (MVP)
+
+	// Write pending dimension scale attributes (they use the global heap).
+	if err := fw.writeDimensionScaleAttributes(); err != nil {
+		return err
+	}
 
 	// Flush global heap before closing (for variable-length data)
 	if fw.globalHeapWriter != nil {
