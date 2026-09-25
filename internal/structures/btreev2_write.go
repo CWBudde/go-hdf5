@@ -301,16 +301,7 @@ func (bt *WritableBTreeV2) InsertRecord(linkName string, heapID uint64) error {
 //
 // For MVP: searches single leaf node by name hash.
 func (bt *WritableBTreeV2) HasKey(name string) bool {
-	hash := jenkinsHash(name)
-
-	// Search in records
-	for _, record := range bt.records {
-		if record.NameHash == hash {
-			return true
-		}
-	}
-
-	return false
+	return bt.findRecord(name) >= 0
 }
 
 // SearchRecord searches for a record by name and returns the heap ID.
@@ -329,20 +320,16 @@ func (bt *WritableBTreeV2) HasKey(name string) bool {
 //
 // Reference: H5Adense.c - H5A__dense_write() searches B-tree by name.
 func (bt *WritableBTreeV2) SearchRecord(name string) ([]byte, bool) {
-	hash := jenkinsHash(name)
-
-	// Search in records
-	for _, record := range bt.records {
-		if record.NameHash == hash {
-			// Convert 7-byte heap ID to 8-byte format
-			heapID := make([]byte, 8)
-			copy(heapID, record.HeapID[:])
-			// Last byte is 0 (7-byte format pads to 8 bytes)
-			return heapID, true
-		}
+	i := bt.findRecord(name)
+	if i < 0 {
+		return nil, false
 	}
 
-	return nil, false
+	// Convert 7-byte heap ID to 8-byte format
+	heapID := make([]byte, 8)
+	copy(heapID, bt.records[i].HeapID[:])
+	// Last byte is 0 (7-byte format pads to 8 bytes)
+	return heapID, true
 }
 
 // UpdateRecord updates an existing record's heap ID.
@@ -363,27 +350,21 @@ func (bt *WritableBTreeV2) SearchRecord(name string) ([]byte, bool) {
 //
 // Reference: H5Adense.c - H5A__dense_write() updates B-tree when size changes.
 func (bt *WritableBTreeV2) UpdateRecord(name string, newHeapID uint64) error {
-	hash := jenkinsHash(name)
-
-	// Find record
-	for i, record := range bt.records {
-		if record.NameHash != hash {
-			continue
-		}
-
-		// Convert 8-byte heap ID to 7-byte format
-		var heapIDBytes [7]byte
-		var temp [8]byte
-		binary.LittleEndian.PutUint64(temp[:], newHeapID)
-		copy(heapIDBytes[:], temp[:7])
-
-		// Update record
-		bt.records[i].HeapID = heapIDBytes
-		bt.leaf.Records = bt.records
-		return nil
+	i := bt.findRecord(name)
+	if i < 0 {
+		return fmt.Errorf("record not found for name: %s", name)
 	}
 
-	return fmt.Errorf("record not found for name: %s", name)
+	// Convert 8-byte heap ID to 7-byte format
+	var heapIDBytes [7]byte
+	var temp [8]byte
+	binary.LittleEndian.PutUint64(temp[:], newHeapID)
+	copy(heapIDBytes[:], temp[:7])
+
+	// Update record
+	bt.records[i].HeapID = heapIDBytes
+	bt.leaf.Records = bt.records
+	return nil
 }
 
 // DeleteRecord removes a record from the B-tree by name.
@@ -1071,103 +1052,57 @@ func (bt *WritableBTreeV2) GetRecords() []LinkNameRecord {
 	return bt.records
 }
 
-// jenkinsHash computes Jenkins hash (lookup3) for a string.
+// findRecord returns the index of name's record, or -1 when there is none.
 //
-// This is the hash function used by HDF5 for link name indexing.
-// Based on Bob Jenkins' lookup3 hash algorithm.
+// Files written by go-hdf5 up to v0.16.0 carry legacyJenkinsHash for names
+// of 12, 24, ... bytes. When no record has the correct hash, a record with
+// the legacy hash is taken instead and migrated to the correct hash (keeping
+// the records sorted), so the tree written back is readable by libhdf5 and
+// an upsert replaces the attribute instead of adding a duplicate.
+func (bt *WritableBTreeV2) findRecord(name string) int {
+	hash := jenkinsHash(name)
+	for i, record := range bt.records {
+		if record.NameHash == hash {
+			return i
+		}
+	}
+
+	legacy := legacyJenkinsHash(name)
+	if legacy == hash {
+		return -1
+	}
+	for i, record := range bt.records {
+		if record.NameHash != legacy {
+			continue
+		}
+		record.NameHash = hash
+		bt.records = insertRecordSorted(append(bt.records[:i], bt.records[i+1:]...), record)
+		bt.leaf.Records = bt.records
+		for j := range bt.records {
+			if bt.records[j].NameHash == hash {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// jenkinsHash computes the Jenkins lookup3 hash of a link or attribute
+// name, the key of HDF5's B-tree v2 name index (initval 0).
+//
+// It must match the HDF5 library bit for bit, or libhdf5 cannot find the
+// name. It is utils.JenkinsLookup3, the same port that computes metadata
+// checksums; a separate copy used to mix the last full 12-byte block like
+// an inner one, so names of 12, 24, ... bytes got a different hash.
 //
 // Reference:
 //   - H5checksum.c - H5_checksum_lookup3()
-//   - http://burtleburtle.net/bob/hash/doobs.html
+//   - http://burtleburtle.net/bob/c/lookup3.c
 func jenkinsHash(name string) uint32 {
-	// Jenkins lookup3 hash implementation
-	// This is a simplified version for MVP; full implementation matches C library
-
-	length := len(name)
-	a, b, c := uint32(0xdeadbeef)+uint32(length), uint32(0xdeadbeef)+uint32(length), uint32(0xdeadbeef)+uint32(length) //nolint:gosec // G115: Jenkins hash algorithm, length is string length
-
-	// Process 12-byte chunks
-	i := 0
-	for i+12 <= length {
-		a += uint32(name[i]) | uint32(name[i+1])<<8 | uint32(name[i+2])<<16 | uint32(name[i+3])<<24
-		b += uint32(name[i+4]) | uint32(name[i+5])<<8 | uint32(name[i+6])<<16 | uint32(name[i+7])<<24
-		c += uint32(name[i+8]) | uint32(name[i+9])<<8 | uint32(name[i+10])<<16 | uint32(name[i+11])<<24
-
-		// Mix
-		a -= c
-		a ^= (c << 4) | (c >> 28)
-		c += b
-		b -= a
-		b ^= (a << 6) | (a >> 26)
-		a += c
-		c -= b
-		c ^= (b << 8) | (b >> 24)
-		b += a
-		a -= c
-		a ^= (c << 16) | (c >> 16)
-		c += b
-		b -= a
-		b ^= (a << 19) | (a >> 13)
-		a += c
-		c -= b
-		c ^= (b << 4) | (b >> 28)
-		b += a
-
-		i += 12
+	if name == "" {
+		// lookup3 returns its seed for empty input; utils.JenkinsLookup3,
+		// written for checksums, returns 0 instead.
+		return 0xdeadbeef
 	}
-
-	// Handle remaining bytes
-	remaining := length - i
-	switch remaining {
-	case 11:
-		c += uint32(name[i+10]) << 16
-		fallthrough
-	case 10:
-		c += uint32(name[i+9]) << 8
-		fallthrough
-	case 9:
-		c += uint32(name[i+8])
-		fallthrough
-	case 8:
-		b += uint32(name[i+7]) << 24
-		fallthrough
-	case 7:
-		b += uint32(name[i+6]) << 16
-		fallthrough
-	case 6:
-		b += uint32(name[i+5]) << 8
-		fallthrough
-	case 5:
-		b += uint32(name[i+4])
-		fallthrough
-	case 4:
-		a += uint32(name[i+3]) << 24
-		fallthrough
-	case 3:
-		a += uint32(name[i+2]) << 16
-		fallthrough
-	case 2:
-		a += uint32(name[i+1]) << 8
-		fallthrough
-	case 1:
-		a += uint32(name[i])
-	}
-
-	// Final mix
-	c ^= b
-	c -= (b << 14) | (b >> 18)
-	a ^= c
-	a -= (c << 11) | (c >> 21)
-	b ^= a
-	b -= (a << 25) | (a >> 7)
-	c ^= b
-	c -= (b << 16) | (b >> 16)
-	a ^= c
-	a -= (c << 4) | (c >> 28)
-	b ^= a
-	b -= (a << 14) | (a >> 18)
-	c ^= b
-	c -= (b << 24) | (b >> 8)
-
-	return c
+	return utils.JenkinsLookup3([]byte(name), 0)
 }

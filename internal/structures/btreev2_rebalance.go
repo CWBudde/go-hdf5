@@ -65,16 +65,7 @@ import (
 // Reference: H5B2.c - H5B2_remove(), H5B2int.c - H5B2__remove_internal/leaf().
 func (bt *WritableBTreeV2) DeleteRecordWithRebalancing(name string) error {
 	// Phase 1: Find and remove record
-	hash := jenkinsHash(name)
-
-	recordIndex := -1
-	for i, record := range bt.records {
-		if record.NameHash == hash {
-			recordIndex = i
-			break
-		}
-	}
-
+	recordIndex := bt.findRecord(name)
 	if recordIndex == -1 {
 		return fmt.Errorf("record not found for name: %s", name)
 	}
