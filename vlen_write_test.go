@@ -228,15 +228,23 @@ func TestVLenHeapIDStorage(t *testing.T) {
 	}
 	defer f.Close()
 
-	// Read 32 bytes (2 heap IDs × 16 bytes each)
+	// Read 32 bytes: 2 elements of length (4) + heap address (8) + index (4)
 	heapIDData := make([]byte, 32)
 	if _, err := f.Reader().ReadAt(heapIDData, int64(dataAddr)); err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 
+	// Sequence lengths are the string byte counts
+	if got := binary.LittleEndian.Uint32(heapIDData[0:4]); got != 5 {
+		t.Errorf("First length = %d, want 5", got)
+	}
+	if got := binary.LittleEndian.Uint32(heapIDData[16:20]); got != 6 {
+		t.Errorf("Second length = %d, want 6", got)
+	}
+
 	// Verify heap IDs are non-zero
-	heapAddr1 := binary.LittleEndian.Uint64(heapIDData[0:8])
-	heapIdx1 := binary.LittleEndian.Uint32(heapIDData[8:12])
+	heapAddr1 := binary.LittleEndian.Uint64(heapIDData[4:12])
+	heapIdx1 := binary.LittleEndian.Uint32(heapIDData[12:16])
 
 	if heapAddr1 == 0 {
 		t.Error("First heap address is zero")
@@ -245,8 +253,8 @@ func TestVLenHeapIDStorage(t *testing.T) {
 		t.Error("First heap index is zero")
 	}
 
-	heapAddr2 := binary.LittleEndian.Uint64(heapIDData[16:24])
-	heapIdx2 := binary.LittleEndian.Uint32(heapIDData[24:28])
+	heapAddr2 := binary.LittleEndian.Uint64(heapIDData[20:28])
+	heapIdx2 := binary.LittleEndian.Uint32(heapIDData[28:32])
 
 	if heapAddr2 == 0 {
 		t.Error("Second heap address is zero")
