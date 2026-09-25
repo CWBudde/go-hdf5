@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.16.1] - 2026-09-25
+
 ### Fixed
 
 - B-tree v2 name index: link and attribute names whose length is a
