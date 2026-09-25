@@ -139,7 +139,15 @@ func ParseDatatypeMessage(data []byte) (*DatatypeMessage, error) {
 		} else {
 			propsLen = calculatedLen
 		}
-	case DatatypeArray, DatatypeEnum, DatatypeReference, DatatypeOpaque, DatatypeVarLen:
+	case DatatypeReference:
+		// Object and region references (versions 1-3) have no properties;
+		// only the revised references of version 4 carry any.
+		if version < 4 {
+			propsLen = 0
+		} else {
+			propsLen = len(data) - 8
+		}
+	case DatatypeArray, DatatypeEnum, DatatypeOpaque, DatatypeVarLen:
 		// Complex types: properties are variable length
 		// For inline parsing, take all remaining
 		propsLen = len(data) - 8

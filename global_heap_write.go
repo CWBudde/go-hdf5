@@ -233,6 +233,23 @@ func (hid HeapID) Encode() []byte {
 	return buf
 }
 
+// vlenElementSize is the on-disk size of one variable-length element:
+// 4-byte sequence length + 8-byte collection address + 4-byte object index.
+const vlenElementSize = 16
+
+// encodeVLenElement encodes one variable-length element as stored in a
+// dataset or attribute: sequence length (element count, bytes for strings)
+// followed by the global heap ID.
+//
+// Reference: HDF5 spec IV.A.2.d (variable-length data), H5Tvlen.c - H5T__vlen_disk_write().
+func encodeVLenElement(length uint32, hid HeapID) []byte {
+	buf := make([]byte, vlenElementSize)
+	binary.LittleEndian.PutUint32(buf[0:4], length)
+	binary.LittleEndian.PutUint64(buf[4:12], hid.CollectionAddress)
+	binary.LittleEndian.PutUint32(buf[12:16], uint32(hid.ObjectIndex))
+	return buf
+}
+
 // hasSpace checks if the heap has enough space for an object of given size.
 func (ghc *globalHeapCollectionBuilder) hasSpace(objectSize uint64) bool {
 	return ghc.freeSpace >= objectSize

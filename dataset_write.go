@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"time"
 	"unsafe"
@@ -1543,11 +1544,13 @@ func (dw *DatasetWriter) writeVLen(data interface{}) error {
 		return fmt.Errorf("unsupported vlen data type: %T (expected []string or [][]numeric)", data)
 	}
 
-	// Encode heap IDs to bytes (16 bytes each: 8 addr + 4 index + 4 padding)
-	heapIDData := make([]byte, len(heapIDs)*16)
+	// Encode each element as sequence length + heap ID (16 bytes each).
+	// The length is the element count of the sequence (bytes for strings).
+	elems := reflect.ValueOf(data)
+	heapIDData := make([]byte, len(heapIDs)*vlenElementSize)
 	for i, hid := range heapIDs {
-		encoded := hid.Encode() // Returns 16 bytes
-		copy(heapIDData[i*16:], encoded)
+		//nolint:gosec // G115: sequence lengths fit in uint32 (global heap objects are smaller)
+		copy(heapIDData[i*vlenElementSize:], encodeVLenElement(uint32(elems.Index(i).Len()), hid))
 	}
 
 	// Write heap IDs to dataset (contiguous or chunked)

@@ -32,7 +32,10 @@ with h5py.File(sys.argv[1], "r") as f:
         if isinstance(obj, h5py.Dataset):
             data = obj[()]
             entry["shape"] = list(data.shape)
-            entry["sum"] = float(np.sum(data))
+            if data.dtype.kind == "O":  # variable-length sequences
+                entry["sum"] = float(sum(np.sum(np.asarray(x, dtype=np.float64)) for x in data.ravel()))
+            else:
+                entry["sum"] = float(np.sum(data))
         out["/" + name] = entry
     out["/"] = {"attrs": {k: conv(v) for k, v in f.attrs.items()}}
     f.visititems(visit)
@@ -150,6 +153,9 @@ func TestInteropH5py(t *testing.T) {
 				for i := 0; i < 20; i++ {
 					require.Contains(t, got, "/d"+string(rune('0'+i/10))+string(rune('0'+i%10)))
 				}
+			case "vlen_dataset":
+				require.Equal(t, []int{3}, got["/v"].Shape)
+				require.InDelta(t, 21.0, got["/v"].Sum, 1e-9)
 			case "superblock_v0":
 				require.Equal(t, []interface{}{"SOFA"}, got["/"].Attrs["Conventions"])
 				require.InDelta(t, 4.5, got["/x09"].Sum, 1e-9)

@@ -344,50 +344,27 @@ func encodeDatatypeCompound(dt *DatatypeMessage) ([]byte, error) {
 // encodeDatatypeVLen encodes variable-length datatype (strings, ragged arrays).
 // VLen data is stored in global heap, dataset contains 16-byte heap IDs.
 func encodeDatatypeVLen(dt *DatatypeMessage) ([]byte, error) {
-	// VLen datatype format (HDF5 spec section 3.2.2.2):
-	// Header (8 bytes):
-	//   - Byte 0: Version (low 4 bits) | Class (high 4 bits)
-	//   - Bytes 1-3: Reserved (0)
-	//   - Bytes 4-7: Size (always 16 for vlen - heap ID size)
-	// Class-specific data (4 bytes):
-	//   - Byte 0: VLen type (0x00=sequence, 0x01=string)
-	//   - Byte 1: Padding (0x00)
-	//   - Bytes 2-3: Character set (for strings, 0x00=ASCII, 0x01=UTF-8)
-	// Base type message (variable length, nested datatype)
+	// VLen datatype format (HDF5 spec IV.A.2.d, class 9), like every datatype:
+	//   - Bytes 0-3: Class (bits 0-3) | Version (bits 4-7) | Class Bit Field (bits 8-31)
+	//     Class bit field: type (bits 0-3: 0=sequence, 1=string),
+	//     padding (bits 4-7), character set (bits 8-11)
+	//   - Bytes 4-7: Size (4-byte length + global heap ID; 16 for 8-byte offsets)
+	//   - Bytes 8+: Base type (a complete datatype message)
 	//
-	// A message with Version >= 1 (as produced by the parser or by writers
-	// that build spec-conformant types) is encoded in the HDF5 format:
-	// class/version/bit-field in bytes 0-3, size in bytes 4-7, followed by
-	// the base type. Version 0 keeps the legacy layout used by this
-	// library's vlen dataset writer.
-	if dt.Version >= 1 {
-		buf := make([]byte, 8+len(dt.Properties))
-		classAndVersion := uint32(dt.Class) | (uint32(dt.Version) << 4) | ((dt.ClassBitField & 0xFFFFFF) << 8)
-		binary.LittleEndian.PutUint32(buf[0:4], classAndVersion)
-		binary.LittleEndian.PutUint32(buf[4:8], dt.Size)
-		copy(buf[8:], dt.Properties)
-		return buf, nil
+	// Reference: H5Odtype.c - H5O__dtype_encode_helper(), H5T_VLEN case.
+
+	// Version 1 is the lowest datatype version libhdf5 accepts.
+	version := uint8(1)
+	if dt.Version > version {
+		version = dt.Version
 	}
 
-	// Legacy version 0 layout
-	version := uint8(0)
+	buf := make([]byte, 8+len(dt.Properties))
 
-	// Build header (8 bytes)
-	buf := make([]byte, 8+4+len(dt.Properties))
-
-	// Byte 0: version (low 4 bits) + class (high 4 bits)
-	buf[0] = version | (byte(dt.Class) << 4)
-
-	// Bytes 1-3: reserved (already zeros)
-
-	// Bytes 4-7: Size (16 bytes - heap ID size)
+	classAndVersion := uint32(dt.Class) | (uint32(version) << 4) | ((dt.ClassBitField & 0xFFFFFF) << 8)
+	binary.LittleEndian.PutUint32(buf[0:4], classAndVersion)
 	binary.LittleEndian.PutUint32(buf[4:8], dt.Size)
-
-	// Bytes 8-11: Class-specific data (ClassBitField contains type/padding/charset)
-	binary.LittleEndian.PutUint32(buf[8:12], dt.ClassBitField)
-
-	// Bytes 12+: Base type message (nested datatype)
-	copy(buf[12:], dt.Properties)
+	copy(buf[8:], dt.Properties)
 
 	return buf, nil
 }
