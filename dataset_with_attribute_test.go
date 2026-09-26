@@ -2,8 +2,12 @@ package hdf5
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestCreateDataset_WithAttribute_RoundTrip verifies that attributes
@@ -92,23 +96,83 @@ func TestCreateDataset_WithAttribute_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestCreateDataset_WithAttribute_TooMany ensures the compact-storage
-// limit is enforced rather than silently producing an invalid file.
-func TestCreateDataset_WithAttribute_TooMany(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "too_many.h5")
+// TestCreateDataset_WithAttribute_Dense creates contiguous and chunked
+// datasets with more than MaxCompactDatasetAttributes attributes (dense
+// storage), attaches a dimension scale afterwards (DIMENSION_LIST joins the
+// dense storage) and reads everything back, with h5py too when available.
+func TestCreateDataset_WithAttribute_Dense(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dense.h5")
 	fw, err := CreateForWrite(path, CreateTruncate)
-	if err != nil {
-		t.Fatalf("CreateForWrite: %v", err)
-	}
-	t.Cleanup(func() { _ = fw.Close() })
+	require.NoError(t, err)
 
-	opts := []DatasetOption{}
-	for i := 0; i < MaxCompactDatasetAttributes+1; i++ {
-		opts = append(opts, WithAttribute(stringDigit("attr_", i), int32(i)))
+	const n = MaxCompactDatasetAttributes + 4
+	want := map[string]interface{}{}
+	var opts []DatasetOption
+	for i := 0; i < n; i++ {
+		name := stringDigit("attr_", i)
+		var v interface{} = int32(i)
+		if i%3 == 0 {
+			v = stringDigit("value_", i)
+		}
+		want[name] = v
+		opts = append(opts, WithAttribute(name, v))
 	}
-	if _, err := fw.CreateDataset("/over", Int32, []uint64{1}, opts...); err == nil {
-		t.Fatalf("CreateDataset accepted %d attributes; want error", MaxCompactDatasetAttributes+1)
+
+	scale, err := fw.CreateDataset("/x", Float64, []uint64{3})
+	require.NoError(t, err)
+	require.NoError(t, scale.Write([]float64{1, 2, 3}))
+	require.NoError(t, scale.SetDimensionScale("x"))
+	for _, name := range []string{"contiguous", "chunked"} {
+		dsOpts := opts
+		if name == "chunked" {
+			dsOpts = append(append([]DatasetOption(nil), opts...), WithChunkDims([]uint64{2}))
+		}
+		dw, err := fw.CreateDataset("/"+name, Float64, []uint64{3}, dsOpts...)
+		require.NoError(t, err, name)
+		require.NoError(t, dw.Write([]float64{4, 5, 6}), name)
+		require.NoError(t, dw.AttachDimensionScale(0, scale), name)
 	}
+	require.NoError(t, fw.Close())
+
+	f, err := Open(path)
+	require.NoError(t, err)
+	defer f.Close()
+	for _, name := range []string{"contiguous", "chunked"} {
+		ds, ok := findDatasetByName(f, name)
+		require.True(t, ok, name)
+		for attr, v := range want {
+			got, err := ds.ReadAttribute(attr)
+			require.NoError(t, err, "%s: %s", name, attr)
+			switch v := v.(type) {
+			case int32:
+				require.EqualValues(t, v, got, "%s: %s", name, attr)
+			default:
+				require.Equal(t, v, got, "%s: %s", name, attr)
+			}
+		}
+		scales, err := ds.AttachedScales(0)
+		require.NoError(t, err, name)
+		require.Len(t, scales, 1, name)
+		data, err := ds.Read()
+		require.NoError(t, err, name)
+		require.Equal(t, []float64{4, 5, 6}, data, name)
+	}
+
+	python := requireH5py(t)
+	const script = `
+import sys, h5py
+with h5py.File(sys.argv[1], "r") as f:
+    for name in ("contiguous", "chunked"):
+        d = f[name]
+        attrs = sorted(k for k in d.attrs if k.startswith("attr_"))
+        assert len(attrs) == int(sys.argv[2]), (name, attrs)
+        assert d.attrs["attr_1"] == 1, d.attrs["attr_1"]
+        assert d.dims[0][0].name == "/x", d.dims[0].keys()
+        assert list(d[:]) == [4, 5, 6]
+print("ok")
+`
+	out, err := exec.Command(python, "-c", script, path, strconv.Itoa(n)).CombinedOutput()
+	require.NoError(t, err, "%s", out)
 }
 
 func childDataset(children []Object, name string) (*Dataset, bool) {

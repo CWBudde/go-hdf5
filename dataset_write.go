@@ -943,21 +943,62 @@ func calculateTotalElements(dims []uint64) uint64 {
 //   - No compression
 //   - Dataset must be in root group (no nested groups yet)
 //   - Resizable datasets require chunked layout (use WithMaxDims with WithChunkDims)
+func (fw *FileWriter) CreateDataset(name string, dtype Datatype, dims []uint64, opts ...DatasetOption) (*DatasetWriter, error) {
+	// Apply options
+	config := &datasetConfig{}
+	for _, opt := range opts {
+		opt(config)
+	}
+	dense := takeDenseAttributes(config)
+
+	dsw, err := fw.createDataset(name, dtype, dims, config)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeDenseAttributes(dsw, dense); err != nil {
+		return nil, fmt.Errorf("dataset %q: %w", name, err)
+	}
+	return dsw, nil
+}
+
+// takeDenseAttributes removes the WithAttribute attributes beyond the first
+// MaxCompactDatasetAttributes from cfg and returns them in order. The
+// dataset is created with the others in its object header; writing these
+// afterwards moves all of them to dense storage.
+func takeDenseAttributes(cfg *datasetConfig) []namedAttribute {
+	if len(cfg.attributeOrder) <= MaxCompactDatasetAttributes {
+		return nil
+	}
+	rest := cfg.attributeOrder[MaxCompactDatasetAttributes:]
+	dense := make([]namedAttribute, len(rest))
+	for i, name := range rest {
+		dense[i] = namedAttribute{name: name, value: cfg.attributes[name]}
+		delete(cfg.attributes, name)
+	}
+	cfg.attributeOrder = cfg.attributeOrder[:MaxCompactDatasetAttributes]
+	return dense
+}
+
+// writeDenseAttributes writes the attributes takeDenseAttributes held back.
+func writeDenseAttributes(dw *DatasetWriter, attrs []namedAttribute) error {
+	for _, a := range attrs {
+		if err := dw.WriteAttribute(a.name, a.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// createDataset is CreateDataset once the options are applied.
 //
 //nolint:gocyclo,cyclop,gocognit,funlen // Complex by nature: dataset creation handles multiple layout types and options
-func (fw *FileWriter) CreateDataset(name string, dtype Datatype, dims []uint64, opts ...DatasetOption) (*DatasetWriter, error) {
+func (fw *FileWriter) createDataset(name string, dtype Datatype, dims []uint64, config *datasetConfig) (*DatasetWriter, error) {
 	// Validate inputs
 	if err := validateDatasetName(name); err != nil {
 		return nil, err
 	}
 	if err := validateDimensions(dims); err != nil {
 		return nil, err
-	}
-
-	// Apply options
-	config := &datasetConfig{}
-	for _, opt := range opts {
-		opt(config)
 	}
 
 	// Validate maxDims if specified
@@ -1940,9 +1981,10 @@ type datasetConfig struct {
 	attributeOrder []string
 }
 
-// MaxCompactDatasetAttributes is the upper bound on attributes attached
-// to a dataset via WithAttribute(). Above this, dense (Fractal Heap)
-// storage would be required, which is not yet implemented for datasets.
+// MaxCompactDatasetAttributes is the number of WithAttribute attributes a
+// dataset is created with in its object header (compact storage). With
+// more, CreateDataset writes the rest with WriteAttribute, which moves all
+// of them to dense storage (fractal heap + B-tree v2), as libhdf5 does.
 const MaxCompactDatasetAttributes = 8
 
 // buildCompactAttributeMessages turns a name→value map into a slice of
@@ -2005,11 +2047,11 @@ func buildCompactAttributeMessages(attrs map[string]interface{}, order []string)
 // creation time. Calling it multiple times accumulates attributes;
 // re-using a name overwrites the previous value.
 //
-// Attributes are stored compactly inside the dataset's object header
-// (≤ 8 attributes — sufficient for netCDF-4 dimension-scale metadata
-// such as CLASS=DIMENSION_SCALE and NAME=…). Dense (Fractal-Heap-
-// backed) storage is not yet supported here; if more than 8
-// attributes are supplied CreateDataset returns an error.
+// Up to MaxCompactDatasetAttributes (8) attributes are stored compactly
+// inside the dataset's object header (enough for netCDF-4 dimension-scale
+// metadata such as CLASS=DIMENSION_SCALE and NAME=…). With more, all of
+// them go to dense storage (fractal heap + B-tree v2), as WriteAttribute
+// does.
 //
 // Supported value types match WithRootAttribute:
 //   - Scalars: int8-64, uint8-64, float32/64, string

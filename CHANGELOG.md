@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`core.CompoundValue`); compound datasets and attributes decode object
   reference members as `ObjectRef` (previously "unsupported datatype class
   6/7").
+- `WithAttribute` accepts more than `MaxCompactDatasetAttributes` (8)
+  attributes per dataset: `CreateDataset` then stores all of them densely
+  (fractal heap + B-tree v2, read by h5py and netCDF-C), and later
+  attributes such as `DIMENSION_LIST` join the dense storage. Previously
+  it returned an error.
 - `Dataset.ChunkShape()` returns a chunked dataset's chunk dimensions
   (dataset rank; `false` for compact and contiguous layouts).
 - `Dataset.SetChunkCacheSize(maxChunks, maxBytes)` bounds the per-dataset
