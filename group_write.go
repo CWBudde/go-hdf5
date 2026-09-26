@@ -81,7 +81,7 @@ func (g *GroupWriter) WriteAttribute(name string, value interface{}) error {
 	if err != nil {
 		return fmt.Errorf("attribute %q: %w", name, err)
 	}
-	return writeAttribute(g.file, g.headerAddr, name, value)
+	return writeAttribute(g.file, g.headerAddr, name, value, MaxCompactAttributes)
 }
 
 // Path returns the full path of this group.

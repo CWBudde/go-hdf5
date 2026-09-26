@@ -962,44 +962,7 @@ func (fw *FileWriter) CreateDataset(name string, dtype Datatype, dims []uint64, 
 	for _, opt := range opts {
 		opt(config)
 	}
-	dense := takeDenseAttributes(config)
-
-	dsw, err := fw.createDataset(name, dtype, dims, config)
-	if err != nil {
-		return nil, err
-	}
-	if err := writeDenseAttributes(dsw, dense); err != nil {
-		return nil, fmt.Errorf("dataset %q: %w", name, err)
-	}
-	return dsw, nil
-}
-
-// takeDenseAttributes removes the WithAttribute attributes beyond the first
-// MaxCompactDatasetAttributes from cfg and returns them in order. The
-// dataset is created with the others in its object header; writing these
-// afterwards moves all of them to dense storage.
-func takeDenseAttributes(cfg *datasetConfig) []namedAttribute {
-	if len(cfg.attributeOrder) <= MaxCompactDatasetAttributes {
-		return nil
-	}
-	rest := cfg.attributeOrder[MaxCompactDatasetAttributes:]
-	dense := make([]namedAttribute, len(rest))
-	for i, name := range rest {
-		dense[i] = namedAttribute{name: name, value: cfg.attributes[name]}
-		delete(cfg.attributes, name)
-	}
-	cfg.attributeOrder = cfg.attributeOrder[:MaxCompactDatasetAttributes]
-	return dense
-}
-
-// writeDenseAttributes writes the attributes takeDenseAttributes held back.
-func writeDenseAttributes(dw *DatasetWriter, attrs []namedAttribute) error {
-	for _, a := range attrs {
-		if err := dw.WriteAttribute(a.name, a.value); err != nil {
-			return err
-		}
-	}
-	return nil
+	return fw.createDataset(name, dtype, dims, config)
 }
 
 // createDataset is CreateDataset once the options are applied.
@@ -2012,10 +1975,12 @@ type datasetConfig struct {
 	attributeOrder []string
 }
 
-// MaxCompactDatasetAttributes is the number of WithAttribute attributes a
-// dataset is created with in its object header (compact storage). With
-// more, CreateDataset writes the rest with WriteAttribute, which moves all
-// of them to dense storage (fractal heap + B-tree v2), as libhdf5 does.
+// MaxCompactDatasetAttributes was the number of WithAttribute attributes a
+// dataset was created with in its object header before the rest moved to
+// dense storage.
+//
+// Deprecated: datasets keep all their attributes in the object header
+// (compact storage), whatever their number; the constant has no effect.
 const MaxCompactDatasetAttributes = 8
 
 // buildCompactAttributeMessages turns a name→value map into a slice of
@@ -2024,9 +1989,6 @@ const MaxCompactDatasetAttributes = 8
 func buildCompactAttributeMessages(attrs map[string]interface{}, order []string) ([]core.MessageWriter, error) {
 	if len(attrs) == 0 {
 		return nil, nil
-	}
-	if len(attrs) > MaxCompactDatasetAttributes {
-		return nil, fmt.Errorf("WithAttribute supports at most %d attributes per dataset (got %d); dense storage not yet implemented", MaxCompactDatasetAttributes, len(attrs))
 	}
 
 	// Iterate via the recorded insertion order so the on-disk layout
@@ -2078,11 +2040,9 @@ func buildCompactAttributeMessages(attrs map[string]interface{}, order []string)
 // creation time. Calling it multiple times accumulates attributes;
 // re-using a name overwrites the previous value.
 //
-// Up to MaxCompactDatasetAttributes (8) attributes are stored compactly
-// inside the dataset's object header (enough for netCDF-4 dimension-scale
-// metadata such as CLASS=DIMENSION_SCALE and NAME=…). With more, all of
-// them go to dense storage (fractal heap + B-tree v2), as WriteAttribute
-// does.
+// All attributes are stored compactly inside the dataset's object header,
+// also beyond libhdf5's default of 8: libmysofa cannot read dense storage
+// for attributes other than scalar strings, e.g. DIMENSION_LIST.
 //
 // Supported value types match WithRootAttribute:
 //   - Scalars: int8-64, uint8-64, float32/64, string

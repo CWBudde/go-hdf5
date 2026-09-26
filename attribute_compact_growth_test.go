@@ -31,15 +31,15 @@ func attributeStorage(t *testing.T, path string, addr uint64) (compact int, dens
 	return compact, dense
 }
 
-// TestAttributesStayCompactWhenHeaderGrows checks that, like libhdf5
-// (max_compact = 8), up to 8 attributes stay in the object header even when
-// they no longer fit its first chunk, and only the 9th moves them to dense
-// storage.
+// TestAttributesStayCompactWhenHeaderGrows checks that dataset attributes
+// stay in the object header even when they no longer fit its first chunk,
+// also beyond libhdf5's max_compact = 8 (libmysofa cannot read dense
+// DIMENSION_LIST attributes).
 func TestAttributesStayCompactWhenHeaderGrows(t *testing.T) {
 	dir := t.TempDir()
 	long := strings.Repeat("v", 120)
 
-	for _, n := range []int{8, 9} {
+	for _, n := range []int{8, 9, 12} {
 		path := filepath.Join(dir, fmt.Sprintf("attrs%d.h5", n))
 		fw, err := CreateForWrite(path, CreateTruncate)
 		require.NoError(t, err)
@@ -58,12 +58,8 @@ func TestAttributesStayCompactWhenHeaderGrows(t *testing.T) {
 		require.NoError(t, fw.Close())
 
 		compact, dense := attributeStorage(t, path, addr)
-		if n <= MaxCompactAttributes {
-			require.False(t, dense, "%d attributes must stay compact", n)
-			require.Equal(t, n, compact)
-		} else {
-			require.True(t, dense, "%d attributes must use dense storage", n)
-		}
+		require.False(t, dense, "%d attributes must stay compact", n)
+		require.Equal(t, n, compact)
 
 		f, err := Open(path)
 		require.NoError(t, err)
@@ -81,6 +77,34 @@ func TestAttributesStayCompactWhenHeaderGrows(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, fmt.Sprintf("%s-%d", long, n-1), v)
 		require.NoError(t, f.Close())
+	}
+}
+
+// TestGroupAttributesMoveToDenseStorage checks that group attributes, unlike
+// dataset attributes, move to dense storage with the 9th, like libhdf5
+// (max_compact = 8).
+func TestGroupAttributesMoveToDenseStorage(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []int{MaxCompactAttributes, MaxCompactAttributes + 1} {
+		path := filepath.Join(dir, fmt.Sprintf("group%d.h5", n))
+		fw, err := CreateForWrite(path, CreateTruncate)
+		require.NoError(t, err)
+		g, err := fw.CreateGroup("/g")
+		require.NoError(t, err)
+		for i := 0; i < n; i++ {
+			require.NoError(t, g.WriteAttribute(fmt.Sprintf("a%d", i), int32(i)))
+		}
+		addr := g.headerAddr
+		require.NoError(t, fw.Close())
+
+		compact, dense := attributeStorage(t, path, addr)
+		if n <= MaxCompactAttributes {
+			require.False(t, dense, "%d attributes must stay compact", n)
+			require.Equal(t, n, compact)
+		} else {
+			require.True(t, dense, "%d attributes must use dense storage", n)
+			require.Zero(t, compact)
+		}
 	}
 }
 
