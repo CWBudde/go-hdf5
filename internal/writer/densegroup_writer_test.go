@@ -4,6 +4,7 @@
 package writer
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -27,14 +28,6 @@ func TestDenseGroupWriter_Creation(t *testing.T) {
 
 	if len(dgw.links) != 0 {
 		t.Errorf("Links should be empty, got %d", len(dgw.links))
-	}
-
-	if dgw.fractalHeap == nil {
-		t.Error("Fractal heap not initialized")
-	}
-
-	if dgw.btree == nil {
-		t.Error("B-tree not initialized")
 	}
 
 	if dgw.linkInfo == nil {
@@ -362,17 +355,11 @@ func TestDenseGroupWriter_UTF8Names(t *testing.T) {
 	t.Logf("Unicode test: %d links with various scripts", len(unicodeLinks))
 }
 
-// TestDenseGroupWriter_LinkMessage tests link message creation.
-func TestDenseGroupWriter_LinkMessage(t *testing.T) {
-	dgw := NewDenseGroupWriter("/test")
+// TestEncodeHardLinkMessage tests link message creation.
+func TestEncodeHardLinkMessage(t *testing.T) {
 	sb := createTestSuperblock()
 
-	link := denseLink{
-		name:       "testlink",
-		targetAddr: 0x123456,
-	}
-
-	msg := dgw.createLinkMessage(link, sb)
+	msg := EncodeHardLinkMessage("testlink", 0x123456, -1, sb)
 
 	// Verify message is not empty
 	if len(msg) == 0 {
@@ -575,5 +562,23 @@ func BenchmarkDenseGroupWriter_AddLink_1000(b *testing.B) {
 		for j := 0; j < 1000; j++ {
 			_ = dgw.AddLink(fmt.Sprintf("link%d", j), uint64(j*0x1000))
 		}
+	}
+}
+
+// TestEncodeHardLinkMessageCreationOrder checks the creation order field
+// (flags bit 2, 8 bytes right after the flags) that netCDF-C writes and
+// libmysofa's dense link reader depends on.
+func TestEncodeHardLinkMessageCreationOrder(t *testing.T) {
+	sb := createTestSuperblock()
+	msg := EncodeHardLinkMessage("M", 0x800, 5, sb)
+	want := []byte{
+		1,                      // version
+		0x04,                   // flags: creation order present, 1-byte name length
+		5, 0, 0, 0, 0, 0, 0, 0, // creation order
+		1, 'M', // name length, name
+		0x00, 0x08, 0, 0, 0, 0, 0, 0, // target address
+	}
+	if !bytes.Equal(want, msg) {
+		t.Fatalf("link message\n got % x\nwant % x", msg, want)
 	}
 }

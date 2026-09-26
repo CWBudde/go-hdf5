@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The root group of superblock v2/v3 files is a new-style group, like
+  netCDF-C and libhdf5 write it: Link Info (tracking link creation order) +
+  Group Info, compact Link messages up to 8 links and dense link storage
+  (fractal heap + name index) from the 9th. Previously it was a symbol
+  table group in a v2 object header, which libmysofa cannot read.
+  Superblock v0 files keep the symbol table root. Existing files, including
+  v2 files with a symbol table root, are still read and can be extended
+  with `OpenForWrite`.
+- Dense groups written by `CreateDenseGroup` carry a Group Info message.
+- `OpenForWrite` adds links to new-style roots written by the HDF5 C
+  library (e.g. h5py with `libver="latest"`): dense link storage the writer
+  cannot extend in place (indirect fractal heap blocks, multi-level
+  B-trees, a heap free-space manager) is rewritten with the new link. Roots
+  that also track attribute creation order (netCDF-C, h5py
+  `track_order=True`) cannot be modified yet.
+- Links added to a group that indexes link creation order are added to its
+  creation order index (v2 B-tree type 6), which the compact → dense
+  conversion now creates.
+- Dense link storage holds Link messages up to 64 KiB (libhdf5 stores
+  those above 4 KiB as huge heap objects, which neither this library nor
+  libmysofa reads), so links with long names no longer fail when a group
+  converts to dense storage.
+
+### Fixed
+
+- String datatype messages are 8 bytes as the format specifies; they had
+  an extra byte that libmysofa could not skip.
+- Scalar attribute dataspaces are written as the 4-byte version 2 message
+  that netCDF-C writes, so libmysofa reads the global attributes of files
+  with more than 8 of them.
+- `OpenForWrite` + `CreateDataset` (and other links) at the root of a v2
+  file failed with "no group B-tree at address 0".
+- Fractal heaps (dense attribute and link storage) are written with one
+  starting row for a root indirect block, like libhdf5 writes them. With 0,
+  libhdf5 corrupted the heap when it added an object to it.
+- `File.objectIndex` is built under a `sync.Once`, so concurrent first
+  calls of `Dataset.Path`, `File.ObjectPath` and `File.Dereference` no
+  longer race. A reference attribute with a one-element simple dataspace
+  (written from `[]ObjectRef{ref}`) reads back as `[]ObjectRef`.
+
+### Added
+
+- `TestLibmysofaLoad` loads a written SOFA file with libmysofa when
+  `LIBMYSOFA_LOAD` names the harness built by `scripts/libmysofa/build.sh`.
+
 ## [v0.17.0] - 2026-09-26
 
 ### Added

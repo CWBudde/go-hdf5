@@ -50,6 +50,7 @@ const (
 	MsgNil            MessageType = 0
 	MsgDataspace      MessageType = 1
 	MsgLinkInfo       MessageType = 2
+	MsgGroupInfo      MessageType = 10 // Group Info (0x000A) - new-style group creation properties
 	MsgDatatype       MessageType = 3
 	MsgFillValueOld   MessageType = 4
 	MsgFillValue      MessageType = 5  // Alias for FillValueOld

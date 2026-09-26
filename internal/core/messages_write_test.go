@@ -281,8 +281,10 @@ func TestEncodeDatatypeMessage_String(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, data []byte) {
-				// Header (8) + string properties (1)
-				assert.Equal(t, 9, len(data))
+				// Header (8) only: string datatypes have no properties;
+				// padding and character set live in the class bit field.
+				// libmysofa reads exactly 8 bytes and loses sync otherwise.
+				assert.Equal(t, 8, len(data))
 
 				class := DatatypeClass(binary.LittleEndian.Uint32(data[0:4]) & 0x0F)
 				assert.Equal(t, DatatypeString, class)
@@ -653,9 +655,9 @@ func TestEncodeAttributeMessage(t *testing.T) {
 				assert.Equal(t, uint16(6), nameSize)
 				offset += 2
 
-				// Datatype size (9 bytes for string)
+				// Datatype size (8 bytes for string)
 				datatypeSize := binary.LittleEndian.Uint16(encoded[offset : offset+2])
-				assert.Equal(t, uint16(9), datatypeSize)
+				assert.Equal(t, uint16(8), datatypeSize)
 				offset += 2
 
 				// Dataspace size (16 bytes for scalar: 8 header + 8 for one dimension)
@@ -675,7 +677,7 @@ func TestEncodeAttributeMessage(t *testing.T) {
 				offset++
 
 				// Skip datatype and dataspace
-				offset += 9 + 16 // datatype 9, dataspace 16 for scalar
+				offset += 8 + 16 // datatype 8, dataspace 16 for scalar
 
 				// Verify data
 				assert.Equal(t, []byte("Celsius\x00\x00\x00"), encoded[offset:offset+10])

@@ -6,9 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/stretchr/testify/require"
 )
 
 // writeTextAttributeFile writes string attributes the way SOFA/netCDF

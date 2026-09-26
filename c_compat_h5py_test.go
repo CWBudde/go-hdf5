@@ -71,7 +71,7 @@ if netCDF4 is not None:
     d.close()
     out["_netcdf4"] = {"attrs": {}}
 
-print(json.dumps(out))
+print(json.dumps(out, default=str))  # object references as text
 `
 
 type h5pyEntry struct {
@@ -99,7 +99,9 @@ func TestInteropH5py(t *testing.T) {
 			sc.write(t, path)
 
 			args := []string{"-c", h5pyDumpScript, path}
-			if strings.HasPrefix(sc.name, "lzf") {
+			// LZF is an h5py-only filter; netCDF-C aborts on names longer
+			// than NC_MAX_NAME (256), also in files written by libhdf5.
+			if strings.HasPrefix(sc.name, "lzf") || sc.name == "root_links_long_names" {
 				args = append(args, "no-netcdf")
 			}
 			out, err := exec.Command(python, args...).CombinedOutput()
@@ -188,6 +190,8 @@ func TestInteropH5py(t *testing.T) {
 				require.InDelta(t, 21.0, got["/v"].Sum, 1e-9)
 			case "compound_dataset":
 				requireCompoundInteropFields(t, got["/cmp"])
+			case "root_links_compact", "root_links_dense", "root_links_dense_attrs", "root_links_reopen":
+				requireRootLinkScenario(t, sc.name, got)
 			case "superblock_v0":
 				require.Equal(t, []interface{}{"SOFA"}, got["/"].Attrs["Conventions"])
 				require.InDelta(t, 4.5, got["/x09"].Sum, 1e-9)
@@ -266,5 +270,38 @@ func requireCompoundInteropFields(t *testing.T, e h5pyEntry) {
 		require.Equal(t, r.name, e.Fields["name"][i], "name[%d]", i)
 		require.InDelta(t, float64(r.x), e.Fields["pt.x"][i], 0, "pt.x[%d]", i)
 		require.InDelta(t, float64(r.y), e.Fields["pt.y"][i], 0, "pt.y[%d]", i)
+	}
+}
+
+// requireRootLinkScenario checks what h5py read from the new-style root
+// scenarios of compatScenarios.
+func requireRootLinkScenario(t *testing.T, name string, got map[string]h5pyEntry) {
+	t.Helper()
+	switch name {
+	case "root_links_compact":
+		require.Equal(t, []interface{}{"SOFA"}, got["/"].Attrs["Conventions"])
+		for i := 0; i < 3; i++ {
+			require.InDelta(t, float64(i), got["/"+rootLinkName(i)].Sum, 0)
+		}
+	case "root_links_dense":
+		require.Equal(t, []interface{}{"SimpleFreeFieldHRIR"}, got["/"].Attrs["SOFAConventions"])
+		require.Equal(t, []int{2, 2, 4}, got["/Data.IR"].Shape)
+		require.InDelta(t, 3.0, got["/Data.IR"].Sum, 1e-9)
+		require.Equal(t, []int{2, 3, 1}, got["/ReceiverPosition"].Shape)
+		require.Contains(t, got["/Data.IR"].Attrs, "DIMENSION_LIST")
+		require.Contains(t, got["/M"].Attrs, "REFERENCE_LIST")
+	case "root_links_dense_attrs":
+		require.Len(t, got["/"].Attrs, 12)
+		for i := 0; i < 30; i++ {
+			require.InDelta(t, float64(i), got["/"+rootLinkName(i)].Sum, 0)
+		}
+	case "root_links_reopen":
+		for i := 0; i < 15; i++ {
+			require.InDelta(t, float64(i), got["/"+rootLinkName(i)].Sum, 0)
+		}
+	case "root_links_long_names":
+		for i := 0; i < 10; i++ {
+			require.InDelta(t, float64(i), got["/"+longRootLinkName(i)].Sum, 0)
+		}
 	}
 }

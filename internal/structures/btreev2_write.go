@@ -33,8 +33,9 @@ const (
 	BTreeV2HeaderSignature = "BTHD" // B-tree v2 header signature
 	BTreeV2LeafSignature   = "BTLF" // B-tree v2 leaf node signature
 
-	BTreeV2TypeLinkNameIndex = uint8(5) // Type 5 = Link Name Index for dense groups
-	BTreeV2TypeAttrNameIndex = uint8(8) // Type 8 = Attribute Name Index for dense attributes
+	BTreeV2TypeLinkNameIndex          = uint8(5) // Type 5 = Link Name Index for dense groups
+	BTreeV2TypeLinkCreationOrderIndex = uint8(6) // Type 6 = Link Creation Order Index for dense groups
+	BTreeV2TypeAttrNameIndex          = uint8(8) // Type 8 = Attribute Name Index for dense attributes
 
 	DefaultBTreeV2NodeSize     = uint32(512) // libhdf5 node size for link/attribute name indexes
 	maxGrowableBTreeNodeSize   = uint32(1 << 21)
@@ -118,6 +119,10 @@ type BTreeV2LeafNode struct {
 type LinkNameRecord struct {
 	NameHash uint32  // Jenkins hash of link name
 	HeapID   [7]byte // Fractal heap ID (7 bytes, not 8)
+
+	// CreationOrder is the key of type 6 (creation order index) records
+	// (H5G_dense_bt2_corder_rec_t).
+	CreationOrder uint64
 }
 
 // WritableBTreeV2 manages B-tree v2 construction for link name indexing.
@@ -198,9 +203,23 @@ func NewWritableAttrBTreeV2(nodeSize uint32) *WritableBTreeV2 {
 	return bt
 }
 
+// NewWritableLinkCreationOrderBTreeV2 creates a new B-tree v2 for the
+// creation order index (type 6) of a dense group.
+//
+// Type 6 records are 15 bytes (H5G__dense_btree2_corder_encode): creation
+// order (8) + heap ID (7).
+func NewWritableLinkCreationOrderBTreeV2(nodeSize uint32) *WritableBTreeV2 {
+	bt := NewWritableBTreeV2(nodeSize)
+	bt.header.Type = BTreeV2TypeLinkCreationOrderIndex
+	bt.header.RecordSize = linkCorderRecordSize
+	bt.leaf.Type = BTreeV2TypeLinkCreationOrderIndex
+	return bt
+}
+
 const (
-	linkNameRecordSize = 11 // hash (4) + heap ID (7)
-	attrNameRecordSize = 17 // heap ID (8) + flags (1) + creation order (4) + hash (4)
+	linkNameRecordSize   = 11 // hash (4) + heap ID (7)
+	linkCorderRecordSize = 15 // creation order (8) + heap ID (7)
+	attrNameRecordSize   = 17 // heap ID (8) + flags (1) + creation order (4) + hash (4)
 )
 
 // recordSize returns the on-disk record size for this tree's type.
@@ -209,14 +228,22 @@ func (bt *WritableBTreeV2) recordSize() int {
 }
 
 func recordSizeForType(t uint8) int {
-	if t == BTreeV2TypeAttrNameIndex {
+	switch t {
+	case BTreeV2TypeAttrNameIndex:
 		return attrNameRecordSize
+	case BTreeV2TypeLinkCreationOrderIndex:
+		return linkCorderRecordSize
+	default:
+		return linkNameRecordSize
 	}
-	return linkNameRecordSize
 }
 
 // encodeRecord appends the on-disk encoding of a record for B-tree type t.
 func encodeRecord(buf []byte, t uint8, r LinkNameRecord) []byte {
+	if t == BTreeV2TypeLinkCreationOrderIndex {
+		buf = binary.LittleEndian.AppendUint64(buf, r.CreationOrder)
+		return append(buf, r.HeapID[:]...)
+	}
 	if t == BTreeV2TypeAttrNameIndex {
 		buf = append(buf, r.HeapID[:]...)
 		// 8th heap ID byte (IDs use at most 7), then message flags (not shared).
@@ -232,6 +259,11 @@ func encodeRecord(buf []byte, t uint8, r LinkNameRecord) []byte {
 // decodeRecord decodes one record for B-tree type t.
 func decodeRecord(b []byte, t uint8) LinkNameRecord {
 	var r LinkNameRecord
+	if t == BTreeV2TypeLinkCreationOrderIndex {
+		r.CreationOrder = binary.LittleEndian.Uint64(b[0:8])
+		copy(r.HeapID[:], b[8:15])
+		return r
+	}
 	if t == BTreeV2TypeAttrNameIndex {
 		copy(r.HeapID[:], b[0:7])
 		r.NameHash = binary.LittleEndian.Uint32(b[13:17])
@@ -267,10 +299,60 @@ func (bt *WritableBTreeV2) InsertRecord(linkName string, heapID uint64) error {
 		NameHash: hash,
 		HeapID:   heapIDBytes,
 	}
+	if err := bt.growForInsert(); err != nil {
+		return err
+	}
 
-	// The tree is a single leaf. When it is full, double the node size
-	// (like the growable fractal heap root block) instead of splitting, so
-	// small indexes stay at libhdf5's 512-byte node size.
+	// Insert sorted by hash
+	bt.records = insertRecordSorted(bt.records, record)
+	bt.header.TotalRecords++
+	bt.header.NumRecordsRoot++
+	bt.leaf.Records = bt.records
+
+	return nil
+}
+
+// InsertCreationOrderRecord adds a record to a creation order index (type
+// 6, see NewWritableLinkCreationOrderBTreeV2): the link with creation order
+// order stored in the heap object heapID (as returned by
+// WritableFractalHeap.InsertObject, low 7 bytes). Records are kept sorted
+// by creation order (H5G__dense_btree2_corder_compare).
+func (bt *WritableBTreeV2) InsertCreationOrderRecord(order uint64, heapID []byte) error {
+	if bt.header.Type != BTreeV2TypeLinkCreationOrderIndex {
+		return fmt.Errorf("%w: creation order records need a type %d B-tree, have type %d",
+			ErrInvalidBTreeType, BTreeV2TypeLinkCreationOrderIndex, bt.header.Type)
+	}
+	if len(heapID) == 0 || len(heapID) > 7 {
+		return fmt.Errorf("invalid heap ID length for creation order record: %d bytes", len(heapID))
+	}
+	record := LinkNameRecord{CreationOrder: order}
+	copy(record.HeapID[:], heapID)
+
+	pos := len(bt.records)
+	for pos > 0 && bt.records[pos-1].CreationOrder > order {
+		pos--
+	}
+	if pos > 0 && bt.records[pos-1].CreationOrder == order {
+		return fmt.Errorf("creation order %d is already indexed", order)
+	}
+	if err := bt.growForInsert(); err != nil {
+		return err
+	}
+
+	bt.records = append(bt.records, LinkNameRecord{})
+	copy(bt.records[pos+1:], bt.records[pos:])
+	bt.records[pos] = record
+	bt.header.TotalRecords++
+	bt.header.NumRecordsRoot++
+	bt.leaf.Records = bt.records
+	return nil
+}
+
+// growForInsert makes room for one more record. The tree is a single leaf:
+// when it is full, the node size doubles (like the growable fractal heap
+// root block) instead of splitting, so small indexes stay at libhdf5's
+// 512-byte node size.
+func (bt *WritableBTreeV2) growForInsert() error {
 	for len(bt.records) >= bt.calculateMaxRecords() {
 		if bt.nodeSize >= maxGrowableBTreeNodeSize || len(bt.records) >= 0xFFFF {
 			return ErrBTreeNodeFull
@@ -281,13 +363,6 @@ func (bt *WritableBTreeV2) InsertRecord(linkName string, heapID uint64) error {
 			bt.leafMoved = true
 		}
 	}
-
-	// Insert sorted by hash
-	bt.records = insertRecordSorted(bt.records, record)
-	bt.header.TotalRecords++
-	bt.header.NumRecordsRoot++
-	bt.leaf.Records = bt.records
-
 	return nil
 }
 
@@ -662,7 +737,7 @@ func (bt *WritableBTreeV2) calculateMaxRecords() int {
 	// Node size - overhead (signature + version + type + checksum)
 	overhead := uint32(4 + 1 + 1 + 4) // 10 bytes
 	available := bt.nodeSize - overhead
-	recordSize := uint32(bt.recordSize()) //nolint:gosec // G115: 11 or 17
+	recordSize := uint32(bt.recordSize()) //nolint:gosec // G115: 11, 15 or 17
 	return int(available / recordSize)
 }
 
@@ -739,10 +814,13 @@ func (bt *WritableBTreeV2) LoadFromFile(r io.ReaderAt, headerAddr uint64, sb *co
 		return fmt.Errorf("failed to read B-tree header: %w", err)
 	}
 
-	// 2. Validate header (accept both link name and attribute name index types)
-	if header.Type != BTreeV2TypeLinkNameIndex && header.Type != BTreeV2TypeAttrNameIndex {
-		return fmt.Errorf("%w: expected type %d or %d, got %d", ErrInvalidBTreeType,
-			BTreeV2TypeLinkNameIndex, BTreeV2TypeAttrNameIndex, header.Type)
+	// 2. Validate header (link name, link creation order and attribute name
+	// index types)
+	switch header.Type {
+	case BTreeV2TypeLinkNameIndex, BTreeV2TypeLinkCreationOrderIndex, BTreeV2TypeAttrNameIndex:
+	default:
+		return fmt.Errorf("%w: expected type %d, %d or %d, got %d", ErrInvalidBTreeType,
+			BTreeV2TypeLinkNameIndex, BTreeV2TypeLinkCreationOrderIndex, BTreeV2TypeAttrNameIndex, header.Type)
 	}
 
 	if header.Depth != 0 {
@@ -1028,6 +1106,21 @@ func readUint64(buf []byte, size int, endianness binary.ByteOrder) uint64 {
 //   - []LinkNameRecord: slice of all link name records in the B-tree
 func (bt *WritableBTreeV2) GetRecords() []LinkNameRecord {
 	return bt.records
+}
+
+// HeapIDsForName returns the 7-byte heap IDs of all records whose name hash
+// matches name's. Different names can share a hash, so callers compare the
+// names stored in the heap objects.
+func (bt *WritableBTreeV2) HeapIDsForName(name string) [][]byte {
+	hash := jenkinsHash(name)
+	var ids [][]byte
+	for _, r := range bt.records {
+		if r.NameHash == hash {
+			id := r.HeapID
+			ids = append(ids, id[:])
+		}
+	}
+	return ids
 }
 
 // findRecord returns the index of name's record, or -1 when there is none.

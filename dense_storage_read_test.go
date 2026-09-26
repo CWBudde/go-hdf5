@@ -5,9 +5,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/stretchr/testify/require"
 )
 
 // Fixtures from testdata/dense/generate.py (HDF5 C library via h5py and

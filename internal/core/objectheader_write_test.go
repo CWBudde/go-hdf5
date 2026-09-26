@@ -5,10 +5,9 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/cwbudde/go-hdf5/internal/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // mockWriterAt implements io.WriterAt for testing.

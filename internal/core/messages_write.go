@@ -283,6 +283,10 @@ func encodeDatatypeNumeric(dt *DatatypeMessage) ([]byte, error) {
 }
 
 // encodeDatatypeString encodes string datatype (fixed-length only for MVP).
+//
+// String datatypes have no properties: padding type (bits 0-3) and
+// character set (bits 4-7) live in the class bit field, so the message is
+// just the 8-byte header (H5O__dtype_encode_helper, H5T_STRING).
 func encodeDatatypeString(dt *DatatypeMessage) ([]byte, error) {
 	if dt.Size == 0 {
 		return nil, fmt.Errorf("fixed-length strings must have size > 0")
@@ -291,14 +295,7 @@ func encodeDatatypeString(dt *DatatypeMessage) ([]byte, error) {
 	// Version 1 for string types
 	version := uint8(1)
 
-	// String properties: 1 byte (padding/charset)
-	// Bit 0-3: Padding type (0=null-terminated, 1=null-padded, 2=space-padded)
-	// Bit 4-7: Character set (0=ASCII, 1=UTF-8)
-	properties := []byte{0} // Default: null-terminated ASCII
-
-	// Build message
-	messageSize := 8 + len(properties)
-	buf := make([]byte, messageSize)
+	buf := make([]byte, 8)
 
 	// Pack class, version, and class bit field
 	classAndVersion := uint32(dt.Class) | (uint32(version) << 4) | (dt.ClassBitField << 8)
@@ -306,9 +303,6 @@ func encodeDatatypeString(dt *DatatypeMessage) ([]byte, error) {
 
 	// Size
 	binary.LittleEndian.PutUint32(buf[4:8], dt.Size)
-
-	// Properties
-	copy(buf[8:], properties)
 
 	return buf, nil
 }
@@ -537,8 +531,10 @@ func EncodeAttributeMessage(name string, datatype *DatatypeMessage, dataspace *D
 
 	var dataspaceBytes []byte
 	if dataspace.Type == DataspaceScalar && len(dataspace.Dimensions) == 0 {
-		// Scalar dataspace: version 1 with rank 0 (H5S_SCALAR).
-		dataspaceBytes = []byte{1, 0, 0, 0, 0, 0, 0, 0}
+		// Scalar dataspace (H5S_SCALAR): version 2, rank 0, no flags,
+		// type 0, as netCDF-C writes it. libmysofa reads dense attributes
+		// only in this 4-byte form.
+		dataspaceBytes = []byte{2, 0, 0, 0}
 	} else {
 		dataspaceBytes, err = EncodeDataspaceMessage(dataspace.Dimensions, dataspace.MaxDims)
 	}

@@ -4,6 +4,7 @@
 package structures
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"testing"
@@ -710,4 +711,67 @@ type testBTreeWriterError struct{}
 
 func (w *testBTreeWriterError) WriteAtAddress(_ []byte, _ uint64) error {
 	return fmt.Errorf("write failed")
+}
+
+func TestHeapIDsForName(t *testing.T) {
+	bt := NewWritableBTreeV2(0)
+	require.NoError(t, bt.InsertRecord("alpha", 0x0102030405))
+	require.NoError(t, bt.InsertRecord("beta", 0x0a0b0c))
+
+	ids := bt.HeapIDsForName("alpha")
+	require.Equal(t, [][]byte{{0x05, 0x04, 0x03, 0x02, 0x01, 0, 0}}, ids)
+	require.Empty(t, bt.HeapIDsForName("gamma"))
+
+	// Records whose name hashes collide are all returned; callers compare
+	// the names stored in the heap.
+	bt.records = append(bt.records, LinkNameRecord{NameHash: jenkinsHash("beta"), HeapID: [7]byte{9}})
+	require.Len(t, bt.HeapIDsForName("beta"), 2)
+}
+
+// TestLinkCreationOrderBTreeV2 checks the creation order index (type 6) of
+// dense groups: 15-byte records (order + 7-byte heap ID) sorted by creation
+// order, node growth, and loading and extending a written index.
+func TestLinkCreationOrderBTreeV2(t *testing.T) {
+	sb := createTestSuperblock()
+	w := &testBTreeWriter{buf: make([]byte, 1<<16)}
+	alloc := &testBTreeAllocator{nextAddr: 64}
+
+	heapID := func(i int) []byte { return []byte{0, byte(i), 0, 0, 0, 0x10, 0} }
+	bt := NewWritableLinkCreationOrderBTreeV2(0)
+	for _, order := range []int{5, 1, 3} {
+		require.NoError(t, bt.InsertCreationOrderRecord(uint64(order), heapID(order)))
+	}
+	require.ErrorContains(t, bt.InsertCreationOrderRecord(3, heapID(9)), "already indexed")
+	require.ErrorIs(t, NewWritableBTreeV2(0).InsertCreationOrderRecord(1, heapID(1)), ErrInvalidBTreeType)
+	for i := 6; i < 60; i++ { // more than a 512-byte leaf holds
+		require.NoError(t, bt.InsertCreationOrderRecord(uint64(i), heapID(i)))
+	}
+	require.Greater(t, bt.header.NodeSize, DefaultBTreeV2NodeSize)
+
+	addr, err := bt.WriteToFile(w, alloc, sb)
+	require.NoError(t, err)
+
+	requireRecords := func(want []int) {
+		t.Helper()
+		info, recs, err := core.ReadBTreeV2Records(bytes.NewReader(w.buf), addr, sb)
+		require.NoError(t, err)
+		require.Equal(t, BTreeV2TypeLinkCreationOrderIndex, info.Type)
+		require.Equal(t, uint16(15), info.RecordSize)
+		require.Len(t, recs, len(want))
+		for i, order := range want {
+			require.Equal(t, uint64(order), binary.LittleEndian.Uint64(recs[i][:8]))
+			require.Equal(t, heapID(order), recs[i][8:])
+		}
+	}
+	want := []int{1, 3, 5}
+	for i := 6; i < 60; i++ {
+		want = append(want, i)
+	}
+	requireRecords(want)
+
+	loaded := NewWritableBTreeV2(0)
+	require.NoError(t, loaded.LoadFromFile(bytes.NewReader(w.buf), addr, sb))
+	require.NoError(t, loaded.InsertCreationOrderRecord(2, heapID(2)))
+	require.NoError(t, loaded.WriteAtWithAllocator(w, alloc, sb))
+	requireRecords(append([]int{1, 2}, want[1:]...))
 }

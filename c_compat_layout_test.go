@@ -1,6 +1,7 @@
 package hdf5
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -9,10 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/structures"
+	"github.com/cwbudde/go-hdf5/internal/utils"
 	"github.com/cwbudde/go-hdf5/internal/writer"
 	"github.com/stretchr/testify/require"
-
-	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // This file checks that files produced by the writer satisfy the structural
@@ -267,7 +269,104 @@ func compatScenarios() []writeScenario {
 			}
 			closeOK(t, fw)
 		}},
+		{"root_links_compact", func(t *testing.T, p string) {
+			fw, err := CreateForWrite(p, CreateTruncate, WithRootAttribute("Conventions", "SOFA"))
+			require.NoError(t, err)
+			writeRootLinks(t, fw, 0, 3)
+			closeOK(t, fw)
+		}},
+		{"root_links_dense", writeMinimalSOFA},
+		{"root_links_dense_attrs", func(t *testing.T, p string) {
+			opts := make([]interface{}, 0, 12)
+			for i := 0; i < 12; i++ {
+				opts = append(opts, WithRootAttribute(fmt.Sprintf("attr%02d", i), fmt.Sprintf("value %d", i)))
+			}
+			fw, err := CreateForWrite(p, CreateTruncate, opts...)
+			require.NoError(t, err)
+			writeRootLinks(t, fw, 0, 30)
+			closeOK(t, fw)
+		}},
+		{"root_links_reopen", func(t *testing.T, p string) {
+			fw, err := CreateForWrite(p, CreateTruncate)
+			require.NoError(t, err)
+			writeRootLinks(t, fw, 0, 5)
+			closeOK(t, fw)
+			fw, err = OpenForWrite(p, OpenReadWrite)
+			require.NoError(t, err)
+			writeRootLinks(t, fw, 5, 10)
+			closeOK(t, fw)
+		}},
+		{"root_links_long_names", func(t *testing.T, p string) {
+			// Link messages above libhdf5's 4 KiB managed link heap objects,
+			// moved to dense storage by the 9th link.
+			fw, err := CreateForWrite(p, CreateTruncate)
+			require.NoError(t, err)
+			for i := 0; i < 10; i++ {
+				writeRootDataset(t, fw, longRootLinkName(i), float64(i))
+			}
+			closeOK(t, fw)
+		}},
 	}
+}
+
+// writeMinimalSOFA writes a small valid SimpleFreeFieldHRIR file the way
+// netCDF-C lays out SOFA files: global attributes, one dimension scale per
+// SOFA dimension (M=2, R=2, E=1, N=4, C=3, I=1) named like netCDF's phony
+// dimensions, and float64 variables with their Type/Units attributes. With
+// 15 datasets the root group uses dense link storage.
+func writeMinimalSOFA(t *testing.T, path string) {
+	t.Helper()
+	fw, err := CreateForWrite(path, CreateTruncate,
+		WithRootAttribute("Conventions", "SOFA"),
+		WithRootAttribute("Version", "2.1"),
+		WithRootAttribute("SOFAConventions", "SimpleFreeFieldHRIR"),
+		WithRootAttribute("SOFAConventionsVersion", "1.0"),
+		WithRootAttribute("DataType", "FIR"),
+		WithRootAttribute("RoomType", "free field"))
+	require.NoError(t, err)
+
+	dims := map[string]uint64{"M": 2, "R": 2, "E": 1, "N": 4, "C": 3, "I": 1}
+	scales := map[string]*DatasetWriter{}
+	for _, name := range []string{"C", "E", "I", "M", "N", "R"} {
+		n := dims[name]
+		ds, err := fw.CreateDataset("/"+name, Float64, []uint64{n})
+		require.NoError(t, err)
+		require.NoError(t, ds.Write(make([]float64, n)))
+		require.NoError(t, ds.SetDimensionScale(
+			fmt.Sprintf("This is a netCDF dimension but not a netCDF variable.%10d", n)))
+		scales[name] = ds
+	}
+
+	variable := func(name string, dimNames string, values []float64, attrs ...string) {
+		shape := make([]uint64, len(dimNames))
+		for i, d := range dimNames {
+			shape[i] = dims[string(d)]
+		}
+		ds, err := fw.CreateDataset("/"+name, Float64, shape)
+		require.NoError(t, err)
+		require.NoError(t, ds.Write(values))
+		for i, d := range dimNames {
+			require.NoError(t, ds.AttachDimensionScale(i, scales[string(d)]))
+		}
+		for i := 0; i+1 < len(attrs); i += 2 {
+			require.NoError(t, ds.WriteAttribute(attrs[i], attrs[i+1]))
+		}
+	}
+	cartesian := []string{"Type", "cartesian", "Units", "metre"} //nolint:misspell // SOFA unit names
+	variable("ListenerPosition", "IC", []float64{0, 0, 0}, cartesian...)
+	variable("ListenerUp", "IC", []float64{0, 0, 1}, cartesian...)
+	variable("ListenerView", "IC", []float64{1, 0, 0}, cartesian...)
+	variable("ReceiverPosition", "RCI", []float64{0, 0.09, 0, 0, -0.09, 0}, cartesian...)
+	variable("SourcePosition", "MC", []float64{0, 0, 1.2, 90, 0, 1.2},
+		"Type", "spherical", "Units", "degree, degree, metre") //nolint:misspell // SOFA unit names
+	variable("EmitterPosition", "ECI", []float64{0, 0, 0}, cartesian...)
+	variable("Data.IR", "MRN", []float64{
+		1, 0, 0, 0, 0.5, 0, 0, 0,
+		0, 1, 0, 0, 0, 0.5, 0, 0,
+	})
+	variable("Data.SamplingRate", "I", []float64{48000}, "Units", "hertz")
+	variable("Data.Delay", "IR", []float64{0, 0})
+	require.NoError(t, fw.Close())
 }
 
 // manyLinkName is the name of link i written by writeManyLinks: long names
@@ -366,7 +465,9 @@ func newLayoutChecker(t *testing.T, d []byte) *layoutChecker {
 }
 
 func (c *layoutChecker) u64(off uint64) uint64 { return binary.LittleEndian.Uint64(c.d[off : off+8]) }
+
 func (c *layoutChecker) u32(off uint64) uint32 { return binary.LittleEndian.Uint32(c.d[off : off+4]) }
+
 func (c *layoutChecker) u16(off uint64) uint16 { return binary.LittleEndian.Uint16(c.d[off : off+2]) }
 
 // inside asserts that [addr, addr+size) lies below the EOA.
@@ -448,22 +549,95 @@ func (c *layoutChecker) checkObjectHeader(addr uint64) {
 	}
 
 	rank := -1
-	for _, m := range msgs {
-		if m.typ == 0x01 { // dataspace
-			rank = int(m.data[1])
-		}
-	}
+	linkInfo, groupInfo := false, false
 	for _, m := range msgs {
 		switch m.typ {
+		case 0x01: // dataspace
+			rank = int(m.data[1])
+		case 0x02:
+			linkInfo = true
+		case 0x0A:
+			groupInfo = true
+		}
+	}
+	// libhdf5 needs the Group Info message to add links to a new-style group.
+	require.Equal(t, linkInfo, groupInfo, "new-style group at %d needs Link Info and Group Info messages", addr)
+	for _, m := range msgs {
+		switch m.typ {
+		case 0x02:
+			c.checkLinkInfo(m.data, msgs)
 		case 0x03:
 			c.checkDatatype(m.data)
+		case 0x06:
+			c.checkLink(m.data)
 		case 0x08:
 			c.checkLayout(m.data, rank)
+		case 0x0A:
+			_, err := core.ParseGroupInfoMessage(m.data)
+			require.NoError(t, err, "group info message at %d", addr)
 		case 0x11:
 			c.checkSymbolTableGroup(binary.LittleEndian.Uint64(m.data[0:8]), binary.LittleEndian.Uint64(m.data[8:16]))
 		case 0x15:
 			c.checkDenseAttributes(m.data)
 		}
+	}
+}
+
+var layoutSuperblock = &core.Superblock{OffsetSize: 8, LengthSize: 8, Endianness: binary.LittleEndian}
+
+// checkLink validates a Link message and the object a hard link points to.
+func (c *layoutChecker) checkLink(data []byte) {
+	lm, err := structures.ParseLinkMessage(data, layoutSuperblock)
+	require.NoError(c.t, err, "link message")
+	require.NotEmpty(c.t, lm.Name, "link name")
+	if lm.IsHardLink() {
+		c.checkObjectHeader(lm.ObjectAddress)
+	}
+}
+
+// checkLinkInfo validates the link storage of a new-style group: compact
+// (Link messages in the header, no heap or name index) or dense (fractal
+// heap + type 5 name index, no Link messages).
+func (c *layoutChecker) checkLinkInfo(data []byte, msgs []ohMessage) {
+	t := c.t
+	li, err := core.ParseLinkInfoMessage(data, layoutSuperblock)
+	require.NoError(t, err, "link info message")
+	compact := 0
+	for _, m := range msgs {
+		if m.typ == 0x06 {
+			compact++
+		}
+	}
+	if li.FractalHeapAddress == undefAddr {
+		require.Equal(t, undefAddr, li.NameBTreeAddress, "compact link storage has no name index")
+		require.LessOrEqual(t, compact, 8, "compact groups hold at most max_compact (8) links")
+		return
+	}
+	require.Zero(t, compact, "dense groups keep no Link messages in the header")
+
+	heapAddr, btreeAddr := li.FractalHeapAddress, li.NameBTreeAddress
+	require.Equal(t, "FRHP", string(c.d[heapAddr:heapAddr+4]))
+	hdrLen := uint64(22 + 12*8 + 3*8)
+	c.inside("fractal heap header", heapAddr, hdrLen+4)
+	require.Equal(t, c.u32(heapAddr+hdrLen), utils.JenkinsChecksum(c.d[heapAddr:heapAddr+hdrLen]), "fractal heap header checksum")
+	require.Equal(t, uint16(7), c.u16(heapAddr+5), "link heap IDs are 7 bytes (H5G_DENSE_FHEAP_ID_LEN)")
+
+	require.Equal(t, "BTHD", string(c.d[btreeAddr:btreeAddr+4]))
+	require.Equal(t, byte(5), c.d[btreeAddr+5], "link name index must be a type 5 B-tree")
+	require.Equal(t, uint16(11), c.u16(btreeAddr+10), "type 5 record size")
+	require.Equal(t, c.u32(btreeAddr+34), utils.JenkinsChecksum(c.d[btreeAddr:btreeAddr+34]), "B-tree v2 header checksum")
+	c.inside("B-tree v2 leaf", c.u64(btreeAddr+16), uint64(c.u32(btreeAddr+6)))
+
+	r := bytes.NewReader(c.d)
+	fh, err := structures.OpenFractalHeap(r, heapAddr, 8, 8, binary.LittleEndian)
+	require.NoError(t, err, "open link heap")
+	ids, err := structures.ReadBTreeV2LinkNameHeapIDs(r, btreeAddr, layoutSuperblock)
+	require.NoError(t, err, "read link name index")
+	require.Equal(t, fh.Header.ManagedObjCount, uint64(len(ids)), "every heap object is indexed")
+	for _, id := range ids {
+		obj, err := fh.ReadObjectSpecCompliant(id)
+		require.NoError(t, err, "read link heap object")
+		c.checkLink(obj)
 	}
 }
 
