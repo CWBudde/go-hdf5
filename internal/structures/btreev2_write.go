@@ -119,6 +119,10 @@ type BTreeV2LeafNode struct {
 type LinkNameRecord struct {
 	NameHash uint32  // Jenkins hash of link name
 	HeapID   [7]byte // Fractal heap ID (7 bytes, not 8)
+	// HeapIDLast is the 8th heap ID byte of attribute name index (type 8)
+	// records, whose heap IDs have 8 bytes (the length of a 64 KiB object
+	// reaches it).
+	HeapIDLast byte
 
 	// CreationOrder is the key of type 6 (creation order index) records
 	// (H5G_dense_bt2_corder_rec_t), and the attribute's creation order in
@@ -247,8 +251,8 @@ func encodeRecord(buf []byte, t uint8, r LinkNameRecord) []byte {
 	}
 	if t == BTreeV2TypeAttrNameIndex {
 		buf = append(buf, r.HeapID[:]...)
-		// 8th heap ID byte (IDs use at most 7), then message flags (not shared).
-		buf = append(buf, 0, 0)
+		// 8th heap ID byte, then message flags (not shared).
+		buf = append(buf, r.HeapIDLast, 0)
 		buf = binary.LittleEndian.AppendUint32(buf, uint32(r.CreationOrder)) //nolint:gosec // G115: attribute creation indexes are 16-bit
 		buf = binary.LittleEndian.AppendUint32(buf, r.NameHash)
 		return buf
@@ -267,6 +271,7 @@ func decodeRecord(b []byte, t uint8) LinkNameRecord {
 	}
 	if t == BTreeV2TypeAttrNameIndex {
 		copy(r.HeapID[:], b[0:7])
+		r.HeapIDLast = b[7]
 		r.CreationOrder = uint64(binary.LittleEndian.Uint32(b[9:13]))
 		r.NameHash = binary.LittleEndian.Uint32(b[13:17])
 		return r
@@ -317,6 +322,9 @@ func (bt *WritableBTreeV2) insertNameRecord(linkName string, heapID, creationOrd
 		NameHash:      hash,
 		HeapID:        heapIDBytes,
 		CreationOrder: creationOrder,
+	}
+	if bt.header.Type == BTreeV2TypeAttrNameIndex {
+		record.HeapIDLast = temp[7]
 	}
 	if err := bt.growForInsert(); err != nil {
 		return err
@@ -422,7 +430,7 @@ func (bt *WritableBTreeV2) SearchRecord(name string) ([]byte, bool) {
 	// Convert 7-byte heap ID to 8-byte format
 	heapID := make([]byte, 8)
 	copy(heapID, bt.records[i].HeapID[:])
-	// Last byte is 0 (7-byte format pads to 8 bytes)
+	heapID[7] = bt.records[i].HeapIDLast // 0 except in attribute name indexes
 	return heapID, true
 }
 
@@ -457,6 +465,9 @@ func (bt *WritableBTreeV2) UpdateRecord(name string, newHeapID uint64) error {
 
 	// Update record
 	bt.records[i].HeapID = heapIDBytes
+	if bt.header.Type == BTreeV2TypeAttrNameIndex {
+		bt.records[i].HeapIDLast = temp[7]
+	}
 	bt.leaf.Records = bt.records
 	return nil
 }
