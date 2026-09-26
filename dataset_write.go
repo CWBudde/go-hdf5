@@ -575,6 +575,10 @@ type FileWriter struct {
 	// REFERENCE_LIST attributes on Close.
 	dimScales *dimensionScaleState
 
+	// findDimensionHeap is set by OpenForWrite: the global heap collection
+	// holding the DIMENSION_LIST references is looked up on Close.
+	findDimensionHeap bool
+
 	// Rebalancing configurations (Phase 3)
 	// These are set via functional options: WithLazyRebalancing(), WithIncrementalRebalancing(), WithSmartRebalancing()
 	lazyRebalancingConfig        *structures.LazyRebalancingConfig
@@ -2378,6 +2382,8 @@ func OpenForWrite(filename string, mode OpenMode, opts ...WriteOption) (*FileWri
 		rootHeapAddr:   rootHeapAddr,
 		rootStNodeAddr: rootStNodeAddr,
 		readOnly:       mode != OpenReadWrite,
+
+		findDimensionHeap: true,
 	}
 
 	return fileWriter, nil

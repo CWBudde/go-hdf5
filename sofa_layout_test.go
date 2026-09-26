@@ -2,6 +2,7 @@ package hdf5
 
 import (
 	"encoding/binary"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -109,6 +110,71 @@ func TestDimensionListHeapReservedForReferences(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = f.Close() }()
 	assertDimensionListHeapBelow64KiB(t, f)
+}
+
+// TestDimensionListHeapKeptByOpenForWrite checks that DIMENSION_LIST
+// attributes rewritten in an OpenForWrite session keep their references in
+// the collection below 64 KiB instead of a new one at the end of the file:
+// the collection the existing references are in, or the empty one reserved
+// at creation.
+func TestDimensionListHeapKeptByOpenForWrite(t *testing.T) {
+	for _, attached := range []bool{true, false} {
+		t.Run(fmt.Sprintf("attached=%v", attached), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "rmw.h5")
+			fw, err := CreateForWrite(path, CreateTruncate)
+			require.NoError(t, err)
+			x, err := fw.CreateDataset("/x", Float64, []uint64{4})
+			require.NoError(t, err)
+			require.NoError(t, x.Write(seqFloat64(4)))
+			require.NoError(t, x.SetDimensionScale("x"))
+			v, err := fw.CreateDataset("/v", Float64, []uint64{4})
+			require.NoError(t, err)
+			require.NoError(t, v.Write(seqFloat64(4)))
+			if attached {
+				require.NoError(t, v.AttachDimensionScale(0, x))
+			}
+			// 160 KiB of data: what the session allocates lies beyond 64 KiB.
+			big, err := fw.CreateDataset("/big", Float64, []uint64{20000})
+			require.NoError(t, err)
+			require.NoError(t, big.Write(make([]float64, 20000)))
+			require.NoError(t, fw.Close())
+
+			fw, err = OpenForWrite(path, OpenReadWrite)
+			require.NoError(t, err)
+			x, err = fw.OpenDataset("/x")
+			require.NoError(t, err)
+			v, err = fw.OpenDataset("/v")
+			require.NoError(t, err)
+			w, err := fw.CreateDataset("/w", Float64, []uint64{4})
+			require.NoError(t, err)
+			require.NoError(t, w.Write(seqFloat64(4)))
+			require.NoError(t, w.AttachDimensionScale(0, x))
+			require.NoError(t, v.AttachDimensionScale(0, x))
+			require.NoError(t, fw.Close())
+
+			f, err := Open(path)
+			require.NoError(t, err)
+			defer func() { _ = f.Close() }()
+			assertDimensionListHeapBelow64KiB(t, f)
+			var xAddr uint64
+			lists := map[string]interface{}{}
+			f.Walk(func(p string, obj Object) {
+				d, ok := obj.(*Dataset)
+				if !ok {
+					return
+				}
+				if p == "/x" {
+					xAddr = d.Address()
+				}
+				if p == "/v" || p == "/w" {
+					lists[p], err = d.ReadAttribute(dimensionListAttr)
+					require.NoError(t, err, p)
+				}
+			})
+			want := [][]ObjectRef{{ObjectRef(xAddr)}}
+			assert.Equal(t, map[string]interface{}{"/v": want, "/w": want}, lists)
+		})
+	}
 }
 
 // assertDimensionListHeapBelow64KiB checks that the DIMENSION_LIST

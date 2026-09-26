@@ -3,6 +3,7 @@ package hdf5
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
 )
@@ -117,6 +118,32 @@ func (ghw *globalHeapWriter) WriteDimensionReferences(data []byte) (HeapID, erro
 		return ghw.WriteToGlobalHeap(data)
 	}
 	return HeapID{CollectionAddress: heap.address, ObjectIndex: heap.addObject(data)}, nil
+}
+
+// collectionBuilderFrom rebuilds a collection read from the file, so that
+// objects can be added to it and it can be rewritten in place. It returns
+// nil if the objects do not fit the collection as this writer encodes it.
+func collectionBuilderFrom(c *core.GlobalHeapCollection) *globalHeapCollectionBuilder {
+	heap := &globalHeapCollectionBuilder{
+		address:   c.Address,
+		size:      c.Size,
+		nextIndex: 1,
+		usedSpace: 16, // collection header
+	}
+	for _, o := range c.Objects {
+		if o.Index <= 0 || o.Index >= math.MaxUint16 {
+			return nil
+		}
+		index := uint16(o.Index)
+		heap.objects = append(heap.objects, &globalHeapObjectBuilder{index: index, refCount: o.NRefs, data: o.Data})
+		heap.usedSpace += globalHeapObjectSize(o.Data)
+		heap.nextIndex = max(heap.nextIndex, index+1)
+	}
+	if heap.usedSpace > heap.size {
+		return nil
+	}
+	heap.freeSpace = heap.size - heap.usedSpace
+	return heap
 }
 
 // globalHeapObjectSize is the size of data stored as a heap object: a

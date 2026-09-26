@@ -63,6 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A dataspace message shorter than its version's header (8 bytes in
   version 1, 4 in version 2) is an error instead of an index out of range
   panic (found by fuzzing a go-sofa file; added to the `FuzzOpen` corpus).
+- `DIMENSION_LIST` attributes rewritten in an `OpenForWrite` session keep
+  their references in the global heap collection the existing ones are in
+  (or the one reserved at creation) instead of a new collection at the end
+  of the file, which libmysofa cannot resolve beyond 64 KiB. The objects of
+  the replaced attributes stay in the collection.
 - String datatype messages are 8 bytes as the format specifies; they had
   an extra byte that libmysofa could not skip.
 - Scalar attribute dataspaces are written as the 4-byte version 2 message
