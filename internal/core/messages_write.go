@@ -531,8 +531,10 @@ func EncodeAttributeMessage(name string, datatype *DatatypeMessage, dataspace *D
 
 	var dataspaceBytes []byte
 	if dataspace.Type == DataspaceScalar && len(dataspace.Dimensions) == 0 {
-		// Scalar dataspace: version 1 with rank 0 (H5S_SCALAR).
-		dataspaceBytes = []byte{1, 0, 0, 0, 0, 0, 0, 0}
+		// Scalar dataspace (H5S_SCALAR): version 2, rank 0, no flags,
+		// type 0, as netCDF-C writes it. libmysofa reads dense attributes
+		// only in this 4-byte form.
+		dataspaceBytes = []byte{2, 0, 0, 0}
 	} else {
 		dataspaceBytes, err = EncodeDataspaceMessage(dataspace.Dimensions, dataspace.MaxDims)
 	}
