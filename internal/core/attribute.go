@@ -417,6 +417,11 @@ func (a *Attribute) ReadValue() (interface{}, error) {
 			return nil, fmt.Errorf("variable-length attribute requires file reader (not available)")
 		}
 
+		// Variable-length sequences of object references (DIMENSION_LIST).
+		if base, err := a.Datatype.VarLenBase(); err == nil && !a.Datatype.IsVariableString() && base.IsObjectReference() {
+			return a.readVarLenReferences(base, totalElements)
+		}
+
 		// Check if this is a variable-length string.
 		if !a.Datatype.IsVariableString() {
 			return nil, fmt.Errorf("variable-length non-string types not yet supported in attributes")
@@ -453,6 +458,12 @@ func (a *Attribute) ReadValue() (interface{}, error) {
 			return values[0], nil
 		}
 		return values, nil
+
+	case DatatypeReference:
+		return a.readReferenceValue(totalElements, isScalar)
+
+	case DatatypeCompound:
+		return a.readCompoundValue(totalElements, isScalar)
 	}
 
 	return nil, fmt.Errorf("unsupported datatype class %d or size %d", a.Datatype.Class, a.Datatype.Size)

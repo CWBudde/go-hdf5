@@ -15,8 +15,75 @@ import (
 //
 // Thread-safety: Not thread-safe. Caller must synchronize access.
 type FileWriter struct {
-	file      *os.File   // Underlying OS file
+	file      storage    // Underlying storage (*os.File or in-memory buffer)
+	osFile    *os.File   // Non-nil when file is an *os.File
 	allocator *Allocator // Space allocation tracker
+}
+
+// storage is the random-access backing store of a FileWriter. HDF5 writing
+// patches headers written earlier and reads them back, so both directions
+// need random access.
+type storage interface {
+	io.ReaderAt
+	io.WriterAt
+}
+
+// NewMemoryFileWriter creates a writer whose file is assembled in memory.
+// Retrieve the bytes with Bytes; initialOffset is as for NewFileWriter.
+func NewMemoryFileWriter(initialOffset uint64) *FileWriter {
+	return &FileWriter{
+		file:      &MemoryBuffer{},
+		allocator: NewAllocator(initialOffset),
+	}
+}
+
+func newOSFileWriter(f *os.File, allocatorOffset uint64) *FileWriter {
+	return &FileWriter{
+		file:      f,
+		osFile:    f,
+		allocator: NewAllocator(allocatorOffset),
+	}
+}
+
+// Bytes returns the contents of an in-memory file (see NewMemoryFileWriter),
+// or nil for a writer backed by an OS file or after Close.
+// The returned slice aliases the buffer until the next write.
+func (w *FileWriter) Bytes() []byte {
+	if m, ok := w.file.(*MemoryBuffer); ok {
+		return m.Bytes()
+	}
+	return nil
+}
+
+// Size returns the current size of the underlying file.
+func (w *FileWriter) Size() (int64, error) {
+	switch f := w.file.(type) {
+	case nil:
+		return 0, fmt.Errorf("writer is closed")
+	case *os.File:
+		st, err := f.Stat()
+		if err != nil {
+			return 0, err
+		}
+		return st.Size(), nil
+	case *MemoryBuffer:
+		return int64(len(f.buf)), nil
+	}
+	return 0, fmt.Errorf("size of %T unknown", w.file)
+}
+
+// Truncate changes the size of the underlying file, zero-filling any
+// extension.
+func (w *FileWriter) Truncate(size int64) error {
+	switch f := w.file.(type) {
+	case nil:
+		return fmt.Errorf("writer is closed")
+	case *os.File:
+		return f.Truncate(size)
+	case *MemoryBuffer:
+		return f.Truncate(size)
+	}
+	return fmt.Errorf("cannot truncate %T", w.file)
 }
 
 // CreateMode specifies the file creation/opening behavior.
@@ -76,10 +143,7 @@ func NewFileWriter(filename string, mode CreateMode, initialOffset uint64) (*Fil
 		return nil, fmt.Errorf("failed to create file: %w", err)
 	}
 
-	return &FileWriter{
-		file:      osFile,
-		allocator: NewAllocator(initialOffset),
-	}, nil
+	return newOSFileWriter(osFile, initialOffset), nil
 }
 
 // OpenFileWriter opens an existing HDF5 file for read-modify-write operations.
@@ -148,10 +212,7 @@ func OpenFileWriter(filename string, mode CreateMode, initialOffset uint64) (*Fi
 		allocatorOffset = initialOffset
 	}
 
-	return &FileWriter{
-		file:      osFile,
-		allocator: NewAllocator(allocatorOffset),
-	}, nil
+	return newOSFileWriter(osFile, allocatorOffset), nil
 }
 
 // Allocate reserves a block of space in the file.
@@ -199,7 +260,6 @@ func (w *FileWriter) WriteAt(data []byte, offset int64) (int, error) {
 		return 0, nil // Nothing to write
 	}
 
-	// Use os.File.WriteAt which handles seeking internally
 	n, err := w.file.WriteAt(data, offset)
 	if err != nil {
 		return n, fmt.Errorf("write at address %d failed: %w", offset, err)
@@ -242,7 +302,10 @@ func (w *FileWriter) Flush() error {
 		return fmt.Errorf("writer is closed")
 	}
 
-	return w.file.Sync()
+	if w.osFile != nil {
+		return w.osFile.Sync()
+	}
+	return nil
 }
 
 // Close closes the underlying file.
@@ -253,16 +316,20 @@ func (w *FileWriter) Close() error {
 		return nil // Already closed
 	}
 
-	err := w.file.Close()
+	var err error
+	if w.osFile != nil {
+		err = w.osFile.Close()
+	}
 	w.file = nil
+	w.osFile = nil
 	return err
 }
 
-// File returns the underlying *os.File.
+// File returns the underlying *os.File, or nil for an in-memory writer.
 // Use with caution - direct file operations may break allocation tracking.
 // Primarily for reading operations or advanced use cases.
 func (w *FileWriter) File() *os.File {
-	return w.file
+	return w.osFile
 }
 
 // Reader returns an io.ReaderAt interface for reading from the file.
@@ -321,7 +388,10 @@ func (w *FileWriter) Seek(offset int64, whence int) (int64, error) {
 		return 0, fmt.Errorf("writer is closed")
 	}
 
-	return w.file.Seek(offset, whence)
+	if w.osFile == nil {
+		return 0, fmt.Errorf("seek not supported on in-memory writer")
+	}
+	return w.osFile.Seek(offset, whence)
 }
 
 // Ensure FileWriter implements io.ReaderAt and io.WriterAt.

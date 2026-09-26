@@ -43,6 +43,17 @@ func main() {
 }
 ```
 
+### Opening from Memory or Any io.ReaderAt
+
+```go
+// data holds a complete HDF5 file (embedded asset, HTTP body, ...).
+file, err := hdf5.OpenReader(bytes.NewReader(data), int64(len(data)))
+```
+
+`OpenReader(r io.ReaderAt, size int64)` bounds every read to the first
+`size` bytes of `r`. Data is read on demand, so `r` must stay valid while the
+file is used; `Close` does not close `r`.
+
 ### File Properties
 
 ```go
@@ -274,6 +285,17 @@ if ds, ok := obj.(*hdf5.Dataset); ok {
 }
 ```
 
+For programmatic access use the typed accessors:
+
+```go
+shape, _ := ds.Shape()       // e.g. [100 50]; scalar -> [], null -> nil
+maxShape, _ := ds.MaxShape() // hdf5.Unlimited for unlimited dimensions
+n, _ := ds.NumElements()
+dt, _ := ds.Datatype()       // dt.Class (core.DatatypeFloat, ...), dt.Size
+```
+
+`Info()` returns a human-readable summary.
+
 **Example output**:
 
 ```
@@ -285,6 +307,33 @@ Dataset: temperature
   Compression: gzip (level 6)
   Total size: 40000 bytes
 ```
+
+---
+
+### Dimension Scales and Object References
+
+Dimension scales (H5DS, used by netCDF-4 for named dimensions) can be read
+without decoding `DIMENSION_LIST` / `REFERENCE_LIST` by hand:
+
+```go
+if ds.IsDimensionScale() {
+    name, _ := ds.DimensionScaleName() // NAME attribute ("" if absent)
+    refs, _ := ds.ReferenceList()      // []hdf5.DimensionReference{Dataset, Index}
+    for _, r := range refs {
+        path, _ := file.ObjectPath(r.Dataset) // e.g. "/Data.IR"
+        fmt.Println(name, "labels dimension", r.Index, "of", path)
+    }
+}
+scales, _ := ds.AttachedScales(0) // []*hdf5.Dataset attached to dimension 0
+lists, _ := ds.DimensionList()    // raw [][]hdf5.ObjectRef per dimension
+```
+
+Object references resolve with `file.Dereference(ref)` (returns the
+`*Dataset`, `*Group` or `*NamedDatatype`) or `file.ObjectPath(ref)`.
+`ReadAttribute` returns `hdf5.ObjectRef` / `[]hdf5.ObjectRef` for reference
+attributes, `[][]hdf5.ObjectRef` for variable-length reference lists and
+`core.CompoundValue` / `[]core.CompoundValue` for compound attributes;
+reference members of compound values are `hdf5.ObjectRef`.
 
 ---
 

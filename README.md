@@ -76,6 +76,28 @@ func main() {
 📁 /experiments/ (3 children)
 ```
 
+### In-Memory Files, Shapes and Dimension Scales
+
+```go
+// Read from any io.ReaderAt (e.g. bytes in memory).
+file, err := hdf5.OpenReader(bytes.NewReader(data), int64(len(data)))
+
+// Dataspace and datatype without reading data.
+shape, _ := ds.Shape()            // []uint64; scalar -> []
+scales, _ := ds.AttachedScales(0) // dimension scales on axis 0
+name, _ := scales[0].DimensionScaleName()
+
+// Write to any io.Writer: the file is assembled in memory and
+// written to w when the FileWriter is closed.
+var buf bytes.Buffer
+fw, err := hdf5.CreateForWriteTo(&buf)
+// ... fw.CreateDataset(...) ...
+err = fw.Close()
+```
+
+See [Reading Data](docs/guides/READING_DATA.md) for the full dimension scale
+and object reference API.
+
 [More examples →](examples/)
 
 ---
