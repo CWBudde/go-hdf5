@@ -957,7 +957,15 @@ func EncodeAttributeFromStruct(attr *Attribute, sb *Superblock) ([]byte, error) 
 	// It handles all the encoding logic according to HDF5 spec
 	_ = sb // Currently unused, encoding is always little-endian
 
-	return EncodeAttributeMessage(attr.Name, attr.Datatype, attr.Dataspace, attr.Data)
+	// A scalar dataspace parsed from a file (Version set) reads as one
+	// element; re-encode it as scalar, not as a 1-element array, so moving
+	// attributes (e.g. compact to dense storage) keeps their dataspace.
+	dataspace := attr.Dataspace
+	if dataspace.Type == DataspaceScalar && dataspace.Version != 0 && len(dataspace.Dimensions) > 0 {
+		dataspace = &DataspaceMessage{Type: DataspaceScalar}
+	}
+
+	return EncodeAttributeMessage(attr.Name, attr.Datatype, dataspace, attr.Data)
 }
 
 // ParseAttributeInfoMessage parses an Attribute Info Message (0x000F).

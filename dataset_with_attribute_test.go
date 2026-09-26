@@ -99,7 +99,8 @@ func TestCreateDataset_WithAttribute_RoundTrip(t *testing.T) {
 // TestCreateDataset_WithAttribute_Dense creates contiguous and chunked
 // datasets with more than MaxCompactDatasetAttributes attributes (dense
 // storage), attaches a dimension scale afterwards (DIMENSION_LIST joins the
-// dense storage) and reads everything back, with h5py too when available.
+// dense storage) and reads everything back, with h5py too when available
+// (string attributes must stay scalar when moved to dense storage).
 func TestCreateDataset_WithAttribute_Dense(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dense.h5")
 	fw, err := CreateForWrite(path, CreateTruncate)
@@ -167,6 +168,10 @@ with h5py.File(sys.argv[1], "r") as f:
         attrs = sorted(k for k in d.attrs if k.startswith("attr_"))
         assert len(attrs) == int(sys.argv[2]), (name, attrs)
         assert d.attrs["attr_1"] == 1, d.attrs["attr_1"]
+        # String attributes stay scalar when moved to dense storage.
+        shapes = {k: d.attrs.get_id(k).shape for k in attrs if d.attrs.get_id(k).dtype.kind == "S"}
+        assert len(shapes) == 4, shapes
+        assert all(s == () for s in shapes.values()), (name, shapes)
         assert d.dims[0][0].name == "/x", d.dims[0].keys()
         assert list(d[:]) == [4, 5, 6]
 print("ok")

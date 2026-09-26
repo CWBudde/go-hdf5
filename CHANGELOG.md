@@ -73,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - v2 B-trees of any depth (link names, group and dataset attributes) are
   read, with signature, checksum, record-count and cycle checks; before,
   only depth-0 trees were supported.
+- Attributes moved from compact to dense storage (the ninth attribute of a
+  dataset or group) kept their values but turned scalar dataspaces into
+  one-element arrays, so netCDF-C read former text attributes as
+  NC_STRING. Re-encoding a parsed attribute now keeps a scalar dataspace.
 - A Go `string` attribute is written as a scalar fixed-length string, which
   netCDF-C reads as text (NC_CHAR) instead of an NC_STRING array. The old
   one-element form still reads.
