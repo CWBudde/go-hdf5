@@ -299,11 +299,11 @@ func compatScenarios() []writeScenario {
 	}
 }
 
-// writeMinimalSOFA writes a SimpleFreeFieldHRIR-shaped file the way netCDF-C
-// lays out SOFA files: global attributes, one dimension scale per SOFA
-// dimension (M=2, R=2, E=1, N=4, C=3, I=1) named like netCDF's phony
-// dimensions, and float64 variables. With 15 datasets the root group uses
-// dense link storage.
+// writeMinimalSOFA writes a small valid SimpleFreeFieldHRIR file the way
+// netCDF-C lays out SOFA files: global attributes, one dimension scale per
+// SOFA dimension (M=2, R=2, E=1, N=4, C=3, I=1) named like netCDF's phony
+// dimensions, and float64 variables with their Type/Units attributes. With
+// 15 datasets the root group uses dense link storage.
 func writeMinimalSOFA(t *testing.T, path string) {
 	t.Helper()
 	fw, err := CreateForWrite(path, CreateTruncate,
@@ -327,7 +327,7 @@ func writeMinimalSOFA(t *testing.T, path string) {
 		scales[name] = ds
 	}
 
-	variable := func(name string, dimNames string, values []float64) {
+	variable := func(name string, dimNames string, values []float64, attrs ...string) {
 		shape := make([]uint64, len(dimNames))
 		for i, d := range dimNames {
 			shape[i] = dims[string(d)]
@@ -338,18 +338,23 @@ func writeMinimalSOFA(t *testing.T, path string) {
 		for i, d := range dimNames {
 			require.NoError(t, ds.AttachDimensionScale(i, scales[string(d)]))
 		}
+		for i := 0; i+1 < len(attrs); i += 2 {
+			require.NoError(t, ds.WriteAttribute(attrs[i], attrs[i+1]))
+		}
 	}
-	variable("ListenerPosition", "IC", []float64{0, 0, 0})
-	variable("ListenerUp", "IC", []float64{0, 0, 1})
-	variable("ListenerView", "IC", []float64{1, 0, 0})
-	variable("ReceiverPosition", "RCI", []float64{0, 0.09, 0, 0, -0.09, 0})
-	variable("SourcePosition", "MC", []float64{0, 0, 1.2, 90, 0, 1.2})
-	variable("EmitterPosition", "ECI", []float64{0, 0, 0})
+	cartesian := []string{"Type", "cartesian", "Units", "metre"} //nolint:misspell // SOFA unit names
+	variable("ListenerPosition", "IC", []float64{0, 0, 0}, cartesian...)
+	variable("ListenerUp", "IC", []float64{0, 0, 1}, cartesian...)
+	variable("ListenerView", "IC", []float64{1, 0, 0}, cartesian...)
+	variable("ReceiverPosition", "RCI", []float64{0, 0.09, 0, 0, -0.09, 0}, cartesian...)
+	variable("SourcePosition", "MC", []float64{0, 0, 1.2, 90, 0, 1.2},
+		"Type", "spherical", "Units", "degree, degree, metre") //nolint:misspell // SOFA unit names
+	variable("EmitterPosition", "ECI", []float64{0, 0, 0}, cartesian...)
 	variable("Data.IR", "MRN", []float64{
 		1, 0, 0, 0, 0.5, 0, 0, 0,
 		0, 1, 0, 0, 0, 0.5, 0, 0,
 	})
-	variable("Data.SamplingRate", "I", []float64{48000})
+	variable("Data.SamplingRate", "I", []float64{48000}, "Units", "hertz")
 	variable("Data.Delay", "IR", []float64{0, 0})
 	require.NoError(t, fw.Close())
 }
