@@ -107,6 +107,10 @@ func (ghw *globalHeapWriter) reserveDimensionHeap() error {
 // WriteDimensionReferences writes one DIMENSION_LIST sequence of object
 // references to the reserved collection. Without one, or when it is full,
 // the data goes to the collections used for other variable-length data.
+// The reserved 4 KiB hold about 170 single-reference sequences, one per
+// dimension of every dataset with attached scales; a SOFA file needs about
+// 30. Beyond that libmysofa cannot read the file anyway, as it looks up all
+// references in one collection, but other readers can.
 func (ghw *globalHeapWriter) WriteDimensionReferences(data []byte) (HeapID, error) {
 	heap := ghw.dimensionHeap
 	if heap == nil || !heap.hasSpace(globalHeapObjectSize(data)) {

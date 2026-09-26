@@ -16,8 +16,8 @@ import (
 // Attribute storage threshold.
 const (
 	// MaxCompactAttributes is the threshold for transitioning to dense storage.
-	// When a group has 8+ attributes, dense storage (Fractal Heap + B-tree)
-	// is more efficient than compact storage (object header messages).
+	// A group keeps up to 8 attributes compact (object header messages);
+	// adding the 9th moves them to dense storage (Fractal Heap + B-tree).
 	// Datasets keep all their attributes compact (see WriteAttribute).
 	MaxCompactAttributes = 8
 

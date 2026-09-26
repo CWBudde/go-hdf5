@@ -264,7 +264,9 @@ Root attributes support all standard HDF5 datatypes:
 The library automatically selects the storage:
 
 - **Datasets**: Compact storage (inline in the object header), whatever the
-  number of attributes, as netCDF variables need it for libmysofa
+  number of attributes, as netCDF variables need it for libmysofa. Datasets
+  that already use dense storage (e.g. opened with `OpenForWrite`) keep
+  using it; their attributes are not moved back into the header
 - **Groups**: Compact storage up to 8 attributes, dense storage (Fractal
   Heap + B-tree index) above
 
