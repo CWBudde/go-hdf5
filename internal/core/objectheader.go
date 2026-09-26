@@ -37,10 +37,25 @@ type ObjectHeader struct {
 
 // HeaderMessage represents a single message within an object header.
 type HeaderMessage struct {
-	Type   MessageType
+	Type MessageType
+	// Flags are the message flags (constant, shared, ...), kept when the
+	// header is rewritten.
+	Flags uint8
+	// CrtIdx is the creation index of the message, stored in version 2
+	// headers that track attribute creation order: libhdf5 lists attributes
+	// in this order.
+	CrtIdx uint16
 	Offset uint64
 	Data   []byte
 }
+
+// Object header version 2 flags for attribute creation order
+// (H5O_HDR_ATTR_CRT_ORDER_TRACKED, H5O_HDR_ATTR_CRT_ORDER_INDEXED). A header
+// that tracks it stores a 2-byte creation index in every message header.
+const (
+	ObjectHeaderAttrCreationOrderTracked uint8 = 0x04
+	ObjectHeaderAttrCreationOrderIndexed uint8 = 0x08
+)
 
 // MessageType identifies the type of message in an object header.
 type MessageType uint16
@@ -281,8 +296,7 @@ func parseV2Header(r io.ReaderAt, headerAddr uint64, flags uint8, sb *Superblock
 			msgSize = binary.LittleEndian.Uint16(headerBuf[1:3])
 		}
 		msgFlags := headerBuf[3]
-		_ = msgFlags // Unused for now
-		// Creation index at headerBuf[4:6] if tracked - not currently used
+		crtIdx := decodeCrtIdx(headerBuf, msgHeaderSize, isBE)
 		utils.ReleaseBuffer(headerBuf)
 
 		if msgSize == 0 {
@@ -303,6 +317,8 @@ func parseV2Header(r io.ReaderAt, headerAddr uint64, flags uint8, sb *Superblock
 
 		messages = append(messages, &HeaderMessage{
 			Type:   msgType,
+			Flags:  msgFlags,
+			CrtIdx: crtIdx,
 			Offset: current,
 			Data:   data,
 		})
@@ -380,6 +396,8 @@ func parseV2ContinuationBlock(r io.ReaderAt, blockAddr, blockSize, msgHeaderSize
 		} else {
 			msgSize = binary.LittleEndian.Uint16(headerBuf[1:3])
 		}
+		msgFlags := headerBuf[3]
+		crtIdx := decodeCrtIdx(headerBuf, msgHeaderSize, isBE)
 		utils.ReleaseBuffer(headerBuf)
 
 		if msgSize == 0 {
@@ -396,6 +414,8 @@ func parseV2ContinuationBlock(r io.ReaderAt, blockAddr, blockSize, msgHeaderSize
 
 		messages = append(messages, &HeaderMessage{
 			Type:   msgType,
+			Flags:  msgFlags,
+			CrtIdx: crtIdx,
 			Offset: current,
 			Data:   data,
 		})
@@ -403,6 +423,18 @@ func parseV2ContinuationBlock(r io.ReaderAt, blockAddr, blockSize, msgHeaderSize
 	}
 
 	return messages, nil
+}
+
+// decodeCrtIdx returns the creation index of a 6-byte v2 message header
+// (0 for 4-byte headers).
+func decodeCrtIdx(header []byte, msgHeaderSize uint64, isBE bool) uint16 {
+	if msgHeaderSize < 6 {
+		return 0
+	}
+	if isBE {
+		return binary.BigEndian.Uint16(header[4:6])
+	}
+	return binary.LittleEndian.Uint16(header[4:6])
 }
 
 // IncrementReferenceCount increments the reference count for this object header.

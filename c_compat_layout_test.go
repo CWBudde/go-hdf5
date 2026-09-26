@@ -872,6 +872,11 @@ func (c *layoutChecker) checkDenseAttributes(ai []byte) {
 	}
 	heapAddr := binary.LittleEndian.Uint64(ai[pos:])
 	btreeAddr := binary.LittleEndian.Uint64(ai[pos+8:])
+	if heapAddr == ^uint64(0) {
+		// No dense storage: the message only tracks creation order.
+		require.Equal(t, ^uint64(0), btreeAddr, "name index without fractal heap")
+		return
+	}
 
 	require.Equal(t, "FRHP", string(c.d[heapAddr:heapAddr+4]))
 	hdrLen := uint64(22 + 12*8 + 3*8)

@@ -307,6 +307,9 @@ func (dgw *DenseGroupWriter) createObjectHeader(fw *FileWriter, allocator *Alloc
 			{Type: core.MsgDataspace, Data: dataspaceMsg},
 		},
 	}
+	if err := ohw.TrackAttributeCreationOrder(sb); err != nil {
+		return 0, err
+	}
 
 	// Calculate object header size (prefix + messages + checksum)
 	headerSize := ohw.Size()

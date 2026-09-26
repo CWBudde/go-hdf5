@@ -256,6 +256,9 @@ func (fw *FileWriter) CreateGroup(path string) (*GroupWriter, error) {
 			{Type: core.MsgSymbolTable, Data: stMsg},
 		},
 	}
+	if err := ohw.TrackAttributeCreationOrder(fw.file.sb); err != nil {
+		return nil, err
+	}
 
 	// Calculate object header size (prefix + messages + checksum)
 	headerSize := ohw.Size()

@@ -23,9 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `OpenForWrite` adds links to new-style roots written by the HDF5 C
   library (e.g. h5py with `libver="latest"`): dense link storage the writer
   cannot extend in place (indirect fractal heap blocks, multi-level
-  B-trees, a heap free-space manager) is rewritten with the new link. Roots
-  that also track attribute creation order (netCDF-C, h5py
-  `track_order=True`) cannot be modified yet.
+  B-trees, a heap free-space manager) is rewritten with the new link.
+- Groups and datasets track attribute creation order (not indexed), as
+  netCDF-C does: `ncdump` and h5py list attributes in the order they were
+  written (`Conventions` first in a SOFA file) instead of by name. Their
+  object headers carry an Attribute Info message and 6-byte message
+  headers with the creation index, so they grow by a few bytes.
+- `OpenForWrite` can modify objects that track attribute creation order,
+  such as netCDF-C files and h5py files with `track_order=True`: it adds
+  links, datasets and attributes to them, with the next creation index.
+  Adding to, changing or deleting from dense attribute storage that also
+  indexes the creation order returns `ErrCreationOrderIndexNotSupported`,
+  as does an attribute that would move such an object to dense storage;
+  the index (v2 B-tree type 9) cannot be written yet.
 - Links added to a group that indexes link creation order are added to its
   creation order index (v2 B-tree type 6), which the compact → dense
   conversion now creates.
@@ -57,6 +67,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Object header rewrites keep message flags (e.g. constant, shared); they
+  were reset to 0.
+- Attribute name index records keep the creation order when dense
+  attribute storage written by libhdf5 is rewritten; it was reset to 0.
+- Deleting a compact attribute of an object whose Attribute Info message
+  points to no dense storage (as libhdf5 writes with `libver="latest"`)
+  took the dense path and failed.
 - A dataset attribute whose message exceeds the 64 KiB header message
   limit is an error at `CreateDataset`. It used to produce an object
   header with a wrapped-around message size, and the dataset disappeared.

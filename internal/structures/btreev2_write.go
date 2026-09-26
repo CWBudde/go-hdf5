@@ -121,7 +121,8 @@ type LinkNameRecord struct {
 	HeapID   [7]byte // Fractal heap ID (7 bytes, not 8)
 
 	// CreationOrder is the key of type 6 (creation order index) records
-	// (H5G_dense_bt2_corder_rec_t).
+	// (H5G_dense_bt2_corder_rec_t), and the attribute's creation order in
+	// type 8 (attribute name index) records.
 	CreationOrder uint64
 }
 
@@ -248,7 +249,7 @@ func encodeRecord(buf []byte, t uint8, r LinkNameRecord) []byte {
 		buf = append(buf, r.HeapID[:]...)
 		// 8th heap ID byte (IDs use at most 7), then message flags (not shared).
 		buf = append(buf, 0, 0)
-		buf = binary.LittleEndian.AppendUint32(buf, 0) // creation order (not tracked)
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(r.CreationOrder)) //nolint:gosec // G115: attribute creation indexes are 16-bit
 		buf = binary.LittleEndian.AppendUint32(buf, r.NameHash)
 		return buf
 	}
@@ -266,6 +267,7 @@ func decodeRecord(b []byte, t uint8) LinkNameRecord {
 	}
 	if t == BTreeV2TypeAttrNameIndex {
 		copy(r.HeapID[:], b[0:7])
+		r.CreationOrder = uint64(binary.LittleEndian.Uint32(b[9:13]))
 		r.NameHash = binary.LittleEndian.Uint32(b[13:17])
 		return r
 	}
@@ -285,6 +287,22 @@ func decodeRecord(b []byte, t uint8) LinkNameRecord {
 // Returns:
 //   - error if node is full or insertion fails
 func (bt *WritableBTreeV2) InsertRecord(linkName string, heapID uint64) error {
+	return bt.insertNameRecord(linkName, heapID, 0)
+}
+
+// InsertAttributeRecord adds a record to an attribute name index (type 8)
+// with the attribute's creation order, which libhdf5 reads when the object
+// tracks attribute creation order.
+func (bt *WritableBTreeV2) InsertAttributeRecord(name string, heapID uint64, creationOrder uint16) error {
+	if bt.header.Type != BTreeV2TypeAttrNameIndex {
+		return fmt.Errorf("%w: expected type %d, got %d",
+			ErrInvalidBTreeType, BTreeV2TypeAttrNameIndex, bt.header.Type)
+	}
+	return bt.insertNameRecord(name, heapID, uint64(creationOrder))
+}
+
+// insertNameRecord adds a record sorted by the hash of name.
+func (bt *WritableBTreeV2) insertNameRecord(linkName string, heapID, creationOrder uint64) error {
 	// Calculate Jenkins hash for link name
 	hash := jenkinsHash(linkName)
 
@@ -296,8 +314,9 @@ func (bt *WritableBTreeV2) InsertRecord(linkName string, heapID uint64) error {
 	copy(heapIDBytes[:], temp[:7])
 
 	record := LinkNameRecord{
-		NameHash: hash,
-		HeapID:   heapIDBytes,
+		NameHash:      hash,
+		HeapID:        heapIDBytes,
+		CreationOrder: creationOrder,
 	}
 	if err := bt.growForInsert(); err != nil {
 		return err

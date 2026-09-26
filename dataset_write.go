@@ -1065,6 +1065,9 @@ func (fw *FileWriter) createDataset(name string, dtype Datatype, dims []uint64, 
 		return nil, fmt.Errorf("dataset %q: %w", name, err)
 	}
 	ohw.Messages = append(ohw.Messages, attrMsgs...)
+	if err := ohw.TrackAttributeCreationOrder(fw.file.sb); err != nil {
+		return nil, fmt.Errorf("dataset %q: %w", name, err)
+	}
 	if err := reserveDimensionListSpace(ohw, len(dims)); err != nil {
 		return nil, err
 	}
@@ -1238,6 +1241,9 @@ func (fw *FileWriter) CreateCompoundDataset(name string, compoundType *core.Data
 			{Type: core.MsgDataspace, Data: dataspaceData},
 			{Type: core.MsgDataLayout, Data: layoutData},
 		},
+	}
+	if err := ohw.TrackAttributeCreationOrder(fw.file.sb); err != nil {
+		return nil, err
 	}
 	if err := reserveDimensionListSpace(ohw, len(dims)); err != nil {
 		return nil, err
@@ -3000,8 +3006,10 @@ func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes []namedAtt
 
 // rootLinkSlack is the free space (a NIL message) reserved in the first chunk
 // of a new-style root object header, so that the compact Link messages of up
-// to 8 links with short names fit without a continuation chunk.
-const rootLinkSlack = 8 * 32
+// to 8 links with short names fit without a continuation chunk (up to 34
+// bytes each with the 6-byte message header of a header that tracks
+// attribute creation order).
+const rootLinkSlack = 8 * 34
 
 // createRootGroupStructureV0 creates root group for legacy format (v0).
 //
@@ -3099,10 +3107,11 @@ func writeBTreeNodeAt(fw *writer.FileWriter, addr, stNodeAddr uint64, offsetSize
 // buildRootAttributeMessages encodes root group attributes as object header
 // messages: inline Attribute messages for up to MaxCompactAttributes
 // attributes, otherwise dense storage (fractal heap + B-tree v2, written now)
-// referenced by an Attribute Info message.
-func buildRootAttributeMessages(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes []namedAttribute) ([]core.MessageWriter, error) {
+// referenced by an Attribute Info message. With trackOrder the dense storage
+// records the attributes' creation order.
+func buildRootAttributeMessages(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes []namedAttribute, trackOrder bool) ([]core.MessageWriter, error) {
 	if len(rootAttributes) > MaxCompactAttributes {
-		return buildDenseRootAttributes(fw, offsetSize, lengthSize, rootAttributes)
+		return buildDenseRootAttributes(fw, offsetSize, lengthSize, rootAttributes, trackOrder)
 	}
 
 	messages := make([]core.MessageWriter, 0, len(rootAttributes))
@@ -3136,8 +3145,11 @@ func newRootAttribute(name string, value interface{}) (*core.Attribute, error) {
 
 // buildDenseRootAttributes writes the attributes to dense storage and returns
 // the Attribute Info message referencing it.
-func buildDenseRootAttributes(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes []namedAttribute) ([]core.MessageWriter, error) {
+func buildDenseRootAttributes(fw *writer.FileWriter, offsetSize, lengthSize int, rootAttributes []namedAttribute, trackOrder bool) ([]core.MessageWriter, error) {
 	denseWriter := writer.NewDenseAttributeWriter(0)
+	if trackOrder {
+		denseWriter.TrackCreationOrder(0)
+	}
 
 	// Superblock for encoding (dense attribute writer only needs sizes/endianness)
 	sb := &core.Superblock{
@@ -3178,7 +3190,9 @@ func buildDenseRootAttributes(fw *writer.FileWriter, offsetSize, lengthSize int,
 func writeRootGroupHeader(fw *writer.FileWriter, groupMessages []core.MessageWriter, slack, offsetSize, lengthSize int, objectHeaderVersion uint8, rootAttributes []namedAttribute) (uint64, uint64, error) {
 	messages := append([]core.MessageWriter{}, groupMessages...)
 
-	attrMsgs, err := buildRootAttributeMessages(fw, offsetSize, lengthSize, rootAttributes)
+	// Version 2 headers track attribute creation order, like netCDF-C.
+	trackOrder := objectHeaderVersion == 2
+	attrMsgs, err := buildRootAttributeMessages(fw, offsetSize, lengthSize, rootAttributes, trackOrder)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -3192,6 +3206,16 @@ func writeRootGroupHeader(fw *writer.FileWriter, groupMessages []core.MessageWri
 		Flags:    0,
 		Messages: messages,
 		RefCount: 1, // Always 1 for new files (used by v1, ignored by v2)
+	}
+	if trackOrder {
+		sb := &core.Superblock{
+			OffsetSize: uint8(offsetSize), //nolint:gosec // G115: 8
+			LengthSize: uint8(lengthSize), //nolint:gosec // G115: 8
+			Endianness: binary.LittleEndian,
+		}
+		if err := rootGroupHeader.TrackAttributeCreationOrder(sb); err != nil {
+			return 0, 0, fmt.Errorf("root group: %w", err)
+		}
 	}
 
 	rootGroupSize := rootGroupHeader.Size()

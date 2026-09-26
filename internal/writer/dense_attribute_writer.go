@@ -33,6 +33,10 @@ type DenseAttributeWriter struct {
 
 	// Track attributes for duplicate detection
 	attributes map[string]*core.Attribute // name → attribute
+
+	// nextCrtIdx is the creation index of the next attribute when the
+	// storage tracks creation order (see TrackCreationOrder).
+	nextCrtIdx uint32
 }
 
 // NewDenseAttributeWriter creates new dense attribute writer.
@@ -49,13 +53,23 @@ func NewDenseAttributeWriter(objectAddr uint64) *DenseAttributeWriter {
 		btree:       structures.NewWritableAttrBTreeV2(0),                                      // libhdf5 node size (512), grows as needed
 		attrInfo: &core.AttributeInfoMessage{
 			Version: 0,
-			Flags:   0, // No creation order tracking for MVP
+			Flags:   0, // see TrackCreationOrder
 		},
 		attributes: make(map[string]*core.Attribute),
 	}
 }
 
-// AddAttribute adds an attribute to dense storage.
+// TrackCreationOrder makes the storage track attribute creation order
+// (not indexed): the name index records carry each attribute's creation
+// order and the Attribute Info message the next one, starting at next.
+// Call it before adding attributes.
+func (daw *DenseAttributeWriter) TrackCreationOrder(next uint16) {
+	daw.attrInfo.Flags |= core.AttributeInfoTrackCreationOrder
+	daw.nextCrtIdx = uint32(next)
+}
+
+// AddAttribute adds an attribute to dense storage, with the next creation
+// order if the storage tracks it.
 //
 // Process:
 // 1. Encode attribute (name + type + space + data)
@@ -71,6 +85,19 @@ func NewDenseAttributeWriter(objectAddr uint64) *DenseAttributeWriter {
 //
 // Reference: H5Adense.c - H5A__dense_insert().
 func (daw *DenseAttributeWriter) AddAttribute(attr *core.Attribute, sb *core.Superblock) error {
+	return daw.AddAttributeWithCreationOrder(attr, sb, uint16(min(daw.nextCrtIdx, 0xFFFF)))
+}
+
+// AddAttributeWithCreationOrder adds an attribute with the given creation
+// order (e.g. that of a compact attribute moved to dense storage). It is
+// recorded only if the storage tracks creation order, and must then be
+// below 0xFFFF: the next index is stored in 2 bytes and must not wrap to 0
+// (libhdf5's H5O_MAX_CRT_ORDER_IDX).
+func (daw *DenseAttributeWriter) AddAttributeWithCreationOrder(attr *core.Attribute, sb *core.Superblock, order uint16) error {
+	tracked := daw.attrInfo.Flags&core.AttributeInfoTrackCreationOrder != 0
+	if tracked && order == 0xFFFF {
+		return fmt.Errorf("maximum attribute creation index reached")
+	}
 	if attr == nil {
 		return fmt.Errorf("attribute is nil")
 	}
@@ -105,10 +132,14 @@ func (daw *DenseAttributeWriter) AddAttribute(attr *core.Attribute, sb *core.Sup
 
 	// 3. Insert into B-tree v2 (REUSE from dense groups!)
 	// For attributes, we use attribute name directly (not link name)
-	err = daw.btree.InsertRecord(attr.Name, heapID)
+	if !tracked {
+		order = 0
+	}
+	err = daw.btree.InsertAttributeRecord(attr.Name, heapID, order)
 	if err != nil {
 		return fmt.Errorf("failed to insert into B-tree: %w", err)
 	}
+	daw.nextCrtIdx = max(daw.nextCrtIdx, uint32(order)+1)
 
 	// Track for duplicate detection
 	daw.attributes[attr.Name] = attr
@@ -154,7 +185,10 @@ func (daw *DenseAttributeWriter) WriteToFile(fw *FileWriter, allocator *Allocato
 	// 3. Create Attribute Info Message
 	daw.attrInfo.FractalHeapAddr = heapAddr
 	daw.attrInfo.BTreeNameIndexAddr = btreeAddr
-	// MaxCreationIndex and BTreeOrderIndexAddr remain 0 (no creation order)
+	if daw.attrInfo.Flags&core.AttributeInfoTrackCreationOrder != 0 {
+		daw.attrInfo.MaxCreationIndex = uint64(daw.nextCrtIdx)
+	}
+	// BTreeOrderIndexAddr remains 0: creation order is not indexed.
 
 	return daw.attrInfo, nil
 }
