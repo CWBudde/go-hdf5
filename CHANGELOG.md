@@ -77,7 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version/flags byte, then the file name and the object path, each
   NUL-terminated) instead of two length-prefixed strings. `OpenForWrite`
   could not add links to a group holding an external link written by
-  libhdf5.
+  libhdf5. File names and object paths containing NUL bytes are rejected,
+  since libhdf5 would read only the part before the NUL.
 - `OpenForWrite` overwrote existing attributes when adding one to dense
   attribute storage written by libhdf5 (e.g. h5py with more than 8
   attributes) whose heap has a single direct block, and failed for larger

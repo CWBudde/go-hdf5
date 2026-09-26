@@ -266,6 +266,12 @@ func TestValidateSoftLinkTargetPath(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "NUL byte",
+			path:    "/a\x00/b",
+			wantErr: true,
+			errMsg:  "NUL",
+		},
+		{
 			name:    "empty path",
 			path:    "",
 			wantErr: true,

@@ -345,6 +345,9 @@ func validateSoftLinkTargetPath(path string) error {
 	if path == "" {
 		return fmt.Errorf("target path cannot be empty")
 	}
+	if strings.ContainsRune(path, 0) {
+		return fmt.Errorf("target path cannot contain NUL bytes")
+	}
 	if !strings.HasPrefix(path, "/") {
 		return fmt.Errorf("target path must be absolute (start with '/'), got %q", path)
 	}
@@ -519,6 +522,10 @@ func (fw *FileWriter) CreateExternalLink(linkPath, fileName, objectPath string) 
 func validateExternalFileName(fileName string) error {
 	if fileName == "" {
 		return fmt.Errorf("file name cannot be empty")
+	}
+	// External link values are NUL-terminated (see core.EncodeExternalLinkValue).
+	if strings.ContainsRune(fileName, 0) {
+		return fmt.Errorf("file name cannot contain NUL bytes")
 	}
 
 	// Prevent path traversal attacks
