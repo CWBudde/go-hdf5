@@ -3,6 +3,7 @@ package hdf5
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
 	"github.com/cwbudde/go-hdf5/internal/structures"
@@ -20,10 +21,17 @@ type Object interface {
 }
 
 // Dataset represents an HDF5 dataset containing multidimensional array data.
+//
+// ReadSlice and ReadHyperslab cache the dataset's parsed metadata, its chunk
+// index and recently used chunks (see SetChunkCacheSize); File.Close drops
+// the cache. A Dataset may be read from several goroutines at once.
 type Dataset struct {
 	file    *File
 	name    string
 	address uint64 // Address of object header.
+
+	mu    sync.Mutex // Guards cache.
+	cache datasetCache
 }
 
 // NamedDatatype represents an HDF5 committed (named) datatype.

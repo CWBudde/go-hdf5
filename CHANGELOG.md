@@ -30,9 +30,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`core.CompoundValue`); compound datasets and attributes decode object
   reference members as `ObjectRef` (previously "unsupported datatype class
   6/7").
+- `Dataset.ChunkShape()` returns a chunked dataset's chunk dimensions
+  (dataset rank; `false` for compact and contiguous layouts).
+- `Dataset.SetChunkCacheSize(maxChunks, maxBytes)` bounds the per-dataset
+  cache of decompressed chunks used by `ReadSlice`/`ReadHyperslab`
+  (default `DefaultChunkCacheChunks` = 8 chunks and
+  `DefaultChunkCacheBytes` = 16 MiB; 0 disables it).
 
 ### Changed
 
+- `ReadSlice`/`ReadHyperslab` parse a dataset's object header (datatype,
+  dataspace, layout, filter pipeline) and walk its chunk B-tree once per
+  `*Dataset` instead of on every call, keep recently used chunks
+  decompressed (LRU, see `SetChunkCacheSize`), look up only the chunk
+  positions a selection touches when that is cheaper than scanning the
+  index, and copy chunk data in runs along the last dimension instead of
+  element by element. Repeated one-row reads of a chunked, deflated
+  dataset: 720 → 18 µs; of a contiguous one: 7.5 → 3.9 µs
+  (`BenchmarkReadSlice_*`). `File.Close` drops the caches; a `Dataset`
+  may be read from several goroutines at once.
 - `ObjectRef` is now an alias of `core.ObjectReference` so read and write
   use the same type (source compatible).
 

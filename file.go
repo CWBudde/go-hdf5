@@ -144,6 +144,14 @@ func isHDF5File(r utils.ReaderAt) bool {
 //
 // For a File from OpenReader, Close does not close the underlying reader.
 func (f *File) Close() error {
+	if f.root != nil {
+		// Cached metadata and chunks must not outlive the file.
+		f.Walk(func(_ string, obj Object) {
+			if ds, ok := obj.(*Dataset); ok {
+				ds.dropCache()
+			}
+		})
+	}
 	if f.closer == nil {
 		return nil // Already closed, or nothing to close.
 	}

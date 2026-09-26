@@ -6,7 +6,6 @@ import (
 	"io"
 	"math"
 	"sort"
-	"strings"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
 	"github.com/cwbudde/go-hdf5/internal/utils"
@@ -63,60 +62,40 @@ type HyperslabSelection struct {
 //   - interface{}: The selected data in the dataset's native type ([]float64, []int32, etc.)
 //   - error: Error if selection is invalid or reading fails
 func (d *Dataset) ReadSlice(start, count []uint64) (interface{}, error) {
-	// Read object header to get dataset metadata
-	header, err := core.ReadObjectHeader(d.file.osFile, d.address, d.file.sb)
+	meta, err := d.readMeta()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read object header: %w", err)
+		return nil, err
 	}
-
-	// Extract dataspace to validate dimensions
-	var dataspaceMsg *core.HeaderMessage
-	for _, msg := range header.Messages {
-		if msg.Type == core.MsgDataspace {
-			dataspaceMsg = msg
-			break
-		}
-	}
-
-	if dataspaceMsg == nil {
-		return nil, fmt.Errorf("dataspace message not found in dataset")
-	}
-
-	dataspace, err := core.ParseDataspaceMessage(dataspaceMsg.Data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse dataspace: %w", err)
-	}
+	dims := meta.dataspace.Dimensions
 
 	// Validate dimensions match
-	if len(start) != len(dataspace.Dimensions) {
+	if len(start) != len(dims) {
 		return nil, fmt.Errorf("start dimensions (%d) != dataset dimensions (%d)",
-			len(start), len(dataspace.Dimensions))
+			len(start), len(dims))
 	}
-	if len(count) != len(dataspace.Dimensions) {
+	if len(count) != len(dims) {
 		return nil, fmt.Errorf("count dimensions (%d) != dataset dimensions (%d)",
-			len(count), len(dataspace.Dimensions))
+			len(count), len(dims))
 	}
 
 	// Validate bounds (start + count must not exceed dataset dimensions)
 	for i := range start {
-		if count[i] > dataspace.Dimensions[i] || start[i] > dataspace.Dimensions[i]-count[i] {
+		if count[i] > dims[i] || start[i] > dims[i]-count[i] {
 			return nil, fmt.Errorf("selection out of bounds in dimension %d: start=%d + count=%d > size=%d",
-				i, start[i], count[i], dataspace.Dimensions[i])
+				i, start[i], count[i], dims[i])
 		}
 	}
 
 	// Create simple hyperslab selection (stride=1, block=1)
 	selection := &HyperslabSelection{
-		Start:  start,
-		Count:  count,
-		Stride: nil, // Default to all 1s (contiguous)
-		Block:  nil, // Default to all 1s (single elements)
+		Start: start,
+		Count: count,
 	}
 
 	// Fill in defaults for Stride and Block
-	fillHyperslabDefaults(selection, len(dataspace.Dimensions))
+	fillHyperslabDefaults(selection, len(dims))
 
-	return d.readHyperslab(selection, header)
+	return d.readHyperslab(selection, meta)
 }
 
 // ReadHyperslab reads data with full hyperslab parameters including stride and block.
@@ -141,36 +120,17 @@ func (d *Dataset) ReadSlice(start, count []uint64) (interface{}, error) {
 //   - interface{}: The selected data in the dataset's native type
 //   - error: Error if selection is invalid or reading fails
 func (d *Dataset) ReadHyperslab(selection *HyperslabSelection) (interface{}, error) {
-	// Read object header to get dataset metadata
-	header, err := core.ReadObjectHeader(d.file.osFile, d.address, d.file.sb)
+	meta, err := d.readMeta()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read object header: %w", err)
-	}
-
-	// Extract dataspace to validate dimensions
-	var dataspaceMsg *core.HeaderMessage
-	for _, msg := range header.Messages {
-		if msg.Type == core.MsgDataspace {
-			dataspaceMsg = msg
-			break
-		}
-	}
-
-	if dataspaceMsg == nil {
-		return nil, fmt.Errorf("dataspace message not found in dataset")
-	}
-
-	dataspace, err := core.ParseDataspaceMessage(dataspaceMsg.Data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse dataspace: %w", err)
+		return nil, err
 	}
 
 	// Validate selection
-	if err := validateHyperslabSelection(selection, dataspace.Dimensions); err != nil {
+	if err := validateHyperslabSelection(selection, meta.dataspace.Dimensions); err != nil {
 		return nil, fmt.Errorf("invalid selection: %w", err)
 	}
 
-	return d.readHyperslab(selection, header)
+	return d.readHyperslab(selection, meta)
 }
 
 // validateHyperslabSelection validates a hyperslab selection against dataset dimensions.
@@ -275,26 +235,16 @@ func validateDimensionBounds(sel *HyperslabSelection, dims []uint64, dim int) er
 }
 
 // readHyperslab is the internal implementation for hyperslab reading.
-// It dispatches to the appropriate layout-specific reader based on the dataset's storage layout.
-func (d *Dataset) readHyperslab(selection *HyperslabSelection, header *core.ObjectHeader) (interface{}, error) {
-	// Extract and parse messages
-	messages, err := extractHyperslabMessages(header)
-	if err != nil {
-		return nil, err
-	}
-
-	parsedMsgs, err := parseHyperslabMessages(messages, d.file.sb)
-	if err != nil {
-		return nil, err
-	}
-
+// It dispatches to the appropriate layout-specific reader based on the
+// dataset's storage layout; meta comes from readMeta.
+func (d *Dataset) readHyperslab(selection *HyperslabSelection, meta *parsedHyperslabMessages) (interface{}, error) {
 	// Validate sizes derived from the file before any allocation.
-	if err := validateHyperslabAllocation(d.file.osFile, selection, parsedMsgs); err != nil {
+	if err := validateHyperslabAllocation(d.file.osFile, selection, meta); err != nil {
 		return nil, err
 	}
 
 	// Dispatch to appropriate layout reader
-	return d.dispatchHyperslabReader(selection, parsedMsgs)
+	return d.dispatchHyperslabReader(selection, meta)
 }
 
 // hyperslabMessages holds raw message data extracted from object header.
@@ -675,58 +625,29 @@ func (d *Dataset) readHyperslabChunked(
 		return convertToFloat64(make([]byte, outputElements*uint64(datatype.Size)), datatype, outputElements)
 	}
 
-	// Parse B-tree to get chunk addresses
-	btreeNode, err := core.ParseBTreeV1Node(
-		d.file.osFile,
-		layout.DataAddress,
-		d.file.sb.OffsetSize,
-		len(chunkDims),
-		chunkDims,
-	)
+	idx, err := d.readChunkIndex(layout, len(dims))
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse chunk B-tree: %w", err)
-	}
-
-	// Build chunk index (scaled coordinates -> file address)
-	chunkIndex := make(map[string]chunkIndexEntry)
-	allChunks, err := btreeNode.CollectAllChunks(d.file.osFile, d.file.sb.OffsetSize, chunkDims)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get chunk index: %w", err)
-	}
-
-	for _, chunk := range allChunks {
-		if len(chunk.Key.Scaled) < len(dims) {
-			return nil, fmt.Errorf("chunk key has %d dimensions, need %d", len(chunk.Key.Scaled), len(dims))
-		}
-		key := chunkCoordsToKey(chunk.Key.Scaled[:len(dims)])
-		chunkIndex[key] = chunkIndexEntry{
-			address: chunk.Address,
-			nbytes:  uint64(chunk.Key.Nbytes),
-		}
+		return nil, err
 	}
 
 	// Find which stored chunks overlap with the selection. Missing chunks
 	// contribute nothing, so only chunks present in the index are visited
 	// (bounded by the file rather than by the declared dataset size).
-	overlappingChunks := findOverlappingStoredChunks(selection, chunkDims, dims, allChunks)
+	overlappingChunks := idx.overlapping(selection, chunkDims, dims)
 	if len(overlappingChunks) == 0 {
 		return convertToFloat64(make([]byte, outputElements*elementSize), datatype, outputElements)
 	}
 
 	// Allocate output buffer
 	outputData := make([]byte, outputElements*elementSize)
-	outputIdx := uint64(0)
 
 	// Read each overlapping chunk and extract relevant data
 	for _, chunkCoord := range overlappingChunks {
-		err := d.extractFromChunk(
-			chunkCoord, chunkIndex, chunkDims, dims,
-			selection, datatype, filterPipeline, expectedChunkBytes,
-			outputData, &outputIdx,
-		)
+		chunkData, err := d.readChunk(idx.entries[chunkCoordsToKey(chunkCoord)], filterPipeline, expectedChunkBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract from chunk %v: %w", chunkCoord, err)
 		}
+		extractChunkPortion(chunkData, chunkCoord, chunkDims, dims, selection, elementSize, outputData)
 	}
 
 	// Convert bytes to float64
@@ -743,27 +664,12 @@ type chunkIndexEntry struct {
 	nbytes  uint64
 }
 
-// findOverlappingStoredChunks returns the scaled coordinates of the stored
-// chunks that overlap the selection's bounding box, in row-major order.
-func findOverlappingStoredChunks(sel *HyperslabSelection, chunkDims, datasetDims []uint64,
-	chunks []core.ChunkEntry,
-) [][]uint64 {
-	ndims := len(sel.Start)
-	firstChunk := make([]uint64, ndims)
-	lastChunk := make([]uint64, ndims)
-	for i := 0; i < ndims; i++ {
-		firstChunk[i] = sel.Start[i] / chunkDims[i]
-		endPos := sel.Start[i] + (sel.Count[i]-1)*sel.Stride[i] + sel.Block[i] - 1
-		if endPos >= datasetDims[i] {
-			endPos = datasetDims[i] - 1
-		}
-		lastChunk[i] = endPos / chunkDims[i]
-	}
-
-	seen := make(map[string]bool)
-	result := make([][]uint64, 0, len(chunks))
-	for _, c := range chunks {
-		coords := c.Key.Scaled[:ndims]
+// findOverlappingStoredChunks returns the stored chunk coordinates that lie
+// within [firstChunk, lastChunk] in every dimension, in row-major order.
+func findOverlappingStoredChunks(firstChunk, lastChunk []uint64, stored [][]uint64) [][]uint64 {
+	ndims := len(firstChunk)
+	var result [][]uint64
+	for _, coords := range stored {
 		inside := true
 		for i := 0; i < ndims; i++ {
 			if coords[i] < firstChunk[i] || coords[i] > lastChunk[i] {
@@ -771,15 +677,9 @@ func findOverlappingStoredChunks(sel *HyperslabSelection, chunkDims, datasetDims
 				break
 			}
 		}
-		if !inside {
-			continue
+		if inside {
+			result = append(result, append([]uint64(nil), coords...))
 		}
-		key := chunkCoordsToKey(coords)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		result = append(result, append([]uint64(nil), coords...))
 	}
 	sort.Slice(result, func(a, b int) bool {
 		for i := 0; i < ndims; i++ {
@@ -792,67 +692,9 @@ func findOverlappingStoredChunks(sel *HyperslabSelection, chunkDims, datasetDims
 	return result
 }
 
-// chunkCoordsToKey converts chunk coordinates to a string key for map lookup.
-func chunkCoordsToKey(coords []uint64) string {
-	// Simple string representation: "x,y,z"
-	parts := make([]string, len(coords))
-	for i, c := range coords {
-		parts[i] = fmt.Sprintf("%d", c)
-	}
-	return strings.Join(parts, ",")
-}
-
-// extractFromChunk reads a single chunk, decompresses if needed, and extracts relevant portion.
-func (d *Dataset) extractFromChunk(
-	chunkCoord []uint64,
-	chunkIndex map[string]chunkIndexEntry,
-	chunkDims []uint64,
-	datasetDims []uint64,
-	selection *HyperslabSelection,
-	datatype *core.DatatypeMessage,
-	filterPipeline *core.FilterPipelineMessage,
-	expectedChunkBytes uint64,
-	outputData []byte,
-	outputIdx *uint64,
-) error {
-	// Look up chunk address
-	key := chunkCoordsToKey(chunkCoord)
-	chunkInfo, exists := chunkIndex[key]
-	if !exists {
-		// Chunk doesn't exist (sparse dataset) - skip
-		// In HDF5, missing chunks are filled with fill values (typically 0)
-		// For now, we leave output buffer as-is (initialized to 0)
-		return nil
-	}
-
-	elementSize := uint64(datatype.Size)
-
-	// Read chunk data (use nbytes from index)
-	chunkData, err := utils.ReadAtChecked(d.file.osFile, chunkInfo.address, chunkInfo.nbytes, "chunk data")
-	if err != nil {
-		return fmt.Errorf("failed to read chunk data: %w", err)
-	}
-
-	// Decompress if needed, never producing more than one chunk's worth of data.
-	if filterPipeline != nil {
-		chunkData, err = filterPipeline.ApplyFiltersLimit(chunkData, expectedChunkBytes)
-		if err != nil {
-			return fmt.Errorf("failed to apply filters: %w", err)
-		}
-	}
-
-	// Extract portion of this chunk that intersects with selection
-	extractChunkPortion(
-		chunkData, chunkCoord, chunkDims, datasetDims,
-		selection, elementSize,
-		outputData, outputIdx,
-	)
-
-	return nil
-}
-
-// extractChunkPortion extracts the portion of a chunk that intersects with the selection.
-// This is the complex part - determining which elements from this chunk are in the selection.
+// extractChunkPortion copies the elements of the selection that lie in the
+// chunk at chunkCoord from chunkData to their row-major positions in
+// outputData. Selected elements are copied in runs along the last dimension.
 func extractChunkPortion(
 	chunkData []byte,
 	chunkCoord []uint64,
@@ -861,115 +703,123 @@ func extractChunkPortion(
 	selection *HyperslabSelection,
 	elementSize uint64,
 	outputData []byte,
-	outputIdx *uint64,
 ) {
 	ndims := len(chunkCoord)
-
-	// Calculate chunk's position in dataset
-	chunkStart := make([]uint64, ndims)
-	chunkEnd := make([]uint64, ndims)
-	for i := 0; i < ndims; i++ {
-		chunkStart[i] = chunkCoord[i] * chunkDims[i]
-		chunkEnd[i] = chunkStart[i] + chunkDims[i]
-		if chunkEnd[i] > datasetDims[i] {
-			chunkEnd[i] = datasetDims[i]
-		}
-	}
-
-	// Iterate through selection and copy elements that are in this chunk
-	coords := make([]uint64, ndims)
-	copy(coords, selection.Start)
-
-	extractChunkPortionRecursive(
-		chunkData, chunkStart, chunkEnd, chunkDims,
-		selection, coords, make([]uint64, ndims), 0,
-		elementSize, outputData, outputIdx,
-	)
-}
-
-// extractChunkPortionRecursive recursively extracts elements from chunk.
-//
-//nolint:gocognit // Complex recursive algorithm for N-dimensional chunk extraction
-func extractChunkPortionRecursive(
-	chunkData []byte,
-	chunkStart, chunkEnd []uint64,
-	chunkDims []uint64,
-	selection *HyperslabSelection,
-	coords []uint64,
-	selPos []uint64,
-	dim int,
-	elementSize uint64,
-	outputData []byte,
-	outputIdx *uint64,
-) {
-	ndims := len(coords)
-
-	if dim == ndims {
-		// Base case: check if this coordinate is in the current chunk
-		inChunk := true
-		for i := 0; i < ndims; i++ {
-			if coords[i] < chunkStart[i] || coords[i] >= chunkEnd[i] {
-				inChunk = false
-				break
-			}
-		}
-
-		if !inChunk {
-			return
-		}
-
-		// Calculate offset within chunk (relative to chunk start)
-		chunkOffset := uint64(0)
-		chunkStride := uint64(1)
-		for i := ndims - 1; i >= 0; i-- {
-			relCoord := coords[i] - chunkStart[i]
-			chunkOffset += relCoord * chunkStride
-			chunkStride *= chunkDims[i]
-		}
-
-		// Copy element from chunk to its row-major position in the output
-		// (chunks are visited one at a time, so the position must come
-		// from the selection coordinates, not from a running counter).
-		outIndex := uint64(0)
-		for i := 0; i < ndims; i++ {
-			outIndex = outIndex*(selection.Count[i]*selection.Block[i]) + selPos[i]
-		}
-		srcOffset := chunkOffset * elementSize
-		dstOffset := outIndex * elementSize
-
-		if srcOffset+elementSize <= uint64(len(chunkData)) &&
-			dstOffset+elementSize <= uint64(len(outputData)) {
-			copy(outputData[dstOffset:dstOffset+elementSize],
-				chunkData[srcOffset:srcOffset+elementSize])
-			(*outputIdx)++
-		}
-
+	if ndims == 0 {
 		return
 	}
 
-	// Recursive case: iterate through selection in this dimension
-	for c := uint64(0); c < selection.Count[dim]; c++ {
-		blockStart := selection.Start[dim] + c*selection.Stride[dim]
+	// Selected runs of each dimension within the chunk, and the row-major
+	// strides of the chunk and of the output, in elements.
+	runs := make([][]selectionRun, ndims)
+	chunkStrides := make([]uint64, ndims)
+	outStrides := make([]uint64, ndims)
+	chunkStride, outStride := uint64(1), uint64(1)
+	for i := ndims - 1; i >= 0; i-- {
+		chunkStart := chunkCoord[i] * chunkDims[i]
+		chunkEnd := min(chunkStart+chunkDims[i], datasetDims[i])
+		runs[i] = selectionRuns(selection, i, chunkStart, chunkEnd)
+		if len(runs[i]) == 0 {
+			return
+		}
+		chunkStrides[i], outStrides[i] = chunkStride, outStride
+		chunkStride *= chunkDims[i]
+		outStride *= selection.Count[i] * selection.Block[i]
+	}
 
-		for b := uint64(0); b < selection.Block[dim]; b++ {
-			coords[dim] = blockStart + b
-			selPos[dim] = c*selection.Block[dim] + b
-
-			if coords[dim] >= chunkEnd[dim] {
-				// Beyond this chunk, skip rest of this dimension
-				return
-			}
-			if coords[dim] < chunkStart[dim] {
-				continue // before this chunk
-			}
-
-			extractChunkPortionRecursive(
-				chunkData, chunkStart, chunkEnd, chunkDims,
-				selection, coords, selPos, dim+1,
-				elementSize, outputData, outputIdx,
-			)
+	// Odometer over the selected elements of all dimensions but the last
+	// (each expanded run element by element); the last dimension is copied
+	// run by run.
+	last := ndims - 1
+	runIdx := make([]int, last)
+	offIdx := make([]uint64, last)
+	for {
+		src, dst := uint64(0), uint64(0)
+		for i := 0; i < last; i++ {
+			r := runs[i][runIdx[i]]
+			src += (r.chunkOffset + offIdx[i]) * chunkStrides[i]
+			dst += (r.selPos + offIdx[i]) * outStrides[i]
+		}
+		copyChunkRuns(chunkData, outputData, runs[last], src, dst, elementSize)
+		if !nextRunPosition(runs[:last], runIdx, offIdx) {
+			return
 		}
 	}
+}
+
+// copyChunkRuns copies the runs of the last dimension of one selected row
+// from chunkData (row start src, in elements) to outputData (row start
+// dst). A short (corrupted) chunk contributes what it holds.
+func copyChunkRuns(chunkData, outputData []byte, runs []selectionRun, src, dst, elementSize uint64) {
+	for _, r := range runs {
+		from := (src + r.chunkOffset) * elementSize
+		to := (dst + r.selPos) * elementSize
+		if from >= uint64(len(chunkData)) || to >= uint64(len(outputData)) {
+			continue
+		}
+		n := min(r.length*elementSize, uint64(len(chunkData))-from, uint64(len(outputData))-to)
+		n -= n % elementSize
+		copy(outputData[to:to+n], chunkData[from:from+n])
+	}
+}
+
+// nextRunPosition advances the odometer (runIdx, offIdx) over the
+// elements of runs in row-major order and returns false after the last.
+func nextRunPosition(runs [][]selectionRun, runIdx []int, offIdx []uint64) bool {
+	for i := len(runs) - 1; i >= 0; i-- {
+		offIdx[i]++
+		if offIdx[i] < runs[i][runIdx[i]].length {
+			return true
+		}
+		offIdx[i] = 0
+		runIdx[i]++
+		if runIdx[i] < len(runs[i]) {
+			return true
+		}
+		runIdx[i] = 0
+	}
+	return false
+}
+
+// selectionRun is a run of consecutive selected coordinates of one
+// dimension inside a chunk.
+type selectionRun struct {
+	chunkOffset uint64 // First coordinate, relative to the chunk start.
+	selPos      uint64 // Its position in the selection (0..Count*Block-1).
+	length      uint64
+}
+
+// selectionRuns returns the runs of dimension dim of the selection that
+// fall inside [chunkStart, chunkEnd), in increasing order.
+func selectionRuns(sel *HyperslabSelection, dim int, chunkStart, chunkEnd uint64) []selectionRun {
+	start, count, stride, block := sel.Start[dim], sel.Count[dim], sel.Stride[dim], sel.Block[dim]
+	if count == 0 || block == 0 || start >= chunkEnd {
+		return nil
+	}
+	// Blocks c in [cLo, cHi] can intersect the chunk.
+	cLo := uint64(0)
+	if start+block <= chunkStart {
+		cLo = (chunkStart-start-block)/stride + 1
+	}
+	cHi := min(count-1, (chunkEnd-1-start)/stride)
+	var runs []selectionRun
+	for c := cLo; c <= cHi && c >= cLo; c++ {
+		blockStart := start + c*stride
+		lo, hi := max(blockStart, chunkStart), min(blockStart+block, chunkEnd)
+		if lo >= hi {
+			continue
+		}
+		selPos := c*block + (lo - blockStart)
+		if n := len(runs); n > 0 {
+			prev := &runs[n-1]
+			if prev.chunkOffset+prev.length == lo-chunkStart && prev.selPos+prev.length == selPos {
+				prev.length += hi - lo
+				continue
+			}
+		}
+		runs = append(runs, selectionRun{chunkOffset: lo - chunkStart, selPos: selPos, length: hi - lo})
+	}
+	return runs
 }
 
 // extractHyperslabFromRawData extracts a hyperslab selection from raw dataset bytes.
