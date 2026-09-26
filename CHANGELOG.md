@@ -64,8 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the ASCII character set, as netCDF-C writes text attributes. libmysofa
   rejects attributes marked UTF-8 in dense storage, so it could not load
   files with such a global attribute among more than 8.
+- `CreateSoftLink` and `CreateExternalLink` under a new-style root store
+  the link as a Link message in the root (compact or dense, with its
+  creation order), as libhdf5 does, so h5dump and h5py show soft and
+  external links. They used to add a hard link to a separate object
+  header, which libhdf5 does not read as a link. Links in symbol table
+  groups are unchanged.
 
 ### Fixed
+
+- External link values use the format of the specification (a
+  version/flags byte, then the file name and the object path, each
+  NUL-terminated) instead of two length-prefixed strings. `OpenForWrite`
+  could not add links to a group holding an external link written by
+  libhdf5.
 
 - Object header rewrites keep message flags (e.g. constant, shared); they
   were reset to 0.

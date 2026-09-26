@@ -401,6 +401,18 @@ func (fw *FileWriter) linkToParent(parentPath, childName string, childAddr uint6
 	return fw.writeGroupSymbolTable(btreeAddr, tree, entries)
 }
 
+// linkMessageToParent adds the link childName to the new-style group at
+// parentPath; encode returns its Link message for a creation order (-1 for
+// none). It reports false, adding nothing, when the parent is a symbol
+// table group.
+func (fw *FileWriter) linkMessageToParent(parentPath, childName string, encode func(order int64) []byte) (bool, error) {
+	newStyle, _, _, err := fw.parentLinkStorage(parentPath)
+	if err != nil || newStyle == nil {
+		return false, err
+	}
+	return true, fw.addEncodedLink(newStyle, parentPath, childName, encode)
+}
+
 // parentLinkStorage returns how the group at parentPath stores its links:
 // the group's links for a new-style group (the root of superblock v2/v3
 // files), otherwise the local heap and B-tree of its symbol table.
