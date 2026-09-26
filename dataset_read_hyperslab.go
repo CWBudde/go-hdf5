@@ -468,98 +468,13 @@ func (d *Dataset) readHyperslabCompact(
 // readHyperslabContiguous reads hyperslab from contiguous layout dataset.
 // Contiguous layout stores data in one continuous block in the file.
 //
-// OPTIMIZED: Reads ONLY the bytes needed for the selection, not the entire dataset.
-// For N-dimensional data with row-major order, we read only the rows/slices that contain selected data.
+// Only the bytes needed for the selection are read. The selection is walked
+// in row-major order and decomposed into runs of consecutive elements in the
+// file; adjacent runs are coalesced, so a selection that covers whole
+// trailing dimensions is read with a single ReadAt. When the last dimension
+// is strided, the span of each row that contains selected elements is read
+// once and the elements are picked from it.
 func (d *Dataset) readHyperslabContiguous(
-	selection *HyperslabSelection,
-	datatype *core.DatatypeMessage,
-	dataspace *core.DataspaceMessage,
-	layout *core.DataLayoutMessage,
-) (interface{}, error) {
-	ndims := len(dataspace.Dimensions)
-
-	// For 1D or simple contiguous selections, optimize by reading minimal data
-	if ndims == 1 || isContiguousSelection(selection, dataspace.Dimensions) {
-		return d.readContiguousOptimized(selection, datatype, dataspace, layout)
-	}
-
-	// For complex multi-dimensional selections with stride/block, use row-by-row reading
-	return d.readContiguousRowByRow(selection, datatype, dataspace, layout)
-}
-
-// isContiguousSelection checks if selection is contiguous in memory (last dimension fully selected).
-func isContiguousSelection(sel *HyperslabSelection, dims []uint64) bool {
-	if len(dims) == 0 {
-		return true
-	}
-
-	// Check if last dimension is contiguous (stride=1, block=1, covers full range or starts at 0)
-	lastDim := len(dims) - 1
-	if sel.Stride[lastDim] != 1 || sel.Block[lastDim] != 1 {
-		return false
-	}
-
-	// If selecting entire last dimension, it's contiguous
-	if sel.Count[lastDim]*sel.Block[lastDim] == dims[lastDim] {
-		return true
-	}
-
-	return false
-}
-
-// readContiguousOptimized reads contiguous selections efficiently in one or few I/O operations.
-func (d *Dataset) readContiguousOptimized(
-	selection *HyperslabSelection,
-	datatype *core.DatatypeMessage,
-	dataspace *core.DataspaceMessage,
-	layout *core.DataLayoutMessage,
-) (interface{}, error) {
-	elementSize := uint64(datatype.Size)
-	dims := dataspace.Dimensions
-
-	// Calculate output size
-	outputElements := calculateHyperslabOutputSize(selection)
-	if outputElements == 0 {
-		return []float64{}, nil
-	}
-
-	// For 1D or fully contiguous, read in one operation
-	if len(dims) == 1 {
-		// 1D case: single contiguous read
-		startOffset := selection.Start[0] * elementSize
-		byteCount := outputElements * elementSize
-
-		fileOffset := layout.DataAddress + startOffset
-
-		rawData, err := utils.ReadAtChecked(d.file.osFile, fileOffset, byteCount, "1D contiguous data")
-		if err != nil {
-			return nil, fmt.Errorf("failed to read 1D contiguous data: %w", err)
-		}
-
-		return convertToFloat64(rawData, datatype, outputElements)
-	}
-
-	// Multi-dimensional contiguous case
-	// Read row-major contiguous block
-	// Calculate start offset for first element
-	startCoords := selection.Start
-	startLinearOffset := calculateLinearOffset(startCoords, dims)
-	startByteOffset := startLinearOffset * elementSize
-
-	// For contiguous multi-D, we can read the bounding box
-	fileOffset := layout.DataAddress + startByteOffset
-
-	outputData, err := utils.ReadAtChecked(d.file.osFile, fileOffset, outputElements*elementSize, "contiguous data")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read contiguous data: %w", err)
-	}
-
-	return convertToFloat64(outputData, datatype, outputElements)
-}
-
-// readContiguousRowByRow reads selections row-by-row for non-contiguous patterns.
-// This handles stride/block selections efficiently by reading only necessary rows.
-func (d *Dataset) readContiguousRowByRow(
 	selection *HyperslabSelection,
 	datatype *core.DatatypeMessage,
 	dataspace *core.DataspaceMessage,
@@ -569,118 +484,158 @@ func (d *Dataset) readContiguousRowByRow(
 	dims := dataspace.Dimensions
 	ndims := len(dims)
 
-	// Calculate output size
 	outputElements := calculateHyperslabOutputSize(selection)
-	if outputElements == 0 {
+	if outputElements == 0 || ndims == 0 {
 		return []float64{}, nil
 	}
-
 	outputData := make([]byte, outputElements*elementSize)
-	outputIdx := uint64(0)
 
-	// For 2D, optimize by reading rows
-	if ndims == 2 {
-		return d.readContiguous2DOptimized(selection, datatype, dataspace, layout)
+	// Storage that was never allocated reads as fill values (zero).
+	if layout.DataAddress == undefinedAddress {
+		return convertToFloat64(outputData, datatype, outputElements)
 	}
 
-	// For 3D+, use recursive extraction with targeted reads
-	// Read minimal bounding box that contains all selected elements
-	minCoords := make([]uint64, ndims)
-	maxCoords := make([]uint64, ndims)
-
-	for i := 0; i < ndims; i++ {
-		minCoords[i] = selection.Start[i]
-		maxCoords[i] = selection.Start[i] + (selection.Count[i]-1)*selection.Stride[i] + selection.Block[i]
+	rr := contiguousRunReader{
+		r:           d.file.osFile,
+		base:        layout.DataAddress,
+		elementSize: elementSize,
+		out:         outputData,
 	}
 
-	// Calculate bounding box size
-	spans := make([]uint64, ndims)
-	for i := 0; i < ndims; i++ {
-		spans[i] = maxCoords[i] - minCoords[i]
-	}
-	_, boundingBytes, err := utils.ElementsSize(spans, elementSize)
-	if err != nil {
-		return nil, fmt.Errorf("bounding box too large: %w", err)
+	// Row-major strides of the dataset, in elements.
+	strides := make([]uint64, ndims)
+	strides[ndims-1] = 1
+	for i := ndims - 2; i >= 0; i-- {
+		strides[i] = strides[i+1] * dims[i+1]
 	}
 
-	// Read bounding box
-	startOffset := calculateLinearOffset(minCoords, dims) * elementSize
-	fileOffset := layout.DataAddress + startOffset
-
-	rawData, err := utils.ReadAtChecked(d.file.osFile, fileOffset, boundingBytes, "bounding box")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read bounding box: %w", err)
+	last := ndims - 1
+	lastCount, lastStride, lastBlock := selection.Count[last], selection.Stride[last], selection.Block[last]
+	rowSelected := lastCount * lastBlock
+	// Blocks in the last dimension are adjacent: one run per row.
+	denseRow := lastCount == 1 || lastStride == lastBlock
+	rowSpan := (lastCount-1)*lastStride + lastBlock
+	var scratch []byte
+	if !denseRow {
+		scratch = make([]byte, rowSpan*elementSize)
 	}
 
-	// Extract selection from bounding box
-	coords := make([]uint64, ndims)
-	copy(coords, selection.Start)
+	// Odometer over the selected positions of the outer dimensions.
+	pos := make([]uint64, last)
+	for more := true; more; more = nextSelectedRow(selection, pos) {
+		rowStart := selection.Start[last]
+		for i := 0; i < last; i++ {
+			coord := selection.Start[i] + (pos[i]/selection.Block[i])*selection.Stride[i] + pos[i]%selection.Block[i]
+			rowStart += coord * strides[i]
+		}
 
-	extractHyperslabRecursive(
-		rawData, outputData,
-		dims, selection,
-		coords, 0,
-		elementSize, &outputIdx,
-	)
+		var err error
+		if denseRow {
+			err = rr.add(rowStart, rowSelected)
+		} else {
+			err = rr.readStridedRow(rowStart, lastCount, lastStride, lastBlock, scratch)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := rr.flush(); err != nil {
+		return nil, err
+	}
 
 	return convertToFloat64(outputData, datatype, outputElements)
 }
 
-// readContiguous2DOptimized handles 2D contiguous datasets with row-by-row reading.
-//
-//nolint:gocognit // Complex algorithm for efficient 2D hyperslab reading
-func (d *Dataset) readContiguous2DOptimized(
-	selection *HyperslabSelection,
-	datatype *core.DatatypeMessage,
-	dataspace *core.DataspaceMessage,
-	layout *core.DataLayoutMessage,
-) (interface{}, error) {
-	elementSize := uint64(datatype.Size)
-	dims := dataspace.Dimensions
-
-	outputElements := calculateHyperslabOutputSize(selection)
-	outputData := make([]byte, outputElements*elementSize)
-	outputIdx := uint64(0)
-
-	// Iterate through selected rows
-	for iCount := uint64(0); iCount < selection.Count[0]; iCount++ {
-		for iBlock := uint64(0); iBlock < selection.Block[0]; iBlock++ {
-			row := selection.Start[0] + iCount*selection.Stride[0] + iBlock
-
-			if row >= dims[0] {
-				continue // Skip out of bounds
-			}
-
-			// For this row, read the selected columns
-			for jCount := uint64(0); jCount < selection.Count[1]; jCount++ {
-				for jBlock := uint64(0); jBlock < selection.Block[1]; jBlock++ {
-					col := selection.Start[1] + jCount*selection.Stride[1] + jBlock
-
-					if col >= dims[1] {
-						continue // Skip out of bounds
-					}
-
-					// Calculate file offset for this element
-					linearOffset := row*dims[1] + col
-					byteOffset := layout.DataAddress + linearOffset*elementSize
-
-					// Read single element
-					//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-					_, err := d.file.osFile.ReadAt(
-						outputData[outputIdx*elementSize:(outputIdx+1)*elementSize],
-						int64(byteOffset),
-					)
-					if err != nil {
-						return nil, fmt.Errorf("failed to read element at [%d,%d]: %w", row, col, err)
-					}
-
-					outputIdx++
-				}
-			}
+// nextSelectedRow advances pos, the selected positions (0..Count*Block-1) of
+// all dimensions but the last, to the next row in row-major order. It
+// returns false after the last row.
+func nextSelectedRow(sel *HyperslabSelection, pos []uint64) bool {
+	for i := len(pos) - 1; i >= 0; i-- {
+		pos[i]++
+		if pos[i] < sel.Count[i]*sel.Block[i] {
+			return true
 		}
+		pos[i] = 0
 	}
+	return false
+}
 
-	return convertToFloat64(outputData, datatype, outputElements)
+// contiguousRunReader reads runs of consecutive dataset elements into an
+// output buffer, coalescing runs that are adjacent in the file.
+type contiguousRunReader struct {
+	r           io.ReaderAt
+	base        uint64 // File address of element 0.
+	elementSize uint64
+	out         []byte
+	outPos      uint64 // Next output element.
+
+	pendingStart uint64 // First element of the pending run.
+	pendingLen   uint64 // Number of elements in the pending run.
+}
+
+// add appends a run of n elements starting at element index start.
+func (rr *contiguousRunReader) add(start, n uint64) error {
+	if rr.pendingLen > 0 && rr.pendingStart+rr.pendingLen == start {
+		rr.pendingLen += n
+		return nil
+	}
+	if err := rr.flush(); err != nil {
+		return err
+	}
+	rr.pendingStart, rr.pendingLen = start, n
+	return nil
+}
+
+// flush reads the pending run into the output buffer.
+func (rr *contiguousRunReader) flush() error {
+	if rr.pendingLen == 0 {
+		return nil
+	}
+	dst := rr.out[rr.outPos*rr.elementSize : (rr.outPos+rr.pendingLen)*rr.elementSize]
+	if err := readAtInto(rr.r, dst, rr.base+rr.pendingStart*rr.elementSize, "contiguous data"); err != nil {
+		return err
+	}
+	rr.outPos += rr.pendingLen
+	rr.pendingLen = 0
+	return nil
+}
+
+// readStridedRow reads the span of one row that holds count blocks of block
+// elements spaced stride elements apart, starting at element rowStart, and
+// copies the selected elements to the output.
+func (rr *contiguousRunReader) readStridedRow(rowStart, count, stride, block uint64, scratch []byte) error {
+	if err := rr.flush(); err != nil {
+		return err
+	}
+	if err := readAtInto(rr.r, scratch, rr.base+rowStart*rr.elementSize, "contiguous row"); err != nil {
+		return err
+	}
+	blockBytes := block * rr.elementSize
+	for c := uint64(0); c < count; c++ {
+		src := c * stride * rr.elementSize
+		dst := rr.outPos * rr.elementSize
+		copy(rr.out[dst:dst+blockBytes], scratch[src:src+blockBytes])
+		rr.outPos += block
+	}
+	return nil
+}
+
+// readAtInto fills buf from r at offset, after checking the read lies within
+// the file.
+func readAtInto(r io.ReaderAt, buf []byte, offset uint64, what string) error {
+	if err := utils.CheckReadBounds(r, offset, uint64(len(buf)), what); err != nil {
+		return err
+	}
+	//nolint:gosec // G115: bounds checked above
+	n, err := r.ReadAt(buf, int64(offset))
+	if n == len(buf) {
+		return nil
+	}
+	if err == nil {
+		err = io.ErrUnexpectedEOF
+	}
+	return fmt.Errorf("failed to read %s at offset %d: %w", what, offset, err)
 }
 
 // readHyperslabChunked reads hyperslab from chunked layout dataset.
