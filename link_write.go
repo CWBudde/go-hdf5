@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/writer"
 )
 
 // CreateHardLink creates a hard link to an existing object.
@@ -216,7 +217,7 @@ func ensureRefCountMessage(fw *FileWriter, oh *core.ObjectHeader) error {
 //   - Validates linkPath format (must be absolute path)
 //   - Target path does NOT need to exist (dangling links allowed)
 //   - Creates link message with soft link type
-//   - Adds link entry in parent group's symbol table
+//   - Adds it to the parent group (see Limitations)
 //   - Link stores target path as string (not object address)
 //   - When accessed, target path is resolved dynamically
 //
@@ -239,7 +240,10 @@ func ensureRefCountMessage(fw *FileWriter, oh *core.ObjectHeader) error {
 //	// This is allowed - target can be created later
 //
 // Limitations:
-//   - Symbol table format only (dense groups not yet supported)
+//   - Only a new-style parent (the root group of superblock v2/v3 files)
+//     stores the link as a Link message, as the HDF5 library does. A
+//     symbol table group gets an entry for a separate object header holding
+//     the Link message, which the HDF5 library does not read as a link.
 //   - No soft link resolution yet (reading soft links not implemented)
 //   - No circular link detection
 //
@@ -265,26 +269,31 @@ func (fw *FileWriter) CreateSoftLink(linkPath, targetPath string) error {
 		}
 	}
 
-	// Create soft link message
-	linkMsg := &core.LinkMessage{
-		Version: 1,
-		Flags:   core.LinkFlagLinkTypeFieldBit | core.LinkFlagCharSetBit, // Bits 3 + 4 set
-		Type:    core.LinkTypeSoft,
-		CharSet: 0, // ASCII
-		Name:    linkName,
-		// LinkValue: target path as bytes (will be set below)
+	if len(targetPath) > 0xFFFF {
+		return fmt.Errorf("target path too long: %d bytes (max 65535)", len(targetPath))
 	}
 
-	// Encode target path as link value
-	// Soft link format: 2-byte length + path string
-	targetPathBytes := []byte(targetPath)
-	if len(targetPathBytes) > 65535 {
-		return fmt.Errorf("target path too long: %d bytes (max 65535)", len(targetPathBytes))
+	// A new-style parent (the root of superblock v2/v3 files) stores the
+	// link as a Link message, like the HDF5 library.
+	added, err := fw.linkMessageToParent(parent, linkName, func(order int64) []byte {
+		return writer.EncodeSoftLinkMessage(linkName, targetPath, order)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add soft link to parent group: %w", err)
 	}
-	linkValue := make([]byte, 2+len(targetPathBytes))
-	fw.file.sb.Endianness.PutUint16(linkValue[0:2], uint16(len(targetPathBytes))) //nolint:gosec // Validated above
-	copy(linkValue[2:], targetPathBytes)
-	linkMsg.LinkValue = linkValue
+	if added {
+		return nil
+	}
+
+	// Create soft link message
+	linkMsg := &core.LinkMessage{
+		Version:   1,
+		Flags:     core.LinkFlagLinkTypeFieldBit | core.LinkFlagCharSetBit, // Bits 3 + 4 set
+		Type:      core.LinkTypeSoft,
+		CharSet:   0, // ASCII
+		Name:      linkName,
+		LinkValue: []byte(targetPath),
+	}
 
 	// Encode link message
 	linkMsgData, err := core.EncodeLinkMessage(linkMsg, fw.file.sb)
@@ -335,6 +344,9 @@ func (fw *FileWriter) CreateSoftLink(linkPath, targetPath string) error {
 func validateSoftLinkTargetPath(path string) error {
 	if path == "" {
 		return fmt.Errorf("target path cannot be empty")
+	}
+	if strings.ContainsRune(path, 0) {
+		return fmt.Errorf("target path cannot contain NUL bytes")
 	}
 	if !strings.HasPrefix(path, "/") {
 		return fmt.Errorf("target path must be absolute (start with '/'), got %q", path)
@@ -391,7 +403,7 @@ func (fw *FileWriter) resolveSoftLink(linkAddr uint64, visitedPaths map[string]b
 //   - Validates all paths
 //   - Creates link message with external link type
 //   - Stores external file name and object path
-//   - Adds link entry in parent group's symbol table
+//   - Adds it to the parent group (see Limitations)
 //   - No file existence check (lazy resolution)
 //
 // Security:
@@ -399,7 +411,10 @@ func (fw *FileWriter) resolveSoftLink(linkAddr uint64, visitedPaths map[string]b
 //   - File path stored as-is (absolute or relative)
 //
 // Limitations:
-//   - Symbol table format only (dense groups not yet supported)
+//   - Only a new-style parent (the root group of superblock v2/v3 files)
+//     stores the link as a Link message, as the HDF5 library does. A
+//     symbol table group gets an entry for a separate object header holding
+//     the Link message, which the HDF5 library does not read as a link.
 //   - No external link resolution yet (reading external links not implemented)
 //   - No file caching or performance optimization
 //
@@ -431,48 +446,32 @@ func (fw *FileWriter) CreateExternalLink(linkPath, fileName, objectPath string) 
 		}
 	}
 
+	linkValue := core.EncodeExternalLinkValue(fileName, objectPath)
+	if len(linkValue) > 0xFFFF {
+		return fmt.Errorf("file name and object path too long: %d bytes (max 65535)", len(linkValue))
+	}
+
+	// A new-style parent (the root of superblock v2/v3 files) stores the
+	// link as a Link message, like the HDF5 library.
+	added, err := fw.linkMessageToParent(parent, linkName, func(order int64) []byte {
+		return writer.EncodeExternalLinkMessage(linkName, fileName, objectPath, order)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add external link to parent group: %w", err)
+	}
+	if added {
+		return nil
+	}
+
 	// Create external link message
 	linkMsg := &core.LinkMessage{
-		Version: 1,
-		Flags:   core.LinkFlagLinkTypeFieldBit | core.LinkFlagCharSetBit, // Bits 3 + 4 set
-		Type:    core.LinkTypeExternal,
-		CharSet: 0, // ASCII
-		Name:    linkName,
-		// LinkValue: file name + object path (will be set below)
+		Version:   1,
+		Flags:     core.LinkFlagLinkTypeFieldBit | core.LinkFlagCharSetBit, // Bits 3 + 4 set
+		Type:      core.LinkTypeExternal,
+		CharSet:   0, // ASCII
+		Name:      linkName,
+		LinkValue: linkValue,
 	}
-
-	// Encode external link value
-	// External link format: fileNameLength(2) + fileName + pathLength(2) + path
-	fileNameBytes := []byte(fileName)
-	objectPathBytes := []byte(objectPath)
-
-	// Validate lengths fit in uint16
-	if len(fileNameBytes) > 65535 {
-		return fmt.Errorf("file name too long: %d bytes (max 65535)", len(fileNameBytes))
-	}
-	if len(objectPathBytes) > 65535 {
-		return fmt.Errorf("object path too long: %d bytes (max 65535)", len(objectPathBytes))
-	}
-
-	linkValue := make([]byte, 2+len(fileNameBytes)+2+len(objectPathBytes))
-	offset := 0
-
-	// Write file name length (2 bytes)
-	fw.file.sb.Endianness.PutUint16(linkValue[offset:offset+2], uint16(len(fileNameBytes))) //nolint:gosec // Validated above
-	offset += 2
-
-	// Write file name
-	copy(linkValue[offset:], fileNameBytes)
-	offset += len(fileNameBytes)
-
-	// Write object path length (2 bytes)
-	fw.file.sb.Endianness.PutUint16(linkValue[offset:offset+2], uint16(len(objectPathBytes))) //nolint:gosec // Validated above
-	offset += 2
-
-	// Write object path
-	copy(linkValue[offset:], objectPathBytes)
-
-	linkMsg.LinkValue = linkValue
 
 	// Encode link message
 	linkMsgData, err := core.EncodeLinkMessage(linkMsg, fw.file.sb)
@@ -523,6 +522,10 @@ func (fw *FileWriter) CreateExternalLink(linkPath, fileName, objectPath string) 
 func validateExternalFileName(fileName string) error {
 	if fileName == "" {
 		return fmt.Errorf("file name cannot be empty")
+	}
+	// External link values are NUL-terminated (see core.EncodeExternalLinkValue).
+	if strings.ContainsRune(fileName, 0) {
+		return fmt.Errorf("file name cannot contain NUL bytes")
 	}
 
 	// Prevent path traversal attacks

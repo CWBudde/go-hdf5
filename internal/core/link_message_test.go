@@ -67,9 +67,7 @@ func TestLinkMessageSoftLinkRoundTrip(t *testing.T) {
 
 	// Create soft link message
 	targetPath := "/path/to/target"
-	linkValue := make([]byte, 2+len(targetPath))
-	binary.LittleEndian.PutUint16(linkValue[0:2], uint16(len(targetPath)))
-	copy(linkValue[2:], targetPath)
+	linkValue := []byte(targetPath)
 
 	original := &LinkMessage{
 		Version:   1,
@@ -120,19 +118,7 @@ func TestLinkMessageExternalLinkRoundTrip(t *testing.T) {
 	fileName := "external.h5"
 	objectPath := "/dataset"
 
-	linkValue := make([]byte, 2+len(fileName)+2+len(objectPath))
-	offset := 0
-
-	// File name length + file name
-	binary.LittleEndian.PutUint16(linkValue[offset:offset+2], uint16(len(fileName)))
-	offset += 2
-	copy(linkValue[offset:], fileName)
-	offset += len(fileName)
-
-	// Object path length + object path
-	binary.LittleEndian.PutUint16(linkValue[offset:offset+2], uint16(len(objectPath)))
-	offset += 2
-	copy(linkValue[offset:], objectPath)
+	linkValue := EncodeExternalLinkValue(fileName, objectPath)
 
 	original := &LinkMessage{
 		Version:   1,
@@ -451,15 +437,7 @@ func TestLinkMessageGetters(t *testing.T) {
 		fileName := "external.h5"
 		objectPath := "/dataset"
 
-		linkValue := make([]byte, 2+len(fileName)+2+len(objectPath))
-		offset := 0
-		binary.LittleEndian.PutUint16(linkValue[offset:], uint16(len(fileName)))
-		offset += 2
-		copy(linkValue[offset:], fileName)
-		offset += len(fileName)
-		binary.LittleEndian.PutUint16(linkValue[offset:], uint16(len(objectPath)))
-		offset += 2
-		copy(linkValue[offset:], objectPath)
+		linkValue := EncodeExternalLinkValue(fileName, objectPath)
 
 		lm := &LinkMessage{
 			Type:      LinkTypeExternal,

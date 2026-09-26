@@ -74,8 +74,8 @@ func messageParsers(t *testing.T) []messageParser {
 	links := [][]byte{
 		must(EncodeLinkMessage(&LinkMessage{Version: 1, Type: LinkTypeHard, Name: "x", LinkValue: hardLink}, sb)),
 		must(EncodeLinkMessage(&LinkMessage{Version: 1, Flags: LinkFlagCreationOrderBit, Type: LinkTypeHard, CreationOrder: 7, Name: "Data.IR", LinkValue: hardLink}, sb)),
-		must(EncodeLinkMessage(&LinkMessage{Version: 1, Flags: LinkFlagLinkTypeFieldBit, Type: LinkTypeSoft, Name: "s", LinkValue: []byte("\x04\x00/abc")}, sb)),
-		must(EncodeLinkMessage(&LinkMessage{Version: 1, Flags: LinkFlagLinkTypeFieldBit, Type: LinkTypeExternal, Name: "e", LinkValue: []byte("\x04\x00f.h5\x02\x00/x")}, sb)),
+		must(EncodeLinkMessage(&LinkMessage{Version: 1, Flags: LinkFlagLinkTypeFieldBit, Type: LinkTypeSoft, Name: "s", LinkValue: []byte("/abc")}, sb)),
+		must(EncodeLinkMessage(&LinkMessage{Version: 1, Flags: LinkFlagLinkTypeFieldBit, Type: LinkTypeExternal, Name: "e", LinkValue: EncodeExternalLinkValue("f.h5", "/x")}, sb)),
 	}
 
 	// Filter pipeline version 1 (deflate with a name and one client value)

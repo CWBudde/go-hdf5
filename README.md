@@ -356,8 +356,10 @@ yet: writing there returns `ErrCreationOrderIndexNotSupported`.
 **Links**:
 
 - ✅ Hard links (full support)
-- ✅ Soft links (symbolic references - full support)
-- ✅ External links (cross-file references - full support)
+- ✅ Soft links (symbolic references; written as Link messages under a
+  new-style root, not resolved when reading yet)
+- ✅ External links (cross-file references; written as Link messages
+  under a new-style root, not resolved when reading yet)
 
 **Read Enhancements**:
 

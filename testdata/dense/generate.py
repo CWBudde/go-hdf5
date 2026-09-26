@@ -28,6 +28,22 @@ with h5py.File(os.path.join(here, "h5py_many.h5"), "w", libver="latest") as f:
         f.attrs["attr%03d" % i] = "value %d" % i
         d.attrs["dattr%03d" % i] = np.float64(i)
 
+# h5py (libver latest): 12 root attributes, one of them longer than 255
+# bytes, and 12 attributes on one dataset. libhdf5 stores them densely in a
+# fractal heap with a single direct block, tracked by a free-space manager.
+with h5py.File(os.path.join(here, "h5py_attrs_small.h5"), "w", libver="latest") as f:
+    d = f.create_dataset("data", data=np.arange(4, dtype="f8"))
+    for i in range(12):
+        f.attrs["attr%02d" % i] = "value %d" % i
+        d.attrs["dattr%02d" % i] = np.float64(i)
+    f.attrs["long"] = "x" * 300
+    # /one keeps its only attribute in dense storage (phase change 0/0).
+    dcpl = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+    dcpl.set_attr_phase_change(0, 0)
+    space = h5py.h5s.create_simple((1,))
+    h5py.h5d.create(f.id, b"one", h5py.h5t.NATIVE_DOUBLE, space, dcpl=dcpl)
+    f["one"].attrs["only"] = np.int32(1)
+
 # netCDF-C: 150 variables and 300 global attributes (creation-order tracked,
 # as netCDF-4 always does), one variable with 200 attributes.
 with netCDF4.Dataset(os.path.join(here, "netcdf4_many.nc"), "w") as ds:

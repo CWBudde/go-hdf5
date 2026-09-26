@@ -81,17 +81,25 @@ func decodeAddress(b []byte) uint64 {
 	return v
 }
 
-// addLink adds a hard link name → childAddr to the new-style group g. When
-// the group tracks creation order, the link gets the next order and the Link
-// Info message's maximum is advanced (H5G__obj_insert).
+// addLink adds a hard link name → childAddr to the new-style group g.
 func (fw *FileWriter) addLink(g *groupLinks, groupPath, name string, childAddr uint64) error {
 	sb := fw.file.Superblock()
+	return fw.addEncodedLink(g, groupPath, name, func(order int64) []byte {
+		return writer.EncodeHardLinkMessage(name, childAddr, order, sb)
+	})
+}
+
+// addEncodedLink adds the link name to the new-style group g; encode returns
+// its Link message for a creation order (-1 for none). When the group tracks
+// creation order, the link gets the next order and the Link Info message's
+// maximum is advanced (H5G__obj_insert).
+func (fw *FileWriter) addEncodedLink(g *groupLinks, groupPath, name string, encode func(order int64) []byte) error {
 	order := int64(-1)
 	tracked := g.linkInfo.HasCreationOrderTracking()
 	if tracked {
 		order = g.linkInfo.MaxCreationOrder
 	}
-	link := writer.EncodedLink{Name: name, Message: writer.EncodeHardLinkMessage(name, childAddr, order, sb)}
+	link := writer.EncodedLink{Name: name, Message: encode(order)}
 	if tracked {
 		link.CreationOrder = uint64(order) //nolint:gosec // G115: MaxCreationOrder is non-negative
 	}

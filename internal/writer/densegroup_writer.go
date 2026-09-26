@@ -156,38 +156,79 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 // A hard link with an ASCII name needs no link type or charset field; the
 // link info is the target object header address.
 func EncodeHardLinkMessage(name string, targetAddr uint64, creationOrder int64, sb *core.Superblock) []byte {
+	addr := make([]byte, sb.OffsetSize)
+	writeUint64(addr, targetAddr, int(sb.OffsetSize), sb.Endianness)
+	return encodeLinkMessage(name, core.LinkTypeHard, addr, creationOrder)
+}
+
+// EncodeSoftLinkMessage encodes a version 1 Link message for a soft link
+// to targetPath; creationOrder is as for EncodeHardLinkMessage. The link
+// info is the path's length (2 bytes) and the path.
+func EncodeSoftLinkMessage(name, targetPath string, creationOrder int64) []byte {
+	return encodeLinkMessage(name, core.LinkTypeSoft, lengthPrefixed([]byte(targetPath)), creationOrder)
+}
+
+// EncodeExternalLinkMessage encodes a version 1 Link message for an
+// external link to objectPath in fileName; creationOrder is as for
+// EncodeHardLinkMessage. The link info is the length (2 bytes) of the
+// user-defined information core.EncodeExternalLinkValue returns, followed
+// by it.
+func EncodeExternalLinkMessage(name, fileName, objectPath string, creationOrder int64) []byte {
+	return encodeLinkMessage(name, core.LinkTypeExternal,
+		lengthPrefixed(core.EncodeExternalLinkValue(fileName, objectPath)), creationOrder)
+}
+
+// lengthPrefixed returns b preceded by its length as a little-endian
+// uint16. The caller ensures that b is shorter than 64 KiB.
+func lengthPrefixed(b []byte) []byte {
+	buf := binary.LittleEndian.AppendUint16(make([]byte, 0, 2+len(b)), uint16(len(b))) //nolint:gosec // G115: checked by the caller
+	return append(buf, b...)
+}
+
+// encodeLinkMessage encodes a version 1 Link message as libhdf5 does: the
+// link type is stored only for links that are not hard links, and the
+// character set of an ASCII name is not stored.
+func encodeLinkMessage(name string, linkType core.LinkType, info []byte, creationOrder int64) []byte {
 	nameBytes := []byte(name)
 	nameLen := uint64(len(nameBytes))
 
-	var sizeCode byte
+	var flags byte
 	lenBytes := 1
 	switch {
 	case nameLen > 0xFFFFFFFF:
-		sizeCode, lenBytes = 3, 8
+		flags, lenBytes = 3, 8
 	case nameLen > 0xFFFF:
-		sizeCode, lenBytes = 2, 4
+		flags, lenBytes = 2, 4
 	case nameLen > 0xFF:
-		sizeCode, lenBytes = 1, 2
+		flags, lenBytes = 1, 2
+	}
+	if linkType != core.LinkTypeHard {
+		flags |= linkFlagLinkType
+	}
+	if creationOrder >= 0 {
+		flags |= linkFlagCreationOrder
 	}
 
-	buf := make([]byte, 0, 2+8+lenBytes+len(nameBytes)+int(sb.OffsetSize))
+	buf := make([]byte, 0, 3+8+lenBytes+len(nameBytes)+len(info))
+	buf = append(buf, 1, flags)
+	if linkType != core.LinkTypeHard {
+		buf = append(buf, byte(linkType))
+	}
 	if creationOrder >= 0 {
-		buf = append(buf, 1, sizeCode|linkFlagCreationOrder)
 		buf = binary.LittleEndian.AppendUint64(buf, uint64(creationOrder))
-	} else {
-		buf = append(buf, 1, sizeCode)
 	}
 	var lenBuf [8]byte
 	binary.LittleEndian.PutUint64(lenBuf[:], nameLen)
 	buf = append(buf, lenBuf[:lenBytes]...)
 	buf = append(buf, nameBytes...)
-	addr := make([]byte, sb.OffsetSize)
-	writeUint64(addr, targetAddr, int(sb.OffsetSize), sb.Endianness)
-	return append(buf, addr...)
+	return append(buf, info...)
 }
 
-// linkFlagCreationOrder marks a Link message that stores the creation order.
-const linkFlagCreationOrder = 0x04
+// Link message flags: the message stores the creation order, the link type.
+const (
+	linkFlagCreationOrder = 0x04
+	linkFlagLinkType      = 0x08
+)
 
 // EncodedLink is a link name with its encoded Link message.
 type EncodedLink struct {

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -53,7 +54,11 @@ type LinkMessage struct {
 	CreationOrder uint64   // Creation order value (optional)
 	CharSet       uint8    // Character set encoding (0=ASCII, 1=UTF-8)
 	Name          string   // Link name
-	LinkValue     []byte   // Link-specific data (depends on type)
+	// LinkValue is the link information: the object header address of a
+	// hard link, the target path of a soft link, the user-defined
+	// information of other links (EncodeExternalLinkValue for external
+	// links). The length field of soft and external links is not included.
+	LinkValue []byte
 }
 
 // Link message flags.
@@ -265,35 +270,34 @@ func parseSoftLinkValue(data []byte, offset int, lm *LinkMessage) error {
 	return nil
 }
 
-// parseExternalLinkValue reads external link value (file name + object path).
+// parseExternalLinkValue reads an external link value: the length of the
+// user-defined link information (2 bytes) followed by that information,
+// which is stored in LinkValue (see GetExternalLinkInfo).
 func parseExternalLinkValue(data []byte, offset int, lm *LinkMessage) error {
-	startOffset := offset // Save start for copying entire value including length fields
-
 	if len(data) < offset+2 {
-		return errors.New("link message truncated (missing external link file name length)")
+		return errors.New("link message truncated (missing external link info length)")
 	}
-	fileNameLength := binary.LittleEndian.Uint16(data[offset : offset+2])
+	infoLength := int(binary.LittleEndian.Uint16(data[offset : offset+2]))
 	offset += 2
 
-	if len(data) < offset+int(fileNameLength)+2 {
-		return errors.New("link message truncated (missing external link file name or path length)")
+	if len(data) < offset+infoLength {
+		return errors.New("link message truncated (missing external link info)")
 	}
-
-	// Calculate total length including both length fields
-	// Format: fileNameLength(2) + fileName + pathLength(2) + path
-	totalLength := 2 + int(fileNameLength) // File name length field + file name
-	pathLengthOffset := offset + int(fileNameLength)
-	pathLength := binary.LittleEndian.Uint16(data[pathLengthOffset : pathLengthOffset+2])
-	totalLength += 2 + int(pathLength) // Path length field + path
-
-	if len(data) < startOffset+totalLength {
-		return errors.New("link message truncated (missing external link data)")
-	}
-
-	// Copy entire external link value from start (including length fields)
-	lm.LinkValue = make([]byte, totalLength)
-	copy(lm.LinkValue, data[startOffset:startOffset+totalLength])
+	lm.LinkValue = make([]byte, infoLength)
+	copy(lm.LinkValue, data[offset:offset+infoLength])
 	return nil
+}
+
+// EncodeExternalLinkValue returns the link information of an external link
+// to objectPath in fileName: a version and flags byte (both 0), then the
+// file name and the object path, each NUL-terminated (H5L__extern_create).
+func EncodeExternalLinkValue(fileName, objectPath string) []byte {
+	value := make([]byte, 0, 1+len(fileName)+1+len(objectPath)+1)
+	value = append(value, 0)
+	value = append(value, fileName...)
+	value = append(value, 0)
+	value = append(value, objectPath...)
+	return append(value, 0)
 }
 
 // EncodeLinkMessage encodes a link message for writing.
@@ -354,8 +358,15 @@ func EncodeLinkMessage(lm *LinkMessage, _ *Superblock) ([]byte, error) {
 	// Add link name
 	size += len(lm.Name)
 
-	// Add link value (depends on type)
+	// Add link value (depends on type); soft and external link values
+	// are preceded by their 2-byte length.
 	size += len(lm.LinkValue)
+	if lm.Type == LinkTypeSoft || lm.Type == LinkTypeExternal {
+		if len(lm.LinkValue) > 0xFFFF {
+			return nil, fmt.Errorf("link value too long: %d bytes (max 65535)", len(lm.LinkValue))
+		}
+		size += 2
+	}
 
 	buf := make([]byte, size)
 	offset := 0
@@ -398,6 +409,10 @@ func EncodeLinkMessage(lm *LinkMessage, _ *Superblock) ([]byte, error) {
 	offset += len(lm.Name)
 
 	// Write link value
+	if lm.Type == LinkTypeSoft || lm.Type == LinkTypeExternal {
+		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(len(lm.LinkValue))) //nolint:gosec // G115: checked above
+		offset += 2
+	}
 	copy(buf[offset:], lm.LinkValue)
 
 	return buf, nil
@@ -457,41 +472,22 @@ func (lm *LinkMessage) GetSoftLinkPath() (string, error) {
 	return string(lm.LinkValue), nil
 }
 
-// GetExternalLinkInfo extracts the file name and object path from an external link's LinkValue.
+// GetExternalLinkInfo extracts the file name and object path from an external
+// link's LinkValue (see EncodeExternalLinkValue).
 // Returns (fileName, objectPath, error).
 func (lm *LinkMessage) GetExternalLinkInfo() (string, string, error) {
 	if lm.Type != LinkTypeExternal {
 		return "", "", fmt.Errorf("not an external link (type=%s)", lm.Type)
 	}
-
-	if len(lm.LinkValue) < 4 { // Minimum: 2 bytes file name length + 2 bytes path length
+	if len(lm.LinkValue) == 0 {
 		return "", "", errors.New("external link value too short")
 	}
-
-	offset := 0
-
-	// Read file name length (2 bytes)
-	fileNameLength := binary.LittleEndian.Uint16(lm.LinkValue[offset : offset+2])
-	offset += 2
-
-	if len(lm.LinkValue) < offset+int(fileNameLength)+2 {
-		return "", "", errors.New("external link value truncated (missing file name or path length)")
+	if version := lm.LinkValue[0] >> 4; version != 0 {
+		return "", "", fmt.Errorf("unsupported external link version: %d", version)
 	}
-
-	// Read file name
-	fileName := string(lm.LinkValue[offset : offset+int(fileNameLength)])
-	offset += int(fileNameLength)
-
-	// Read path length (2 bytes)
-	pathLength := binary.LittleEndian.Uint16(lm.LinkValue[offset : offset+2])
-	offset += 2
-
-	if len(lm.LinkValue) < offset+int(pathLength) {
-		return "", "", errors.New("external link value truncated (missing object path)")
+	parts := bytes.SplitN(lm.LinkValue[1:], []byte{0}, 3)
+	if len(parts) < 3 {
+		return "", "", errors.New("external link value truncated (missing NUL terminator)")
 	}
-
-	// Read object path
-	objectPath := string(lm.LinkValue[offset : offset+int(pathLength)])
-
-	return fileName, objectPath, nil
+	return string(parts[0]), string(parts[1]), nil
 }

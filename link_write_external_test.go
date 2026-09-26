@@ -287,6 +287,12 @@ func TestValidateExternalFileName(t *testing.T) {
 			wantErr:  false,
 		},
 		{
+			name:     "NUL byte",
+			fileName: "a.h5\x00/x",
+			wantErr:  true,
+			errMsg:   "NUL",
+		},
+		{
 			name:     "valid .hdf5 file",
 			fileName: "data.hdf5",
 			wantErr:  false,
