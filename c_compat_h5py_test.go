@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cwbudde/go-hdf5/internal/core"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +33,18 @@ with h5py.File(sys.argv[1], "r") as f:
         if isinstance(obj, h5py.Dataset):
             data = obj[()]
             entry["shape"] = list(data.shape)
-            if data.dtype.kind == "O":  # variable-length sequences
+            if data.dtype.names:  # compound: flatten fields as "a.b"
+                fields = {}
+                def flatten(prefix, arr):
+                    for n in arr.dtype.names:
+                        sub = arr[n]
+                        if sub.dtype.names:
+                            flatten(prefix + n + ".", sub)
+                        else:
+                            fields[prefix + n] = conv(sub)
+                flatten("", data)
+                entry["fields"] = fields
+            elif data.dtype.kind == "O":  # variable-length sequences
                 entry["sum"] = float(sum(np.sum(np.asarray(x, dtype=np.float64)) for x in data.ravel()))
             else:
                 entry["sum"] = float(np.sum(data))
@@ -63,9 +75,10 @@ print(json.dumps(out))
 `
 
 type h5pyEntry struct {
-	Attrs map[string][]interface{} `json:"attrs"`
-	Shape []int                    `json:"shape"`
-	Sum   float64                  `json:"sum"`
+	Attrs  map[string][]interface{} `json:"attrs"`
+	Shape  []int                    `json:"shape"`
+	Sum    float64                  `json:"sum"`
+	Fields map[string][]interface{} `json:"fields"`
 }
 
 // TestInteropH5py opens files written by this library with the HDF5 C library
@@ -156,10 +169,85 @@ func TestInteropH5py(t *testing.T) {
 			case "vlen_dataset":
 				require.Equal(t, []int{3}, got["/v"].Shape)
 				require.InDelta(t, 21.0, got["/v"].Sum, 1e-9)
+			case "compound_dataset":
+				requireCompoundInteropFields(t, got["/cmp"])
 			case "superblock_v0":
 				require.Equal(t, []interface{}{"SOFA"}, got["/"].Attrs["Conventions"])
 				require.InDelta(t, 4.5, got["/x09"].Sum, 1e-9)
 			}
 		})
+	}
+}
+
+// requireH5py returns the python3 executable, skipping the test when python3
+// or h5py are not installed.
+func requireH5py(t *testing.T) string {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	if err := exec.Command(python, "-c", "import h5py").Run(); err != nil {
+		t.Skip("h5py not available")
+	}
+	return python
+}
+
+// TestInteropH5pyCompoundRead reads compound datasets written by h5py with
+// the oldest (compound datatype version 1) and newest datatype encodings.
+func TestInteropH5pyCompoundRead(t *testing.T) {
+	python := requireH5py(t)
+	const script = `
+import sys
+import numpy as np
+import h5py
+pt = np.dtype([("x", "<f4"), ("y", "<f4")])
+dt = np.dtype([("id", "<i4"), ("value", "<f8"), ("small", "<i2"), ("name", "S6"), ("pt", pt)])
+a = np.array([(1, 1.5, -3, b"alpha", (0.25, -0.5)), (2, -2.25, 300, b"beta", (1.5, 2.5)),
+              (-7, 1e10, 32767, b"gamma!", (-8, 16))], dtype=dt)
+with h5py.File(sys.argv[1], "w", libver=sys.argv[2]) as f:
+    f["cmp"] = a
+`
+	for _, libver := range []string{"earliest", "latest"} {
+		t.Run(libver, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cmp.h5")
+			out, err := exec.Command(python, "-c", script, path, libver).CombinedOutput()
+			require.NoError(t, err, "%s", out)
+
+			f, err := Open(path)
+			require.NoError(t, err)
+			defer f.Close()
+			ds, ok := findDatasetByName(f, "cmp")
+			require.True(t, ok)
+			values, err := ds.ReadCompound()
+			require.NoError(t, err)
+			require.Len(t, values, len(compoundInteropRecords))
+			for i, r := range compoundInteropRecords {
+				require.Equal(t, r.id, values[i]["id"])
+				require.Equal(t, r.value, values[i]["value"])
+				require.Equal(t, r.small, values[i]["small"])
+				require.Equal(t, r.name, values[i]["name"])
+				pt, ok := values[i]["pt"].(core.CompoundValue)
+				require.True(t, ok)
+				require.Equal(t, r.x, pt["x"])
+				require.Equal(t, r.y, pt["y"])
+			}
+		})
+	}
+}
+
+// requireCompoundInteropFields checks the h5py view of the dataset written by
+// writeCompoundInteropFile.
+func requireCompoundInteropFields(t *testing.T, e h5pyEntry) {
+	t.Helper()
+	require.Equal(t, []int{len(compoundInteropRecords)}, e.Shape)
+	require.Len(t, e.Fields, 6, "fields: %v", e.Fields)
+	for i, r := range compoundInteropRecords {
+		require.InDelta(t, float64(r.id), e.Fields["id"][i], 0, "id[%d]", i)
+		require.InDelta(t, r.value, e.Fields["value"][i], 0, "value[%d]", i)
+		require.InDelta(t, float64(r.small), e.Fields["small"][i], 0, "small[%d]", i)
+		require.Equal(t, r.name, e.Fields["name"][i], "name[%d]", i)
+		require.InDelta(t, float64(r.x), e.Fields["pt.x"][i], 0, "pt.x[%d]", i)
+		require.InDelta(t, float64(r.y), e.Fields["pt.y"][i], 0, "pt.y[%d]", i)
 	}
 }

@@ -26,17 +26,19 @@ func TestParseCompoundType(t *testing.T) {
 		{
 			name: "properties too short",
 			dt: &DatatypeMessage{
-				Class:      DatatypeCompound,
-				Properties: []byte{0x01}, // Only 1 byte
+				Class:         DatatypeCompound,
+				Version:       3,
+				ClassBitField: 1,            // 1 member
+				Properties:    []byte{0x01}, // Only 1 byte
 			},
 			wantErr:     true,
-			errContains: "too short",
+			errContains: "not null-terminated",
 		},
 		{
 			name: "unsupported version",
 			dt: &DatatypeMessage{
 				Class:      DatatypeCompound,
-				Version:    2,
+				Version:    6,
 				Properties: []byte{0x00, 0x00},
 			},
 			wantErr:     true,
@@ -86,6 +88,7 @@ func TestParseCompoundType_Version1(t *testing.T) {
 	binary.LittleEndian.PutUint32(dtBuf[0:4], classAndVer)
 	binary.LittleEndian.PutUint32(dtBuf[4:8], 4) // size = 4
 	properties = append(properties, dtBuf...)
+	properties = append(properties, 0, 0, 32, 0) // bit offset 0, precision 32
 
 	dt := &DatatypeMessage{
 		Class:         DatatypeCompound,
@@ -106,9 +109,10 @@ func TestParseCompoundType_Version1(t *testing.T) {
 	require.Equal(t, uint32(4), got.Members[0].Type.Size)
 }
 
-// TestParseCompoundType_Version3 tests version 3 compound parsing.
+// TestParseCompoundType_Version3 tests parsing of the legacy version 3 layout
+// written by go-hdf5 <= v0.16.1 (class bit field 0).
 func TestParseCompoundType_Version3(t *testing.T) {
-	// Version 3 format: num members(4) + [name + offset(4) + datatype(8+)]*
+	// Legacy format: num members(4) + [name + offset(4) + datatype(8+)]*
 	properties := make([]byte, 0, 100)
 
 	// Number of members (4 bytes in v3)
@@ -130,6 +134,7 @@ func TestParseCompoundType_Version3(t *testing.T) {
 	binary.LittleEndian.PutUint32(dtBuf[0:4], classAndVer)
 	binary.LittleEndian.PutUint32(dtBuf[4:8], 8) // size = 8
 	properties = append(properties, dtBuf...)
+	properties = append(properties, make([]byte, 12)...) // float properties
 
 	dt := &DatatypeMessage{
 		Class:      DatatypeCompound,

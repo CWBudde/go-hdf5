@@ -45,8 +45,7 @@ func TestEncodeCompoundDatatypeV3_Simple(t *testing.T) {
 	t.Logf("Encoded length: %d bytes", len(encoded))
 	if len(encoded) >= 12 {
 		t.Logf("Header: class=%d, size=%d", encoded[0]&0x0F, binary.LittleEndian.Uint32(encoded[4:8]))
-		numMembers := binary.LittleEndian.Uint32(encoded[8:12])
-		t.Logf("Member count in properties: %d", numMembers)
+		t.Logf("Member count in class bit field: %d", binary.LittleEndian.Uint16(encoded[1:3]))
 	}
 
 	// Parse and validate
@@ -124,9 +123,10 @@ func TestEncodeCompoundDatatypeV3_WithString(t *testing.T) {
 			Name:   "id",
 			Offset: 0,
 			Type: &DatatypeMessage{
-				Class:   DatatypeFixed,
-				Version: 1,
-				Size:    4,
+				Class:      DatatypeFixed,
+				Version:    1,
+				Size:       4,
+				Properties: []byte{0, 0, 32, 0}, // bit offset 0, precision 32
 			},
 		},
 		{
@@ -135,7 +135,7 @@ func TestEncodeCompoundDatatypeV3_WithString(t *testing.T) {
 			Type: &DatatypeMessage{
 				Class:   DatatypeString,
 				Version: 1,
-				Size:    10,
+				Size:    10, // strings carry no properties
 			},
 		},
 	}
@@ -470,19 +470,16 @@ func TestCreateCompoundTypeFromFields(t *testing.T) {
 			Name:   "field1",
 			Offset: 0,
 			Type: &DatatypeMessage{
-				Class:   DatatypeFixed,
-				Version: 1,
-				Size:    4,
+				Class:      DatatypeFixed,
+				Version:    1,
+				Size:       4,
+				Properties: []byte{0, 0, 32, 0}, // bit offset 0, precision 32
 			},
 		},
 		{
 			Name:   "field2",
 			Offset: 4,
-			Type: &DatatypeMessage{
-				Class:   DatatypeFloat,
-				Version: 1,
-				Size:    8,
-			},
+			Type:   mustBasicType(t, DatatypeFloat, 8),
 		},
 	}
 
@@ -510,71 +507,193 @@ func TestCreateCompoundTypeFromFields(t *testing.T) {
 	}
 }
 
-// TestCompoundDatatypeEncodeDecode_Binary tests binary format correctness.
+// TestCompoundDatatypeEncodeDecode_Binary tests binary format correctness
+// against the HDF5 File Format Specification (datatype message, class 6,
+// version 3): member count in class bit field bits 0-15, unpadded names,
+// member offsets as wide as needed to encode the compound size.
 func TestCompoundDatatypeEncodeDecode_Binary(t *testing.T) {
-	// Manually verify binary format matches HDF5 spec
 	fields := []CompoundFieldDef{
-		{
-			Name:   "x",
-			Offset: 0,
-			Type: &DatatypeMessage{
-				Class:         DatatypeFixed,
-				Version:       1,
-				Size:          4,
-				ClassBitField: 0, // Little-endian, signed
-			},
-		},
+		{Name: "x", Offset: 0, Type: mustBasicType(t, DatatypeFixed, 4)},
+		{Name: "y", Offset: 4, Type: mustBasicType(t, DatatypeFloat, 8)},
 	}
 
-	encoded, err := EncodeCompoundDatatypeV3(4, fields)
+	encoded, err := EncodeCompoundDatatypeV3(12, fields)
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}
 
-	// Verify header format
-	if len(encoded) < 8 {
-		t.Fatalf("Encoded message too short: %d bytes", len(encoded))
+	want := []byte{
+		0x36, 0x02, 0x00, 0x00, // class 6, version 3, 2 members
+		0x0C, 0x00, 0x00, 0x00, // size 12
+		'x', 0, // name
+		0x00,                   // offset 0 (1 byte: size 12 <= 255)
+		0x10, 0x08, 0x00, 0x00, // int, version 1, signed LE
+		0x04, 0x00, 0x00, 0x00, // size 4
+		0x00, 0x00, 0x20, 0x00, // bit offset 0, precision 32
+		'y', 0, // name
+		0x04,                   // offset 4
+		0x11, 0x20, 0x3F, 0x00, // float, version 1, LE, implied mantissa, sign bit 63
+		0x08, 0x00, 0x00, 0x00, // size 8
+		0x00, 0x00, 0x40, 0x00, // bit offset 0, precision 64
+		52, 11, 0, 52, // exponent loc/size, mantissa loc/size
+		0xFF, 0x03, 0x00, 0x00, // exponent bias 1023
 	}
-
-	// Byte 0-3: class (4 bits) | version (4 bits) | reserved (24 bits)
-	header := binary.LittleEndian.Uint32(encoded[0:4])
-	class := header & 0x0F
-	version := (header >> 4) & 0x0F
-
-	if class != uint32(DatatypeCompound) {
-		t.Errorf("Expected class 6 (Compound), got %d", class)
+	if len(encoded) != len(want) {
+		t.Fatalf("encoded length %d, want %d: %#v", len(encoded), len(want), encoded)
 	}
-
-	if version != 3 {
-		t.Errorf("Expected version 3, got %d", version)
+	for i := range want {
+		if encoded[i] != want[i] {
+			t.Fatalf("byte %d = %#x, want %#x (encoded %#v)", i, encoded[i], want[i], encoded)
+		}
 	}
+}
 
-	// Byte 4-7: size
-	size := binary.LittleEndian.Uint32(encoded[4:8])
-	if size != 4 {
-		t.Errorf("Expected size 4, got %d", size)
+// TestCompoundMemberOffsetSize checks the v3 member offset width.
+func TestCompoundMemberOffsetSize(t *testing.T) {
+	cases := map[uint32]int{1: 1, 255: 1, 256: 2, 65535: 2, 65536: 3, 1 << 24: 4, 0xFFFFFFFF: 4}
+	for size, want := range cases {
+		if got := compoundMemberOffsetSize(size); got != want {
+			t.Errorf("compoundMemberOffsetSize(%d) = %d, want %d", size, got, want)
+		}
 	}
+}
 
-	// Byte 8-11: member count (version 3 uses uint32)
-	memberCount := binary.LittleEndian.Uint32(encoded[8:12])
-	if memberCount != 1 {
-		t.Errorf("Expected 1 member, got %d", memberCount)
+// TestEncodeCompoundDatatypeV3_WideOffsets round-trips a compound whose size
+// needs 2- and 3-byte member offsets.
+func TestEncodeCompoundDatatypeV3_WideOffsets(t *testing.T) {
+	for _, total := range []uint32{300, 70000} {
+		str, err := CreateBasicDatatypeMessage(DatatypeString, total-8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields := []CompoundFieldDef{
+			{Name: "s", Offset: 0, Type: str},
+			{Name: "v", Offset: total - 8, Type: mustBasicType(t, DatatypeFloat, 8)},
+		}
+		encoded, err := EncodeCompoundDatatypeV3(total, fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dt, err := ParseDatatypeMessage(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(dt.Properties) != len(encoded)-8 {
+			t.Fatalf("size %d: properties length %d, want %d", total, len(dt.Properties), len(encoded)-8)
+		}
+		ct, err := ParseCompoundType(dt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ct.Members) != 2 || ct.Members[1].Offset != total-8 || ct.Members[0].Type.Size != total-8 {
+			t.Fatalf("size %d: unexpected members %s", total, ct)
+		}
 	}
+}
 
-	// Byte 12+: member name "x" (null-terminated)
-	if encoded[12] != 'x' {
-		t.Errorf("Expected member name 'x', got byte %c", encoded[12])
+// TestParseCompoundType_LegacyGoHDF5V3 parses the version 3 layout written by
+// go-hdf5 <= v0.16.1 (uint32 member count in the properties, 4-byte offsets,
+// 1-byte string properties).
+func TestParseCompoundType_LegacyGoHDF5V3(t *testing.T) {
+	props := []byte{
+		2, 0, 0, 0, // member count
+		'i', 'd', 0,
+		0, 0, 0, 0, // offset 0
+		0x10, 0, 0, 0, 4, 0, 0, 0, // int32 header
+		0, 32, 0, 0, // legacy (wrong) integer properties
+		'n', 0,
+		4, 0, 0, 0, // offset 4
+		0x13, 0, 0, 0, 6, 0, 0, 0, // string[6] header
+		0, // legacy string property byte
 	}
-	if encoded[13] != 0 {
-		t.Errorf("Expected null terminator after name, got byte %d", encoded[13])
+	msg := append([]byte{0x36, 0, 0, 0, 10, 0, 0, 0}, props...)
+	dt, err := ParseDatatypeMessage(msg)
+	if err != nil {
+		t.Fatal(err)
 	}
+	ct, err := ParseCompoundType(dt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ct.Members) != 2 || ct.Members[0].Name != "id" || ct.Members[1].Name != "n" ||
+		ct.Members[1].Offset != 4 || ct.Members[1].Type.Class != DatatypeString || ct.Members[1].Type.Size != 6 {
+		t.Fatalf("unexpected members: %s", ct)
+	}
+}
 
-	// Byte 14-17: member offset (uint32)
-	memberOffset := binary.LittleEndian.Uint32(encoded[14:18])
-	if memberOffset != 0 {
-		t.Errorf("Expected member offset 0, got %d", memberOffset)
+// TestParseCompoundType_Version2 parses a version 2 compound (padded names,
+// 4-byte offsets, no array info).
+func TestParseCompoundType_Version2(t *testing.T) {
+	props := []byte{
+		'a', 'b', 'c', 0, 0, 0, 0, 0, // name padded to 8
+		0, 0, 0, 0, // offset 0
+		0x10, 0x08, 0, 0, 2, 0, 0, 0, 0, 0, 16, 0, // int16
+		'l', 'o', 'n', 'g', 'n', 'a', 'm', 'e', 0, 0, 0, 0, 0, 0, 0, 0, // 8 chars + NUL, padded to 16
+		2, 0, 0, 0, // offset 2
+		0x10, 0x08, 0, 0, 2, 0, 0, 0, 0, 0, 16, 0, // int16
 	}
+	msg := append([]byte{0x26, 2, 0, 0, 4, 0, 0, 0}, props...)
+	msg = append(msg, 0xAA, 0xBB) // trailing message padding must be ignored
+	dt, err := ParseDatatypeMessage(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dt.Properties) != len(props) {
+		t.Fatalf("properties length %d, want %d", len(dt.Properties), len(props))
+	}
+	ct, err := ParseCompoundType(dt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ct.Members) != 2 || ct.Members[1].Name != "longname" || ct.Members[1].Offset != 2 {
+		t.Fatalf("unexpected members: %s", ct)
+	}
+}
 
-	// Byte 18+: member datatype (should be int32)
-	// This is a nested datatype message, so format repeats
+// TestEncodeCompoundDatatypeV3_RejectsBadMemberTypes checks member validation.
+func TestEncodeCompoundDatatypeV3_RejectsBadMemberTypes(t *testing.T) {
+	bad := []CompoundFieldDef{{Name: "x", Offset: 0, Type: &DatatypeMessage{Class: DatatypeFixed, Version: 1, Size: 4}}}
+	if _, err := EncodeCompoundDatatypeV3(4, bad); err == nil {
+		t.Error("expected error for integer member without properties")
+	}
+	overflow := []CompoundFieldDef{{Name: "x", Offset: 2, Type: mustBasicType(t, DatatypeFixed, 4)}}
+	if _, err := EncodeCompoundDatatypeV3(4, overflow); err == nil {
+		t.Error("expected error for member beyond compound size")
+	}
+}
+
+// TestCreateBasicDatatypeMessage checks the spec layout of basic member types.
+func TestCreateBasicDatatypeMessage(t *testing.T) {
+	i16 := mustBasicType(t, DatatypeFixed, 2)
+	if i16.ClassBitField != 0x08 || binary.LittleEndian.Uint16(i16.Properties[0:2]) != 0 ||
+		binary.LittleEndian.Uint16(i16.Properties[2:4]) != 16 {
+		t.Errorf("int16: bitfield %#x, properties %v", i16.ClassBitField, i16.Properties)
+	}
+	f32 := mustBasicType(t, DatatypeFloat, 4)
+	if f32.ClassBitField != 0x1F20 || len(f32.Properties) != 12 ||
+		binary.LittleEndian.Uint16(f32.Properties[2:4]) != 32 || f32.Properties[4] != 23 ||
+		f32.Properties[5] != 8 || f32.Properties[7] != 23 || binary.LittleEndian.Uint32(f32.Properties[8:12]) != 127 {
+		t.Errorf("float32: bitfield %#x, properties %v", f32.ClassBitField, f32.Properties)
+	}
+	s := mustBasicType(t, DatatypeString, 7)
+	if len(s.Properties) != 0 || s.Size != 7 {
+		t.Errorf("string: %+v", s)
+	}
+	for _, c := range []struct {
+		class DatatypeClass
+		size  uint32
+	}{{DatatypeFixed, 3}, {DatatypeFloat, 2}, {DatatypeString, 0}, {DatatypeEnum, 4}} {
+		if _, err := CreateBasicDatatypeMessage(c.class, c.size); err == nil {
+			t.Errorf("class %d size %d: expected error", c.class, c.size)
+		}
+	}
+}
+
+func mustBasicType(t *testing.T, class DatatypeClass, size uint32) *DatatypeMessage {
+	t.Helper()
+	dt, err := CreateBasicDatatypeMessage(class, size)
+	if err != nil {
+		t.Fatalf("CreateBasicDatatypeMessage(%d, %d): %v", class, size, err)
+	}
+	return dt
 }

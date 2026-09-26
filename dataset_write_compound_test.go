@@ -1,6 +1,8 @@
 package hdf5
 
 import (
+	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -210,4 +212,101 @@ func TestWriteCompoundDataset_MultipleFieldTypes(t *testing.T) {
 	t.Logf("   Datatype: struct { int32 i; float64 f; int16 s } (size: 14 bytes)")
 	t.Logf("   Elements: 1")
 	t.Logf("   Total data: 14 bytes written")
+}
+
+// compoundRecord is the Go view of the compound written by
+// writeCompoundInteropFile.
+type compoundRecord struct {
+	id    int32
+	value float64
+	small int16
+	name  string
+	x, y  float32
+}
+
+var compoundInteropRecords = []compoundRecord{
+	{1, 1.5, -3, "alpha", 0.25, -0.5},
+	{2, -2.25, 300, "beta", 1.5, 2.5},
+	{-7, 1e10, 32767, "gamma!", -8, 16},
+}
+
+// writeCompoundInteropFile writes /cmp, a [3] dataset of
+// struct { int32 id; float64 value; int16 small; char name[6]; struct { float32 x, y } pt }
+// with CreateCompoundDataset. Used by the h5py interop scenarios.
+func writeCompoundInteropFile(t *testing.T, path string) {
+	t.Helper()
+	i32, err := core.CreateBasicDatatypeMessage(core.DatatypeFixed, 4)
+	require.NoError(t, err)
+	f64, err := core.CreateBasicDatatypeMessage(core.DatatypeFloat, 8)
+	require.NoError(t, err)
+	i16, err := core.CreateBasicDatatypeMessage(core.DatatypeFixed, 2)
+	require.NoError(t, err)
+	str6, err := core.CreateBasicDatatypeMessage(core.DatatypeString, 6)
+	require.NoError(t, err)
+	f32, err := core.CreateBasicDatatypeMessage(core.DatatypeFloat, 4)
+	require.NoError(t, err)
+
+	point, err := core.CreateCompoundTypeFromFields([]core.CompoundFieldDef{
+		{Name: "x", Offset: 0, Type: f32},
+		{Name: "y", Offset: 4, Type: f32},
+	})
+	require.NoError(t, err)
+
+	ct, err := core.CreateCompoundTypeFromFields([]core.CompoundFieldDef{
+		{Name: "id", Offset: 0, Type: i32},
+		{Name: "value", Offset: 4, Type: f64},
+		{Name: "small", Offset: 12, Type: i16},
+		{Name: "name", Offset: 14, Type: str6},
+		{Name: "pt", Offset: 20, Type: point},
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint32(28), ct.Size)
+
+	raw := make([]byte, 0, 28*len(compoundInteropRecords))
+	for _, r := range compoundInteropRecords {
+		rec := make([]byte, 28)
+		binary.LittleEndian.PutUint32(rec[0:], uint32(r.id))
+		binary.LittleEndian.PutUint64(rec[4:], math.Float64bits(r.value))
+		binary.LittleEndian.PutUint16(rec[12:], uint16(r.small))
+		copy(rec[14:20], r.name) // null-terminated unless all 6 bytes are used
+		binary.LittleEndian.PutUint32(rec[20:], math.Float32bits(r.x))
+		binary.LittleEndian.PutUint32(rec[24:], math.Float32bits(r.y))
+		raw = append(raw, rec...)
+	}
+
+	fw, err := CreateForWrite(path, CreateTruncate)
+	require.NoError(t, err)
+	ds, err := fw.CreateCompoundDataset("/cmp", ct, []uint64{uint64(len(compoundInteropRecords))})
+	require.NoError(t, err)
+	require.NoError(t, ds.WriteRaw(raw))
+	require.NoError(t, fw.Close())
+}
+
+// TestWriteCompoundDataset_RoundTrip reads back a compound dataset written by
+// CreateCompoundDataset (spec-conformant version 3 compound datatype).
+func TestWriteCompoundDataset_RoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compound_roundtrip.h5")
+	writeCompoundInteropFile(t, path)
+
+	f, err := Open(path)
+	require.NoError(t, err)
+	defer f.Close()
+
+	ds, ok := findDatasetByName(f, "cmp")
+	require.True(t, ok)
+	values, err := ds.ReadCompound()
+	require.NoError(t, err)
+	require.Len(t, values, len(compoundInteropRecords))
+
+	for i, r := range compoundInteropRecords {
+		v := values[i]
+		assert.Equal(t, r.id, v["id"], "record %d id", i)
+		assert.Equal(t, r.value, v["value"], "record %d value", i)
+		assert.Equal(t, r.small, v["small"], "record %d small", i)
+		assert.Equal(t, r.name, v["name"], "record %d name", i)
+		pt, ok := v["pt"].(core.CompoundValue)
+		require.True(t, ok, "record %d pt is %T", i, v["pt"])
+		assert.Equal(t, r.x, pt["x"], "record %d pt.x", i)
+		assert.Equal(t, r.y, pt["y"], "record %d pt.y", i)
+	}
 }

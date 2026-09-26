@@ -17,15 +17,16 @@ type CompoundFieldDef struct {
 // EncodeCompoundDatatypeV3 encodes a version 3 compound datatype message.
 // This is the preferred format for new files (HDF5 1.8+).
 //
-// Format (version 3):
+// Format (version 3, HDF5 File Format Specification IV.A.2.d):
 //   - Header (8 bytes):
-//   - Byte 0-3: Class (4 bits) | Version (4 bits) | Reserved (24 bits)
-//   - Byte 4-7: Size (total compound size in bytes)
-//   - Member count (4 bytes): Number of fields
+//   - Byte 0: Class (low 4 bits) | Version (high 4 bits)
+//   - Bytes 1-3: Class bit field; bits 0-15 hold the number of members
+//   - Bytes 4-7: Size (total compound size in bytes)
 //   - For each member:
 //   - Name (null-terminated, NOT padded)
-//   - Offset (4 bytes, uint32)
-//   - Member datatype (recursive, variable length)
+//   - Byte offset (little-endian; the field is the minimum number of bytes
+//     needed to encode the compound size, e.g. 1 byte for size <= 255)
+//   - Member datatype (full datatype message: header + properties)
 //
 // Parameters:
 //   - totalSize: Total size of compound structure in bytes
@@ -35,7 +36,7 @@ type CompoundFieldDef struct {
 //   - Encoded datatype message bytes
 //   - Error if encoding fails
 //
-// Reference: HDF5 Format Spec III.C, H5Odtype.c:1630-1800.
+// Reference: HDF5 Format Spec IV.A.2.d, H5Odtype.c (H5O__dtype_encode_helper).
 func EncodeCompoundDatatypeV3(totalSize uint32, fields []CompoundFieldDef) ([]byte, error) {
 	if len(fields) == 0 {
 		return nil, errors.New("compound datatype must have at least one field")
@@ -45,13 +46,15 @@ func EncodeCompoundDatatypeV3(totalSize uint32, fields []CompoundFieldDef) ([]by
 		return nil, errors.New("compound datatype size cannot be 0")
 	}
 
-	// Validate field count fits in uint32 (version 3 uses uint32)
-	if len(fields) > 0xFFFFFFFF {
-		return nil, fmt.Errorf("too many fields: %d (max: %d)", len(fields), 0xFFFFFFFF)
+	// The member count lives in bits 0-15 of the class bit field.
+	if len(fields) > 0xFFFF {
+		return nil, fmt.Errorf("too many fields: %d (max: %d)", len(fields), 0xFFFF)
 	}
 
+	offsetSize := compoundMemberOffsetSize(totalSize)
+
 	// Calculate properties size (all member definitions)
-	propsSize := 4 // Member count (uint32)
+	propsSize := 0
 
 	for i, field := range fields {
 		if field.Name == "" {
@@ -60,36 +63,32 @@ func EncodeCompoundDatatypeV3(totalSize uint32, fields []CompoundFieldDef) ([]by
 		if field.Type == nil {
 			return nil, fmt.Errorf("field %d (%s): type cannot be nil", i, field.Name)
 		}
+		if err := validateInlineDatatype(field.Type); err != nil {
+			return nil, fmt.Errorf("field %d (%s): %w", i, field.Name, err)
+		}
+		if uint64(field.Offset)+uint64(field.Type.Size) > uint64(totalSize) {
+			return nil, fmt.Errorf("field %d (%s): offset %d + size %d exceeds compound size %d",
+				i, field.Name, field.Offset, field.Type.Size, totalSize)
+		}
 
-		// Name (null-terminated, NOT padded in version 3)
-		propsSize += len(field.Name) + 1 // +1 for null terminator
-
-		// Offset (4 bytes)
-		propsSize += 4
-
-		// Member datatype (inline encoding: header + properties)
-		propsSize += 8                          // Header (8 bytes always)
-		propsSize += len(field.Type.Properties) // Properties (variable)
+		propsSize += len(field.Name) + 1        // Name + null terminator
+		propsSize += offsetSize                 // Byte offset
+		propsSize += 8                          // Member datatype header
+		propsSize += len(field.Type.Properties) // Member datatype properties
 	}
 
 	// Allocate buffer: header (8 bytes) + properties
 	buf := make([]byte, 8+propsSize)
 	offset := 0
 
-	// Encode header (8 bytes)
-	// Byte 0-3: Class (low 4 bits) | Version (next 4 bits) | Reserved (high 24 bits)
+	// Header: class, version and class bit field (member count).
 	version := uint8(3)
-	classAndVersion := uint32(DatatypeCompound) | (uint32(version) << 4)
+	classAndVersion := uint32(DatatypeCompound) | (uint32(version) << 4) | (uint32(len(fields)) << 8) //nolint:gosec // G115: validated above
 	binary.LittleEndian.PutUint32(buf[offset:], classAndVersion)
 	offset += 4
 
 	// Byte 4-7: Total compound size
 	binary.LittleEndian.PutUint32(buf[offset:], totalSize)
-	offset += 4
-
-	// Encode properties: member count + member definitions
-	// Member count (4 bytes, uint32 for version 3)
-	binary.LittleEndian.PutUint32(buf[offset:], uint32(len(fields))) //nolint:gosec // G115: validated above
 	offset += 4
 
 	// Encode each member
@@ -100,15 +99,13 @@ func EncodeCompoundDatatypeV3(totalSize uint32, fields []CompoundFieldDef) ([]by
 		buf[offset] = 0 // Null terminator
 		offset++
 
-		// 2. Member byte offset (4 bytes, uint32)
-		binary.LittleEndian.PutUint32(buf[offset:], field.Offset)
-		offset += 4
+		// 2. Member byte offset (offsetSize bytes, little-endian)
+		for b := 0; b < offsetSize; b++ {
+			buf[offset+b] = byte(field.Offset >> (8 * b))
+		}
+		offset += offsetSize
 
-		// 3. Member datatype (inline encoding - just header + properties)
-		// The member datatype is encoded inline (not through EncodeDatatypeMessage recursion)
-		// Format: header (8 bytes) + properties
-
-		// Encode member datatype header (8 bytes)
+		// 3. Member datatype: header (8 bytes) + properties
 		memberClassAndVersion := uint32(field.Type.Class) | (uint32(field.Type.Version) << 4) | (field.Type.ClassBitField << 8)
 		binary.LittleEndian.PutUint32(buf[offset:], memberClassAndVersion)
 		offset += 4
@@ -116,8 +113,6 @@ func EncodeCompoundDatatypeV3(totalSize uint32, fields []CompoundFieldDef) ([]by
 		binary.LittleEndian.PutUint32(buf[offset:], field.Type.Size)
 		offset += 4
 
-		// Encode member datatype properties
-		// Properties must be pre-populated in field.Type.Properties
 		copy(buf[offset:], field.Type.Properties)
 		offset += len(field.Type.Properties)
 	}
@@ -128,6 +123,25 @@ func EncodeCompoundDatatypeV3(totalSize uint32, fields []CompoundFieldDef) ([]by
 	}
 
 	return buf, nil
+}
+
+// validateInlineDatatype checks that a member datatype's properties have the
+// exact length its class requires, so the encoded member list can be walked
+// by a reader (compound members are not length-prefixed).
+func validateInlineDatatype(dt *DatatypeMessage) error {
+	encoded := make([]byte, 8+len(dt.Properties))
+	binary.LittleEndian.PutUint32(encoded[0:4], uint32(dt.Class)|(uint32(dt.Version)<<4)|(dt.ClassBitField<<8))
+	binary.LittleEndian.PutUint32(encoded[4:8], dt.Size)
+	copy(encoded[8:], dt.Properties)
+	n, err := datatypeEncodedLen(encoded)
+	if err != nil {
+		return fmt.Errorf("invalid member datatype: %w", err)
+	}
+	if n != len(encoded) {
+		return fmt.Errorf("invalid member datatype: class %d expects %d property bytes, got %d",
+			dt.Class, n-8, len(dt.Properties))
+	}
+	return nil
 }
 
 // EncodeCompoundDatatypeV1 encodes a version 1 compound datatype message.
@@ -300,43 +314,40 @@ func CreateCompoundTypeFromFields(fields []CompoundFieldDef) (*DatatypeMessage, 
 // CreateBasicDatatypeMessage creates a simple datatype message for basic types.
 // This is a helper for creating member types in compound datatypes.
 //
-// For integer types, properties are 4 bytes (bit offset + precision).
-// For float types, properties are 12 bytes (full IEEE 754 info).
-// For string types, properties are minimal (1 byte for padding/charset).
+//   - DatatypeFixed: signed little-endian integer of 1, 2, 4 or 8 bytes;
+//     properties are bit offset (uint16) and bit precision (uint16).
+//   - DatatypeFloat: little-endian IEEE 754 float of 4 or 8 bytes; properties
+//     are bit offset, bit precision, exponent/mantissa location and size and
+//     exponent bias.
+//   - DatatypeString: fixed-length, null-terminated ASCII string of size
+//     bytes; strings have no properties (padding and character set live in
+//     the class bit field).
 func CreateBasicDatatypeMessage(class DatatypeClass, size uint32) (*DatatypeMessage, error) {
-	version := uint8(1)
-	var properties []byte
-
 	switch class {
-	case DatatypeFixed:
-		// Integer: 4 bytes properties
-		properties = make([]byte, 4)
-		properties[0] = 0              // Byte order: 0=little-endian
-		properties[1] = byte(size * 8) // Precision in bits
-		properties[2] = 0              // Offset
-		properties[3] = 0              // Padding
-
-	case DatatypeFloat:
-		// Float: 12 bytes properties
-		properties = make([]byte, 12)
-		properties[0] = 0              // Byte order: 0=little-endian
-		properties[1] = byte(size * 8) // Precision in bits
-		properties[2] = 0              // Offset
-		// Rest: exponent/mantissa info (simplified for now)
+	case DatatypeFixed, DatatypeFloat:
+		dt := &DatatypeMessage{Class: class, Size: size}
+		if class == DatatypeFixed {
+			dt.ClassBitField = 0x08 // Bit 3: signed (two's complement)
+		}
+		encoded, err := encodeDatatypeNumeric(dt)
+		if err != nil {
+			return nil, err
+		}
+		return ParseDatatypeMessage(encoded)
 
 	case DatatypeString:
-		// String: 1 byte properties (padding/charset)
-		properties = []byte{0} // Null-terminated ASCII
+		if size == 0 {
+			return nil, errors.New("fixed-length strings must have size > 0")
+		}
+		return &DatatypeMessage{
+			Class:         DatatypeString,
+			Version:       1,
+			Size:          size,
+			ClassBitField: 0, // Null-terminated, ASCII
+			Properties:    []byte{},
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported datatype class: %d", class)
 	}
-
-	return &DatatypeMessage{
-		Class:         class,
-		Version:       version,
-		Size:          size,
-		ClassBitField: 0, // Little-endian, no special flags
-		Properties:    properties,
-	}, nil
 }

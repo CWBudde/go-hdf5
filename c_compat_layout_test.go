@@ -252,6 +252,7 @@ func compatScenarios() []writeScenario {
 			require.NoError(t, ds.Write([][]int32{{1, 2, 3}, {4}, {5, 6}}))
 			closeOK(t, fw)
 		}},
+		{"compound_dataset", writeCompoundInteropFile},
 		{"superblock_v0", func(t *testing.T, p string) {
 			fw, err := CreateForWrite(p, CreateTruncate, WithSuperblockVersion(SuperblockV0),
 				WithRootAttribute("Conventions", "SOFA"))
