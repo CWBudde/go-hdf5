@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v2 files with a symbol table root, are still read and can be extended
   with `OpenForWrite`.
 - Dense groups written by `CreateDenseGroup` carry a Group Info message.
+- `OpenForWrite` adds links to new-style roots written by the HDF5 C
+  library (e.g. h5py with `libver="latest"`): dense link storage the writer
+  cannot extend in place (indirect fractal heap blocks, multi-level
+  B-trees, a heap free-space manager) is rewritten with the new link. Roots
+  that also track attribute creation order (netCDF-C, h5py
+  `track_order=True`) cannot be modified yet.
+- Links added to a group that indexes link creation order are added to its
+  creation order index (v2 B-tree type 6), which the compact → dense
+  conversion now creates.
 
 ### Fixed
 

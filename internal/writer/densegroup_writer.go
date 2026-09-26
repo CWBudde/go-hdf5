@@ -123,14 +123,14 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 	for i, link := range dgw.links {
 		encoded[i] = EncodedLink{Name: link.name, Message: EncodeHardLinkMessage(link.name, link.targetAddr, -1, sb)}
 	}
-	heapAddr, btreeAddr, err := WriteDenseLinkStorage(fw, allocator, sb, encoded)
+	storage, err := WriteDenseLinkStorage(fw, allocator, sb, encoded, false)
 	if err != nil {
 		return 0, err
 	}
 
 	// Link Info Message
-	dgw.linkInfo.FractalHeapAddress = heapAddr
-	dgw.linkInfo.NameBTreeAddress = btreeAddr
+	dgw.linkInfo.FractalHeapAddress = storage.HeapAddress
+	dgw.linkInfo.NameBTreeAddress = storage.NameIndexAddress
 	dgw.linkInfo.CreationOrderBTreeAddress = 0 // No creation order tracking in MVP
 
 	// Object header with Link Info Message
@@ -193,6 +193,9 @@ const linkFlagCreationOrder = 0x04
 type EncodedLink struct {
 	Name    string
 	Message []byte
+	// CreationOrder is the creation order stored in Message, the key of the
+	// link in a creation order index.
+	CreationOrder uint64
 }
 
 // NewLinkHeap returns an empty fractal heap for dense link storage: 7-byte
@@ -204,9 +207,10 @@ func NewLinkHeap() *structures.WritableFractalHeap {
 	return heap
 }
 
-// InsertDenseLink stores an encoded Link message in the heap and indexes its
-// name in the type 5 name index.
-func InsertDenseLink(heap *structures.WritableFractalHeap, btree *structures.WritableBTreeV2, link EncodedLink) error {
+// InsertDenseLink stores an encoded Link message in the heap and indexes it
+// in the type 5 name index and, when corder is not nil, in the type 6
+// creation order index.
+func InsertDenseLink(heap *structures.WritableFractalHeap, names, corder *structures.WritableBTreeV2, link EncodedLink) error {
 	heapID, err := heap.InsertObject(link.Message)
 	if err != nil {
 		return fmt.Errorf("failed to insert link %s into heap: %w", link.Name, err)
@@ -217,32 +221,58 @@ func InsertDenseLink(heap *structures.WritableFractalHeap, btree *structures.Wri
 	}
 	var idBuf [8]byte
 	copy(idBuf[:], heapID)
-	if err := btree.InsertRecord(link.Name, binary.LittleEndian.Uint64(idBuf[:])); err != nil {
+	if err := names.InsertRecord(link.Name, binary.LittleEndian.Uint64(idBuf[:])); err != nil {
 		return fmt.Errorf("failed to insert link %s into B-tree: %w", link.Name, err)
+	}
+	if corder != nil {
+		if err := corder.InsertCreationOrderRecord(link.CreationOrder, heapID); err != nil {
+			return fmt.Errorf("failed to insert link %s into creation order index: %w", link.Name, err)
+		}
 	}
 	return nil
 }
 
-// WriteDenseLinkStorage writes the fractal heap and the name index (B-tree
-// v2 type 5) of a dense group holding links and returns their addresses for
-// the group's Link Info message.
+// DenseLinkStorage holds the addresses of a dense group's link storage for
+// its Link Info message.
+type DenseLinkStorage struct {
+	HeapAddress      uint64
+	NameIndexAddress uint64
+	// CreationOrderIndexAddress is set when the storage was written with a
+	// creation order index.
+	CreationOrderIndexAddress uint64
+}
+
+// WriteDenseLinkStorage writes the fractal heap, the name index (B-tree v2
+// type 5) and, when indexCreationOrder is set, the creation order index
+// (type 6) of a dense group holding links.
 //
 // Reference: H5Gdense.c - H5G__dense_create(), H5G__dense_insert().
-func WriteDenseLinkStorage(fw *FileWriter, allocator *Allocator, sb *core.Superblock, links []EncodedLink) (heapAddr, btreeAddr uint64, err error) {
+func WriteDenseLinkStorage(fw *FileWriter, allocator *Allocator, sb *core.Superblock, links []EncodedLink, indexCreationOrder bool) (DenseLinkStorage, error) {
+	var st DenseLinkStorage
 	heap := NewLinkHeap()
-	btree := structures.NewWritableBTreeV2(0) // libhdf5 node size (512), grows as needed
+	names := structures.NewWritableBTreeV2(0) // libhdf5 node size (512), grows as needed
+	var corder *structures.WritableBTreeV2
+	if indexCreationOrder {
+		corder = structures.NewWritableLinkCreationOrderBTreeV2(0)
+	}
 	for _, link := range links {
-		if err := InsertDenseLink(heap, btree, link); err != nil {
-			return 0, 0, err
+		if err := InsertDenseLink(heap, names, corder, link); err != nil {
+			return st, err
 		}
 	}
-	if heapAddr, err = heap.WriteToFile(fw, allocator, sb); err != nil {
-		return 0, 0, fmt.Errorf("failed to write fractal heap: %w", err)
+	var err error
+	if st.HeapAddress, err = heap.WriteToFile(fw, allocator, sb); err != nil {
+		return st, fmt.Errorf("failed to write fractal heap: %w", err)
 	}
-	if btreeAddr, err = btree.WriteToFile(fw, allocator, sb); err != nil {
-		return 0, 0, fmt.Errorf("failed to write B-tree v2: %w", err)
+	if st.NameIndexAddress, err = names.WriteToFile(fw, allocator, sb); err != nil {
+		return st, fmt.Errorf("failed to write B-tree v2: %w", err)
 	}
-	return heapAddr, btreeAddr, nil
+	if corder != nil {
+		if st.CreationOrderIndexAddress, err = corder.WriteToFile(fw, allocator, sb); err != nil {
+			return st, fmt.Errorf("failed to write creation order index: %w", err)
+		}
+	}
+	return st, nil
 }
 
 // createObjectHeader creates object header with Link Info Message.
