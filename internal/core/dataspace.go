@@ -33,9 +33,22 @@ func ParseDataspaceMessage(data []byte) (*DataspaceMessage, error) {
 
 	version := data[0]
 
-	// Support both version 1 and version 2.
-	if version != 1 && version != 2 {
+	// Support both version 1 and version 2. The header is
+	// version(1) + dimensionality(1) + flags(1) + reserved(5) = 8 bytes in
+	// version 1 and version(1) + dimensionality(1) + flags(1) + type(1) =
+	// 4 bytes in version 2.
+	var offset int
+	switch version {
+	case 1:
+		offset = 8
+	case 2:
+		offset = 4
+	default:
 		return nil, fmt.Errorf("unsupported dataspace version: %d", version)
+	}
+	if len(data) < offset {
+		return nil, fmt.Errorf("dataspace message too short: %d bytes, version %d header needs %d",
+			len(data), version, offset)
 	}
 
 	dimensionality := data[1]
@@ -55,7 +68,7 @@ func ParseDataspaceMessage(data []byte) (*DataspaceMessage, error) {
 	if dimensionality == 0 {
 		// Version 2 records the type explicitly; a null dataspace has no
 		// elements at all.
-		if version == 2 && len(data) >= 4 && DataspaceType(data[3]) == DataspaceNull {
+		if version == 2 && DataspaceType(data[3]) == DataspaceNull {
 			ds.Type = DataspaceNull
 			return ds, nil
 		}
@@ -67,16 +80,6 @@ func ParseDataspaceMessage(data []byte) (*DataspaceMessage, error) {
 
 	// Simple dataspace.
 	ds.Type = DataspaceSimple
-
-	// Determine offset based on version.
-	var offset int
-	if version == 1 {
-		// Version 1: version(1) + dimensionality(1) + flags(1) + reserved(5) = 8 bytes.
-		offset = 8
-	} else {
-		// Version 2: version(1) + dimensionality(1) + flags(1) + type(1) = 4 bytes.
-		offset = 4
-	}
 
 	// Auto-detect dimension size based on message length.
 	// Version 1 spec says 4 bytes, but some files (v0 superblock) use 8 bytes.

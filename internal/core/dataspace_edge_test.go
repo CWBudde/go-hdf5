@@ -68,3 +68,21 @@ func TestParseDataspaceMessage_PermutationIndices(_ *testing.T) {
 	// We're just checking it doesn't panic
 	_ = err
 }
+
+// TestParseDataspaceMessage_TruncatedHeader checks that a message shorter
+// than its version's header (v1: 8 bytes, v2: 4) is an error, not an index
+// out of range panic (found by fuzzing a SOFA file).
+func TestParseDataspaceMessage_TruncatedHeader(t *testing.T) {
+	for _, data := range [][]byte{
+		{},
+		{1},
+		{1, 1},
+		{2, 0},
+		{2, 1, 0},
+		{1, 0, 0},
+		{1, 1, 0, 0, 0, 0, 0},
+	} {
+		_, err := ParseDataspaceMessage(data)
+		require.Error(t, err, "% x", data)
+	}
+}

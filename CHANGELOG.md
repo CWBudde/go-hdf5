@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A dataset attribute whose message exceeds the 64 KiB header message
   limit is an error at `CreateDataset`. It used to produce an object
   header with a wrapped-around message size, and the dataset disappeared.
+- A dataspace message shorter than its version's header (8 bytes in
+  version 1, 4 in version 2) is an error instead of an index out of range
+  panic (found by fuzzing a go-sofa file; added to the `FuzzOpen` corpus).
 - String datatype messages are 8 bytes as the format specifies; they had
   an extra byte that libmysofa could not skip.
 - Scalar attribute dataspaces are written as the 4-byte version 2 message
