@@ -59,6 +59,9 @@ func TestStringAttributesAreScalarText(t *testing.T) {
 			require.NotNil(t, a, name)
 			require.Equal(t, core.DataspaceScalar, a.Dataspace.Type, "%s must have a scalar dataspace", name)
 			require.Equal(t, uint32(max(len(want), 1)), a.Datatype.Size, name)
+			// ASCII character set even for "héllo wörld", as netCDF-C writes
+			// text: libmysofa rejects UTF-8 attributes in dense storage.
+			require.Zero(t, a.Datatype.ClassBitField&0xF0, "%s must use the ASCII character set", name)
 			v, err := a.ReadValue()
 			require.NoError(t, err)
 			require.Equal(t, want, v, name)
@@ -131,6 +134,7 @@ func TestNetCDFSeesTextAttributes(t *testing.T) {
 		s := string(out)
 		require.Contains(t, s, `"Conventions": ["str", "SOFA"]`)
 		require.Contains(t, s, `"Comment": ["str", "added later"]`)
+		require.Contains(t, s, `"Title": ["str", "h\u00e9llo w\u00f6rld"]`)
 		require.Contains(t, s, `"long_name": ["str", "the x"]`)
 		if dense {
 			require.Contains(t, s, `"a9": ["str", "value a9"]`)

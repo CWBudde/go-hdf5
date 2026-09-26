@@ -229,6 +229,12 @@ func (fw *FileWriter) writeDimensionScaleAttributes() error {
 	}
 	fw.dimScales = nil
 
+	if fw.findDimensionHeap {
+		fw.findDimensionHeap = false
+		if err := fw.findDimensionListHeap(); err != nil {
+			return fmt.Errorf("find %s global heap collection: %w", dimensionListAttr, err)
+		}
+	}
 	for _, ds := range st.datasets {
 		// Only DIMENSION_LIST goes to the global heap collection reserved
 		// for it (see reserveDimensionHeap).
@@ -246,6 +252,106 @@ func (fw *FileWriter) writeDimensionScaleAttributes() error {
 		}
 	}
 	return nil
+}
+
+// findDimensionListHeap looks up, in a file opened with OpenForWrite, the
+// global heap collection holding the DIMENSION_LIST references, so the
+// attributes rewritten at Close keep theirs below 64 KiB (see
+// reserveDimensionHeap): the collection all existing references are in or,
+// without any, the empty one CreateForWrite reserved right after the root
+// group. Without either, the references go to a new collection.
+func (fw *FileWriter) findDimensionListHeap() error {
+	if fw.globalHeapWriter == nil {
+		fw.globalHeapWriter = newGlobalHeapWriter(fw)
+	}
+	sb := fw.file.Superblock()
+	if fw.globalHeapWriter.dimensionHeap != nil || sb.OffsetSize != 8 {
+		return nil
+	}
+	addrs, err := fw.dimensionListCollections()
+	if err != nil {
+		return err
+	}
+	var addr uint64
+	switch {
+	case len(addrs) == 1:
+		addr = addrs[0]
+	case len(addrs) > 1 || sb.Version == core.Version0:
+		return nil
+	default:
+		if addr, err = fw.rootHeaderEnd(); err != nil {
+			return err
+		}
+	}
+	c, err := core.ReadGlobalHeapCollection(fw.writer.Reader(), addr, 8)
+	if err != nil {
+		if len(addrs) == 0 {
+			return nil // no collection reserved after the root group
+		}
+		return err
+	}
+	if c.Address+c.Size > 0x10000 || (len(addrs) == 0 && len(c.Objects) > 0) {
+		return nil
+	}
+	fw.globalHeapWriter.dimensionHeap = collectionBuilderFrom(c)
+	return nil
+}
+
+// dimensionListCollections returns the global heap collections that the
+// DIMENSION_LIST attributes in the file reference, in first-use order.
+func (fw *FileWriter) dimensionListCollections() ([]uint64, error) {
+	var addrs []uint64
+	var walkErr error
+	fw.file.Walk(func(_ string, obj Object) {
+		d, ok := obj.(*Dataset)
+		if !ok || walkErr != nil {
+			return
+		}
+		attr, err := fw.readObjectAttribute(d.Address(), dimensionListAttr)
+		if errors.Is(err, errNoAttribute) {
+			return
+		}
+		if err != nil {
+			walkErr = fmt.Errorf("%s: %w", d.Name(), err)
+			return
+		}
+		for i := 0; i+vlenElementSize <= len(attr.Data); i += vlenElementSize {
+			addr := binary.LittleEndian.Uint64(attr.Data[i+4:])
+			if binary.LittleEndian.Uint32(attr.Data[i:]) > 0 && !slices.Contains(addrs, addr) {
+				addrs = append(addrs, addr)
+			}
+		}
+	})
+	return addrs, walkErr
+}
+
+// rootHeaderEnd returns the address right after the first chunk of the
+// root group's object header.
+func (fw *FileWriter) rootHeaderEnd() (uint64, error) {
+	// Version 2 prefix: "OHDR", version, flags, 16 bytes of times, 4 bytes
+	// of attribute phase change values, and a chunk size of up to 8 bytes.
+	buf := make([]byte, 34)
+	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt
+	if _, err := fw.writer.Reader().ReadAt(buf, int64(fw.rootGroupAddr)); err != nil {
+		return 0, fmt.Errorf("read root group object header: %w", err)
+	}
+	if string(buf[:4]) != "OHDR" {
+		// Version 1: 16-byte prefix, header size at offset 8.
+		return fw.rootGroupAddr + 16 + uint64(binary.LittleEndian.Uint32(buf[8:12])), nil
+	}
+	flags := buf[5]
+	offset := 6
+	if flags&0x20 != 0 {
+		offset += 16
+	}
+	if flags&0x10 != 0 {
+		offset += 4
+	}
+	sizeBytes := 1 << (flags & 0x03)
+	var size [8]byte
+	copy(size[:], buf[offset:offset+sizeBytes])
+	// Chunk data, then the checksum.
+	return fw.rootGroupAddr + uint64(offset+sizeBytes) + binary.LittleEndian.Uint64(size[:]) + 4, nil
 }
 
 // encodedAttributeValue is an attribute value whose datatype, dataspace and

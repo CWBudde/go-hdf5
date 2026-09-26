@@ -50,12 +50,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[][]ObjectRef`, gets collections of its own, so it cannot push the
   references there. Every such file therefore has at least one 4 KiB
   global heap collection, room for about 170 dimension references.
+- String attributes with non-ASCII content keep their UTF-8 bytes but use
+  the ASCII character set, as netCDF-C writes text attributes. libmysofa
+  rejects attributes marked UTF-8 in dense storage, so it could not load
+  files with such a global attribute among more than 8.
 
 ### Fixed
 
 - A dataset attribute whose message exceeds the 64 KiB header message
   limit is an error at `CreateDataset`. It used to produce an object
   header with a wrapped-around message size, and the dataset disappeared.
+- A dataspace message shorter than its version's header (8 bytes in
+  version 1, 4 in version 2) is an error instead of an index out of range
+  panic (found by fuzzing a go-sofa file; added to the `FuzzOpen` corpus).
+- `DIMENSION_LIST` attributes rewritten in an `OpenForWrite` session keep
+  their references in the global heap collection the existing ones are in
+  (or the one reserved at creation) instead of a new collection at the end
+  of the file, which libmysofa cannot resolve beyond 64 KiB. The objects of
+  the replaced attributes stay in the collection.
 - String datatype messages are 8 bytes as the format specifies; they had
   an extra byte that libmysofa could not skip.
 - Scalar attribute dataspaces are written as the 4-byte version 2 message
@@ -73,6 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `TestParsersRejectTruncatedMessages` feeds every header message parser
+  of `internal/core` each prefix of well-formed messages, also with one
+  byte corrupted. Apart from the dataspace message above, none panicked.
 - `TestLibmysofaLoad` loads a written SOFA file with libmysofa when
   `LIBMYSOFA_LOAD` names the harness built by `scripts/libmysofa/build.sh`.
 
