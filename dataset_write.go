@@ -1337,8 +1337,7 @@ type DatasetWriter struct {
 	layoutBTreeOffset uint64
 
 	// For RMW scenarios (files opened with OpenForWrite)
-	objectHeader  *core.ObjectHeader         // Full object header (for attribute operations)
-	denseAttrInfo *core.AttributeInfoMessage // Dense attribute storage info (nil if no dense storage)
+	objectHeader *core.ObjectHeader // Full object header (for attribute operations), kept current by them
 }
 
 // Write writes data to the dataset.
@@ -2443,7 +2442,6 @@ func (fw *FileWriter) OpenDataset(path string) (*DatasetWriter, error) {
 	var datatypeMsg *core.DatatypeMessage
 	var dataspaceMsg *core.DataspaceMessage
 	var layoutMsg *core.DataLayoutMessage
-	var attrInfoMsg *core.AttributeInfoMessage
 
 	for _, msg := range oh.Messages {
 		switch msg.Type {
@@ -2462,14 +2460,6 @@ func (fw *FileWriter) OpenDataset(path string) (*DatasetWriter, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse layout: %w", err)
 			}
-		case core.MsgAttributeInfo:
-			attrInfoMsg, err = core.ParseAttributeInfoMessage(msg.Data, fw.file.sb)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse attribute info: %w", err)
-			}
-			if !isDefinedAddress(attrInfoMsg.FractalHeapAddr) {
-				attrInfoMsg = nil // no dense storage yet (libhdf5 placeholder)
-			}
 		}
 	}
 
@@ -2486,15 +2476,14 @@ func (fw *FileWriter) OpenDataset(path string) (*DatasetWriter, error) {
 
 	// Step 5: Create DatasetWriter
 	dsw := &DatasetWriter{
-		fileWriter:    fw,
-		name:          path,
-		address:       foundDataset.Address(),
-		dataAddress:   layoutMsg.DataAddress, // Data address from layout message
-		dataSize:      dataSize,
-		dtype:         datatypeMsg,
-		dims:          dataspaceMsg.Dimensions,
-		objectHeader:  oh,          // Store object header for attribute operations
-		denseAttrInfo: attrInfoMsg, // May be nil if no dense storage yet
+		fileWriter:   fw,
+		name:         path,
+		address:      foundDataset.Address(),
+		dataAddress:  layoutMsg.DataAddress, // Data address from layout message
+		dataSize:     dataSize,
+		dtype:        datatypeMsg,
+		dims:         dataspaceMsg.Dimensions,
+		objectHeader: oh, // Store object header for attribute operations
 	}
 
 	return dsw, nil

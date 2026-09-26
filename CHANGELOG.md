@@ -78,6 +78,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NUL-terminated) instead of two length-prefixed strings. `OpenForWrite`
   could not add links to a group holding an external link written by
   libhdf5.
+- `OpenForWrite` overwrote existing attributes when adding one to dense
+  attribute storage written by libhdf5 (e.g. h5py with more than 8
+  attributes) whose heap has a single direct block, and failed for larger
+  heaps. Dense storage in a layout this library does not write is now
+  rewritten with the change, keeping every attribute's bytes and creation
+  order (the old storage is left unused); storage this library wrote is
+  still edited in place. The same applies to changing and deleting
+  attributes.
+- After a dataset opened with `OpenDataset` moved its attributes to dense
+  storage (an attribute too large for the object header), later attributes
+  were written into the object header beside the dense storage, where
+  libhdf5 does not look for them.
+- Attribute name index records keep the 8th heap ID byte. It holds part of
+  the length of a 64 KiB attribute, which was lost when the index was
+  rewritten.
+- Compact attributes moved to dense storage keep their encoded messages
+  instead of being decoded and encoded again.
 
 - Object header rewrites keep message flags (e.g. constant, shared); they
   were reset to 0.

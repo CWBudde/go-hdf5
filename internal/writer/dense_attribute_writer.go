@@ -31,8 +31,8 @@ type DenseAttributeWriter struct {
 	btree       *structures.WritableBTreeV2
 	attrInfo    *core.AttributeInfoMessage
 
-	// Track attributes for duplicate detection
-	attributes map[string]*core.Attribute // name → attribute
+	// Track attribute names for duplicate detection
+	attributes map[string]struct{}
 
 	// nextCrtIdx is the creation index of the next attribute when the
 	// storage tracks creation order (see TrackCreationOrder).
@@ -55,7 +55,7 @@ func NewDenseAttributeWriter(objectAddr uint64) *DenseAttributeWriter {
 			Version: 0,
 			Flags:   0, // see TrackCreationOrder
 		},
-		attributes: make(map[string]*core.Attribute),
+		attributes: make(map[string]struct{}),
 	}
 }
 
@@ -94,27 +94,41 @@ func (daw *DenseAttributeWriter) AddAttribute(attr *core.Attribute, sb *core.Sup
 // below 0xFFFF: the next index is stored in 2 bytes and must not wrap to 0
 // (libhdf5's H5O_MAX_CRT_ORDER_IDX).
 func (daw *DenseAttributeWriter) AddAttributeWithCreationOrder(attr *core.Attribute, sb *core.Superblock, order uint16) error {
-	tracked := daw.attrInfo.Flags&core.AttributeInfoTrackCreationOrder != 0
-	if tracked && order == 0xFFFF {
-		return fmt.Errorf("maximum attribute creation index reached")
-	}
 	if attr == nil {
 		return fmt.Errorf("attribute is nil")
-	}
-
-	if attr.Name == "" {
-		return fmt.Errorf("attribute name cannot be empty")
-	}
-
-	// Check for duplicates
-	if _, exists := daw.attributes[attr.Name]; exists {
-		return fmt.Errorf("attribute %q already exists", attr.Name)
 	}
 
 	// 1. Encode attribute message (reuse existing function!)
 	attrMsg, err := core.EncodeAttributeFromStruct(attr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to encode attribute: %w", err)
+	}
+	return daw.AddEncodedAttributeWithCreationOrder(attr.Name, attrMsg, order)
+}
+
+// AddEncodedAttribute adds the encoded attribute message attrMsg of the
+// attribute name as it is, with the next creation order if the storage
+// tracks it.
+func (daw *DenseAttributeWriter) AddEncodedAttribute(name string, attrMsg []byte) error {
+	return daw.AddEncodedAttributeWithCreationOrder(name, attrMsg, uint16(min(daw.nextCrtIdx, 0xFFFF)))
+}
+
+// AddEncodedAttributeWithCreationOrder adds the encoded attribute message
+// attrMsg of the attribute name as it is (e.g. read from existing storage,
+// keeping datatypes this library cannot encode), with the given creation
+// order as for AddAttributeWithCreationOrder.
+func (daw *DenseAttributeWriter) AddEncodedAttributeWithCreationOrder(name string, attrMsg []byte, order uint16) error {
+	tracked := daw.attrInfo.Flags&core.AttributeInfoTrackCreationOrder != 0
+	if tracked && order == 0xFFFF {
+		return fmt.Errorf("maximum attribute creation index reached")
+	}
+	if name == "" {
+		return fmt.Errorf("attribute name cannot be empty")
+	}
+
+	// Check for duplicates
+	if _, exists := daw.attributes[name]; exists {
+		return fmt.Errorf("attribute %q already exists", name)
 	}
 
 	// 2. Insert into fractal heap (REUSE from dense groups!)
@@ -135,14 +149,14 @@ func (daw *DenseAttributeWriter) AddAttributeWithCreationOrder(attr *core.Attrib
 	if !tracked {
 		order = 0
 	}
-	err = daw.btree.InsertAttributeRecord(attr.Name, heapID, order)
+	err = daw.btree.InsertAttributeRecord(name, heapID, order)
 	if err != nil {
 		return fmt.Errorf("failed to insert into B-tree: %w", err)
 	}
 	daw.nextCrtIdx = max(daw.nextCrtIdx, uint32(order)+1)
 
 	// Track for duplicate detection
-	daw.attributes[attr.Name] = attr
+	daw.attributes[name] = struct{}{}
 
 	return nil
 }
