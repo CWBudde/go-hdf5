@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
 	"github.com/cwbudde/go-hdf5/internal/utils"
@@ -33,8 +34,9 @@ type File struct {
 	loadDepth int
 
 	// objects maps object header addresses to objects and their paths,
-	// built on first use by reference resolution (see objectIndex).
-	objects map[uint64]objectEntry
+	// built once on first use by reference resolution (see objectIndex).
+	objects     map[uint64]objectEntry
+	objectsOnce sync.Once
 }
 
 // maxLoadDepth bounds object nesting while loading the group hierarchy.

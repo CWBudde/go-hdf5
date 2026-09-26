@@ -460,7 +460,10 @@ func (a *Attribute) ReadValue() (interface{}, error) {
 		return values, nil
 
 	case DatatypeReference:
-		return a.readReferenceValue(totalElements, isScalar)
+		// Only a scalar dataspace yields a single reference; a one-element
+		// simple dataspace (written from []ObjectRef{ref}) stays a slice.
+		return a.readReferenceValue(totalElements,
+			a.Dataspace.Type == DataspaceScalar || len(a.Dataspace.Dimensions) == 0)
 
 	case DatatypeCompound:
 		return a.readCompoundValue(totalElements, isScalar)

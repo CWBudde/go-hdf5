@@ -19,9 +19,14 @@ type objectEntry struct {
 // first use by walking the group hierarchy. When an object is reachable by
 // several paths (hard links), the first path in depth-first order wins.
 func (f *File) objectIndex() map[uint64]objectEntry {
-	if f.objects != nil {
-		return f.objects
-	}
+	f.objectsOnce.Do(f.buildObjectIndex)
+	return f.objects
+}
+
+// buildObjectIndex walks the file once to fill f.objects. It runs under
+// f.objectsOnce so concurrent first callers of Path, ObjectPath and
+// Dereference do not race on the map.
+func (f *File) buildObjectIndex() {
 	idx := make(map[uint64]objectEntry)
 	if f.root != nil && f.sb != nil {
 		idx[f.sb.RootGroup] = objectEntry{path: "/", obj: f.root}
@@ -48,7 +53,6 @@ func (f *File) objectIndex() map[uint64]objectEntry {
 		idx[addr] = objectEntry{path: path, obj: obj}
 	})
 	f.objects = idx
-	return idx
 }
 
 // Dereference returns the object (a *Dataset, *Group or *NamedDatatype) an
