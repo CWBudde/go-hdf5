@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.18.0] - 2026-09-26
+
 ### Changed
 
 - The root group of superblock v2/v3 files is a new-style group, like
