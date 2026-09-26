@@ -80,6 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `TestParsersRejectTruncatedMessages` feeds every header message parser
+  of `internal/core` each prefix of well-formed messages, also with one
+  byte corrupted. Apart from the dataspace message above, none panicked.
 - `TestLibmysofaLoad` loads a written SOFA file with libmysofa when
   `LIBMYSOFA_LOAD` names the harness built by `scripts/libmysofa/build.sh`.
 
