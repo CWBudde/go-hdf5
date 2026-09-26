@@ -217,31 +217,46 @@ func TestGZIPFilter_CompressionLevels(t *testing.T) {
 	}
 }
 
+// TestGZIPFilter_CompressionRatio_Comparison checks that the compression
+// level is honored. It used to require level 9 output to be strictly smaller
+// than level 1 output, which DEFLATE does not guarantee: for highly redundant
+// input both levels can reach the same encoding, and since Go 1.27's
+// compress/flate they do for this input (121 bytes each). Instead the test
+// checks properties that hold for every conforming encoder: each level
+// round-trips, compresses redundant data well, and the zlib header advertises
+// the requested level (RFC 1950 FLEVEL: 0 = fastest ... 3 = maximum).
 func TestGZIPFilter_CompressionRatio_Comparison(t *testing.T) {
-	// Test that higher compression levels produce smaller output
 	data := bytes.Repeat([]byte("Lorem ipsum dolor sit amet. "), 1000)
 
-	filter1 := NewGZIPFilter(1)
-	filter9 := NewGZIPFilter(9)
+	tests := []struct {
+		level  int
+		flevel byte
+	}{
+		{1, 0},
+		{6, 2},
+		{9, 3},
+	}
 
-	compressed1, err := filter1.Apply(data)
-	require.NoError(t, err)
+	for _, tt := range tests {
+		filter := NewGZIPFilter(tt.level)
 
-	compressed9, err := filter9.Apply(data)
-	require.NoError(t, err)
+		compressed, err := filter.Apply(data)
+		require.NoError(t, err)
 
-	// Level 9 should produce smaller output than level 1
-	require.Less(t, len(compressed9), len(compressed1),
-		"Level 9 should compress better than level 1")
+		// zlib header: CMF (deflate, 32K window) + FLG with FLEVEL in bits 6-7.
+		require.GreaterOrEqual(t, len(compressed), 2)
+		require.Equal(t, byte(0x78), compressed[0], "level %d: CMF", tt.level)
+		require.Equal(t, tt.flevel, compressed[1]>>6, "level %d: FLEVEL", tt.level)
+		require.Zero(t, (uint16(compressed[0])<<8|uint16(compressed[1]))%31, "level %d: FCHECK", tt.level)
 
-	// Both should decompress correctly
-	decompressed1, err := filter1.Remove(compressed1)
-	require.NoError(t, err)
-	require.Equal(t, data, decompressed1)
+		// 28 KB of a repeated 28-byte phrase must shrink by far more than 10x
+		// at any level.
+		require.Less(t, len(compressed)*10, len(data), "level %d: %d bytes", tt.level, len(compressed))
 
-	decompressed9, err := filter9.Remove(compressed9)
-	require.NoError(t, err)
-	require.Equal(t, data, decompressed9)
+		decompressed, err := filter.Remove(compressed)
+		require.NoError(t, err)
+		require.Equal(t, data, decompressed)
+	}
 }
 
 func TestGZIPFilter_Remove_InvalidData(t *testing.T) {

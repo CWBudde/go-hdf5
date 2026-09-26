@@ -618,63 +618,71 @@ func TestMetricsCollector_Concurrent(t *testing.T) {
 	}
 }
 
-// TestMetricsCollector_Performance verifies low overhead.
+// TestMetricsCollector_Performance verifies that recording is cheap in a way
+// that does not depend on wall-clock timing: the hot-path recorders must not
+// allocate, and the cost of a Snapshot must not grow with the number of
+// recorded events. (Absolute nanosecond budgets used to be asserted here, but
+// they fail under the race detector, which slows every mutex and atomic
+// operation down by an order of magnitude, and on loaded CI machines.)
+// Timings are still logged for information; see the benchmarks for numbers.
 func TestMetricsCollector_Performance(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping performance test in short mode")
-	}
-
 	mc := NewMetricsCollector()
 
-	const iterations = 100000
-
-	// Benchmark RecordOperation (should be <10ns)
-	start := time.Now()
-	for i := 0; i < iterations; i++ {
-		mc.RecordOperation(OpWrite)
-	}
-	elapsed := time.Since(start)
-	avgRecordOp := elapsed / iterations
-
-	if avgRecordOp > 200*time.Nanosecond {
-		t.Errorf("RecordOperation too slow: avg %v (expected <200ns)", avgRecordOp)
-	}
-
-	t.Logf("RecordOperation avg: %v", avgRecordOp)
-
-	// Benchmark RecordEvaluation (should be <100ns)
 	decision := Decision{
 		Mode:       ModeLazy,
 		Confidence: 0.85,
 		Config:     &structures.LazyRebalancingConfig{},
 	}
 
+	// Warm up so that every map key used below already exists.
+	mc.RecordOperation(OpWrite)
+	mc.RecordEvaluation(decision, time.Millisecond)
+	snapshotAllocsSmall := testing.AllocsPerRun(100, func() { _ = mc.Snapshot() })
+
+	const iterations = 100000
+
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		mc.RecordOperation(OpWrite)
+	}
+	t.Logf("RecordOperation avg: %v", time.Since(start)/iterations)
+
 	start = time.Now()
 	for i := 0; i < iterations; i++ {
 		mc.RecordEvaluation(decision, time.Millisecond)
 	}
-	elapsed = time.Since(start)
-	avgRecordEval := elapsed / iterations
+	t.Logf("RecordEvaluation avg: %v", time.Since(start)/iterations)
 
-	if avgRecordEval > 500*time.Nanosecond {
-		t.Errorf("RecordEvaluation too slow: avg %v (expected <500ns)", avgRecordEval)
+	if allocs := testing.AllocsPerRun(1000, func() { mc.RecordOperation(OpWrite) }); allocs != 0 {
+		t.Errorf("RecordOperation allocates %v times per call, want 0", allocs)
+	}
+	if allocs := testing.AllocsPerRun(1000, func() { mc.RecordEvaluation(decision, time.Millisecond) }); allocs != 0 {
+		t.Errorf("RecordEvaluation allocates %v times per call, want 0", allocs)
 	}
 
-	t.Logf("RecordEvaluation avg: %v", avgRecordEval)
+	// Snapshot copies fixed-size histograms: its cost is independent of
+	// how many events were recorded.
+	snapshotAllocsLarge := testing.AllocsPerRun(100, func() { _ = mc.Snapshot() })
+	if snapshotAllocsLarge != snapshotAllocsSmall {
+		t.Errorf("Snapshot allocations grew with history: %v after 2 events, %v after %d",
+			snapshotAllocsSmall, snapshotAllocsLarge, 2*iterations)
+	}
 
-	// Benchmark Snapshot (should be <100µs)
 	start = time.Now()
 	for i := 0; i < 1000; i++ {
 		_ = mc.Snapshot()
 	}
-	elapsed = time.Since(start)
-	avgSnapshot := elapsed / 1000
+	t.Logf("Snapshot avg: %v", time.Since(start)/1000)
 
-	if avgSnapshot > 1*time.Millisecond {
-		t.Errorf("Snapshot too slow: avg %v (expected <1ms)", avgSnapshot)
+	// Nothing was lost on the way.
+	snap := mc.Snapshot()
+	wantOps := int64(1 + iterations + 1001) // AllocsPerRun makes one extra warm-up call
+	if snap.TotalOperations != wantOps || snap.OperationsByType[OpWrite] != wantOps {
+		t.Errorf("operations: total %d, writes %d, want %d", snap.TotalOperations, snap.OperationsByType[OpWrite], wantOps)
 	}
-
-	t.Logf("Snapshot avg: %v", avgSnapshot)
+	if snap.TotalEvaluations != wantOps || snap.DecisionsByMode[ModeLazy] != wantOps {
+		t.Errorf("evaluations: total %d, lazy %d, want %d", snap.TotalEvaluations, snap.DecisionsByMode[ModeLazy], wantOps)
+	}
 }
 
 // TestMetricsCollector_Integration_SmartRebalancer verifies integration.
