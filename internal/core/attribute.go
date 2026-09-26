@@ -605,16 +605,14 @@ func readDenseAttributes(r io.ReaderAt, attrInfo *AttributeInfoMessage, sb *Supe
 			attrInfo.FractalHeapAddr, attrInfo.BTreeNameIndexAddr)
 	}
 
-	// Step 1: Read B-tree v2 header to get root node address and record count
-	btreeHeader, err := readBTreeV2HeaderRaw(r, attrInfo.BTreeNameIndexAddr, sb)
+	// Step 1: Read all name index records (any tree depth) to get heap IDs.
+	btreeHeader, records, err := ReadBTreeV2Records(r, attrInfo.BTreeNameIndexAddr, sb)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read B-tree header: %w", err)
+		return nil, fmt.Errorf("failed to read attribute name index: %w", err)
 	}
-
-	// Step 2: Read B-tree leaf node to get all heap IDs
-	heapIDs, err := readBTreeV2LeafRecords(r, btreeHeader.RootNodeAddr, btreeHeader.NumRecordsRoot, btreeHeader.Type, btreeHeader.RecordSize, sb)
+	heapIDs, err := attributeHeapIDs(btreeHeader, records)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read B-tree leaf: %w", err)
+		return nil, err
 	}
 
 	if len(heapIDs) == 0 {
@@ -662,152 +660,24 @@ func readDenseAttributes(r io.ReaderAt, attrInfo *AttributeInfoMessage, sb *Supe
 	return attributes, nil
 }
 
-// btreeV2HeaderRaw represents a minimal B-tree v2 header.
-// Reference: H5B2hdr.c in C library.
-type btreeV2HeaderRaw struct {
-	Version        uint8
-	Type           uint8
-	NodeSize       uint32
-	RecordSize     uint16
-	Depth          uint16
-	RootNodeAddr   uint64
-	NumRecordsRoot uint16
-	TotalRecords   uint64
-}
-
-// readBTreeV2HeaderRaw reads a B-tree v2 header directly from file.
-// Format (Section III.A.2 of HDF5 spec):
-//   - Signature "BTHD" (4 bytes)
-//   - Version (1 byte)
-//   - Type (1 byte)
-//   - Node Size (4 bytes)
-//   - Record Size (2 bytes)
-//   - Depth (2 bytes)
-//   - Split Percent (1 byte)
-//   - Merge Percent (1 byte)
-//   - Root Node Address (offsetSize bytes)
-//   - Number of Records in Root (2 bytes)
-//   - Total Records (8 bytes)
-//   - Checksum (4 bytes)
-func readBTreeV2HeaderRaw(r io.ReaderAt, addr uint64, sb *Superblock) (*btreeV2HeaderRaw, error) {
-	// Allocate buffer for header (max size with 8-byte offsets: 4+1+1+4+2+2+1+1+8+2+8+4 = 38 bytes)
-	buf := make([]byte, 38)
-	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-	n, err := r.ReadAt(buf, int64(addr))
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("read failed at 0x%X: %w", addr, err)
-	}
-	if n < 20 {
-		return nil, fmt.Errorf("header too short: %d bytes", n)
-	}
-
-	// Check signature
-	if string(buf[0:4]) != "BTHD" {
-		return nil, fmt.Errorf("invalid B-tree v2 signature: %q", buf[0:4])
-	}
-
-	header := &btreeV2HeaderRaw{}
-	offset := 4
-
-	// Version
-	header.Version = buf[offset]
-	offset++
-
-	// Type
-	header.Type = buf[offset]
-	offset++
-
-	// Node Size (4 bytes)
-	header.NodeSize = sb.Endianness.Uint32(buf[offset : offset+4])
-	offset += 4
-
-	// Record Size (2 bytes)
-	header.RecordSize = sb.Endianness.Uint16(buf[offset : offset+2])
-	offset += 2
-
-	// Depth (2 bytes)
-	header.Depth = sb.Endianness.Uint16(buf[offset : offset+2])
-	offset += 2
-
-	// Skip Split % and Merge % (1 byte each)
-	offset += 2
-
-	// Root Node Address (offsetSize bytes)
-	offsetSize := int(sb.OffsetSize)
-	if offset+offsetSize > len(buf) {
-		return nil, fmt.Errorf("buffer too short for root node address")
-	}
-	header.RootNodeAddr = readAddress(buf[offset:offset+offsetSize], offsetSize)
-	offset += offsetSize
-
-	// Number of Records in Root (2 bytes)
-	if offset+2 > len(buf) {
-		return nil, fmt.Errorf("buffer too short for num records")
-	}
-	header.NumRecordsRoot = sb.Endianness.Uint16(buf[offset : offset+2])
-	offset += 2
-
-	// Total Records (8 bytes)
-	if offset+8 > len(buf) {
-		return nil, fmt.Errorf("buffer too short for total records")
-	}
-	header.TotalRecords = sb.Endianness.Uint64(buf[offset : offset+8])
-
-	return header, nil
-}
-
-// readBTreeV2LeafRecords reads heap IDs from a B-tree v2 leaf node.
-// Format (Section III.A.2 of HDF5 spec):
-//   - Signature "BTLF" (4 bytes)
-//   - Version (1 byte)
-//   - Type (1 byte)
-//   - Records (N × record size):
-//     Each record: Name Hash (4 bytes) + Heap ID (7 bytes)
-//   - Checksum (4 bytes)
-func readBTreeV2LeafRecords(r io.ReaderAt, addr uint64, numRecords uint16, btreeType uint8, recordSize uint16, _ *Superblock) ([][7]byte, error) {
-	// Record layouts:
-	//   type 8 (attribute name index): heap ID (8) + flags (1) + creation order (4) + hash (4)
-	//   legacy go-hdf5 (type 5 layout): hash (4) + heap ID (7)
-	recSize := 11
+// attributeHeapIDs extracts the 7-byte heap IDs of attribute name index
+// records. Record layouts:
+//
+//	type 8 (attribute name index): heap ID (8) + flags (1) + creation order (4) + hash (4)
+//	legacy go-hdf5 (type 5 layout): hash (4) + heap ID (7)
+func attributeHeapIDs(info *BTreeV2Info, records [][]byte) ([][7]byte, error) {
 	heapIDPos := 4
-	if btreeType == 8 {
-		recSize = int(recordSize)
+	if info.Type == 8 {
 		heapIDPos = 0
-		if recSize < 7 {
-			return nil, fmt.Errorf("attribute name record size %d too small", recSize)
-		}
 	}
-
-	// Header: 4 (sig) + 1 (ver) + 1 (type) = 6 bytes
-	// Checksum: 4 bytes
-	// The size is computed in uint64 (at most ~4 GiB for uint16 fields) and
-	// checked against the file size before anything is allocated.
-	bufSize := 6 + uint64(numRecords)*uint64(recSize) + 4
-	buf, err := utils.ReadAtChecked(r, addr, bufSize, "B-tree v2 leaf")
-	if err != nil {
-		return nil, err
+	if int(info.RecordSize) < heapIDPos+7 {
+		return nil, fmt.Errorf("attribute name record size %d too small", info.RecordSize)
 	}
-
-	// Check signature
-	if string(buf[0:4]) != "BTLF" {
-		return nil, fmt.Errorf("invalid B-tree v2 leaf signature: %q", buf[0:4])
+	ids := make([][7]byte, len(records))
+	for i, rec := range records {
+		copy(ids[i][:], rec[heapIDPos:heapIDPos+7])
 	}
-
-	// Skip version (1) and type (1)
-	offset := 6
-
-	// Read records
-	heapIDs := make([][7]byte, numRecords)
-	for i := uint16(0); i < numRecords; i++ {
-		if offset+recSize > len(buf) {
-			return nil, fmt.Errorf("buffer too short for record %d", i)
-		}
-
-		copy(heapIDs[i][:], buf[offset+heapIDPos:offset+heapIDPos+7])
-		offset += recSize
-	}
-
-	return heapIDs, nil
+	return ids, nil
 }
 
 // fractalHeapHeaderRaw represents a minimal fractal heap header.
