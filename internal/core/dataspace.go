@@ -53,6 +53,12 @@ func ParseDataspaceMessage(data []byte) (*DataspaceMessage, error) {
 
 	// Determine dataspace type based on dimensionality.
 	if dimensionality == 0 {
+		// Version 2 records the type explicitly; a null dataspace has no
+		// elements at all.
+		if version == 2 && len(data) >= 4 && DataspaceType(data[3]) == DataspaceNull {
+			ds.Type = DataspaceNull
+			return ds, nil
+		}
 		// Scalar dataspace.
 		ds.Type = DataspaceScalar
 		ds.Dimensions = []uint64{1} // Treat scalar as 1-element array.

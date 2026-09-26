@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `OpenReader(r io.ReaderAt, size int64)` opens a file from any
+  `io.ReaderAt` (e.g. `bytes.Reader`); all bounds checks use `size`.
+  `Open` is now built on it.
+- `CreateForWriteTo(w io.Writer, opts...)` creates a file in memory and
+  writes it to `w` on `Close` (same options as `CreateForWrite`; wrap an
+  `io.WriterAt` with `io.NewOffsetWriter`). The output is byte-identical to
+  `CreateForWrite`.
+- Dataset metadata without reading data: `Dataset.Shape()`, `MaxShape()`
+  (`Unlimited` for unlimited dimensions), `NumElements()`, `Datatype()`.
+- Dimension scale reading (H5DS): `Dataset.IsDimensionScale()`,
+  `DimensionScaleName()`, `DimensionList()`, `AttachedScales(dim)`,
+  `ReferenceList()`.
+- Object references: `File.Dereference(ref)`, `File.ObjectPath(ref)`,
+  `Dataset.Reference()`, `Dataset.Path()`. `ReadAttribute` decodes object
+  reference attributes (`ObjectRef`, `[]ObjectRef`), variable-length
+  reference lists (`[][]ObjectRef`) and compound attributes
+  (`core.CompoundValue`); compound datasets and attributes decode object
+  reference members as `ObjectRef` (previously "unsupported datatype class
+  6/7").
+
+### Changed
+
+- `ObjectRef` is now an alias of `core.ObjectReference` so read and write
+  use the same type (source compatible).
+
+### Fixed
+
+- Null dataspaces (version 2) were reported as scalar.
+
 ## [v0.16.1] - 2026-09-25
 
 ### Fixed

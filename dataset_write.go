@@ -3,6 +3,7 @@ package hdf5
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"reflect"
 	"sort"
@@ -551,6 +552,9 @@ type FileWriter struct {
 	config   *FileWriteConfig // Configuration for write operations
 	readOnly bool             // Opened with OpenReadOnly: never modify the file
 
+	// sink receives the finished in-memory file on Close (CreateForWriteTo).
+	sink io.Writer
+
 	// Root group metadata for linking objects
 	rootGroupAddr  uint64 // Address of root group object header
 	rootBTreeAddr  uint64 // Address of root group B-tree
@@ -756,6 +760,21 @@ func WithRootAttribute(name string, value interface{}) WriteOption {
 //	fw, err := hdf5.CreateForWrite("data.h5", hdf5.CreateTruncate,
 //	    hdf5.WithSuperblockVersion(core.Version0))
 func CreateForWrite(filename string, mode CreateMode, opts ...interface{}) (*FileWriter, error) {
+	cfg, tempFW, err := parseCreateOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Map CreateMode to writer.CreateMode and create basic writer
+	fw, err := initializeFileWriter(filename, mode, cfg.superblockSize())
+	if err != nil {
+		return nil, err
+	}
+	return newFileWriter(fw, filename, cfg, tempFW)
+}
+
+// parseCreateOptions applies the options accepted by CreateForWrite.
+func parseCreateOptions(opts []interface{}) (*FileWriteConfig, *FileWriter, error) {
 	// Apply default configuration
 	cfg := &FileWriteConfig{
 		SuperblockVersion: core.Version2, // Modern format by default
@@ -775,22 +794,15 @@ func CreateForWrite(filename string, mode CreateMode, opts ...interface{}) (*Fil
 			// For now, just apply it to temp FileWriter
 			_ = o(tempFW)
 		default:
-			return nil, fmt.Errorf("invalid option type: %T", opt)
+			return nil, nil, fmt.Errorf("invalid option type: %T", opt)
 		}
 	}
+	return cfg, tempFW, nil
+}
 
-	// Calculate superblock size based on version
-	superblockSize := uint64(48) // v2/v3
-	if cfg.SuperblockVersion == core.Version0 {
-		superblockSize = 96 // v0 is larger
-	}
-
-	// Map CreateMode to writer.CreateMode and create basic writer
-	fw, err := initializeFileWriter(filename, mode, superblockSize)
-	if err != nil {
-		return nil, err
-	}
-
+// newFileWriter writes the root group and superblock of a new file through
+// fw and wraps it. fw is closed on error.
+func newFileWriter(fw *writer.FileWriter, filename string, cfg *FileWriteConfig, tempFW *FileWriter) (*FileWriter, error) {
 	// Ensure cleanup on error
 	cleanupOnError := true
 	defer func() {
@@ -2473,13 +2485,22 @@ func (fw *FileWriter) Close() error {
 		return fmt.Errorf("failed to flush: %w", err)
 	}
 
+	// Hand an in-memory file to its destination.
+	var sinkErr error
+	if fw.sink != nil {
+		if _, err := fw.sink.Write(fw.writer.Bytes()); err != nil {
+			sinkErr = fmt.Errorf("failed to write file to destination: %w", err)
+		}
+		fw.sink = nil
+	}
+
 	// Close writer
 	if err := fw.writer.Close(); err != nil {
 		return fmt.Errorf("failed to close writer: %w", err)
 	}
 
 	fw.writer = nil
-	return nil
+	return sinkErr
 }
 
 // updateSuperblockEOA sets the superblock end-of-file address to the end of
@@ -2490,22 +2511,20 @@ func (fw *FileWriter) updateSuperblockEOA() error {
 	}
 
 	eoa := fw.writer.EndOfFile()
-	if f := fw.writer.File(); f != nil {
-		st, err := f.Stat()
-		if err != nil {
-			return fmt.Errorf("failed to stat file: %w", err)
-		}
-		size := uint64(st.Size()) //nolint:gosec // G115: file size is non-negative
-		switch {
-		case size > eoa:
-			eoa = size
-		case size < eoa:
-			// Space was allocated but never written (e.g. a dataset whose
-			// Write was never called). The C library rejects files shorter
-			// than their EOA as truncated, so extend the file with zeros.
-			if err := f.Truncate(int64(eoa)); err != nil { //nolint:gosec // G115: EOA fits in int64
-				return fmt.Errorf("failed to extend file to end-of-file address: %w", err)
-			}
+	st, err := fw.writer.Size()
+	if err != nil {
+		return fmt.Errorf("failed to stat file: %w", err)
+	}
+	size := uint64(st) //nolint:gosec // G115: file size is non-negative
+	switch {
+	case size > eoa:
+		eoa = size
+	case size < eoa:
+		// Space was allocated but never written (e.g. a dataset whose
+		// Write was never called). The C library rejects files shorter
+		// than their EOA as truncated, so extend the file with zeros.
+		if err := fw.writer.Truncate(int64(eoa)); err != nil { //nolint:gosec // G115: EOA fits in int64
+			return fmt.Errorf("failed to extend file to end-of-file address: %w", err)
 		}
 	}
 

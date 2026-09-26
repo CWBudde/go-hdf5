@@ -224,6 +224,9 @@ func parseMemberValue(data []byte, datatype *DatatypeMessage, r io.ReaderAt, sb 
 		}
 		return values[0], nil
 
+	case datatype.IsObjectReference():
+		return decodeObjectReference(data, datatype.Size)
+
 	default:
 		return nil, fmt.Errorf("unsupported member datatype: %s", datatype)
 	}
