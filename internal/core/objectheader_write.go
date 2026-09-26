@@ -21,9 +21,90 @@ type ObjectHeaderWriter struct {
 
 // MessageWriter represents a message that can be written to an object header.
 type MessageWriter struct {
-	Type MessageType
-	Data []byte
+	Type   MessageType
+	Flags  uint8  // message flags
+	CrtIdx uint16 // creation index, written if the header tracks attribute creation order
+	Data   []byte
 }
+
+// v2MessageHeaderSize returns the size of a message header in a version 2
+// object header with the given flags: type (1), size (2), flags (1) and,
+// when attribute creation order is tracked, the creation index (2).
+func v2MessageHeaderSize(headerFlags uint8) int {
+	if headerFlags&ObjectHeaderAttrCreationOrderTracked != 0 {
+		return 6
+	}
+	return 4
+}
+
+// appendV2MessageHeader appends a version 2 message header.
+func appendV2MessageHeader(buf []byte, typ MessageType, size int, flags uint8, crtIdx uint16, tracked bool) []byte {
+	buf = append(buf, byte(typ))
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(size)) //nolint:gosec // G115: callers check size <= 0xFFFF
+	buf = append(buf, flags)
+	if tracked {
+		buf = binary.LittleEndian.AppendUint16(buf, crtIdx)
+	}
+	return buf
+}
+
+// TrackAttributeCreationOrder makes a version 2 header track attribute
+// creation order, as netCDF-C does for groups and variables (but without
+// the creation order index, see AttributeInfoTrackCreationOrder): the
+// attribute messages get creation indexes in their current order, and an
+// Attribute Info message records the next index. libhdf5, and so netCDF-C
+// and ncdump, then list the attributes in the order they were written
+// instead of an order of its own.
+//
+// If the header already has an Attribute Info message (dense storage), it
+// must track creation order itself (writer.DenseAttributeWriter).
+// Version 1 headers are left unchanged.
+func (ohw *ObjectHeaderWriter) TrackAttributeCreationOrder(sb *Superblock) error {
+	if ohw.Version != 2 {
+		return nil
+	}
+	ohw.Flags |= ObjectHeaderAttrCreationOrderTracked
+	var n uint64
+	insertAt := len(ohw.Messages)
+	for i := range ohw.Messages {
+		switch ohw.Messages[i].Type {
+		case MsgAttribute:
+			if n > maxCreationIndex {
+				return fmt.Errorf("more than %d attributes", maxCreationIndex+1)
+			}
+			ohw.Messages[i].CrtIdx = uint16(n)
+			n++
+			insertAt = min(insertAt, i)
+		case MsgAttributeInfo:
+			info, err := ParseAttributeInfoMessage(ohw.Messages[i].Data, sb)
+			if err != nil {
+				return err
+			}
+			if info.Flags&AttributeInfoTrackCreationOrder == 0 {
+				return fmt.Errorf("attribute info message does not track creation order")
+			}
+			return nil
+		case MsgNil:
+			insertAt = min(insertAt, i)
+		}
+	}
+	data, err := EncodeAttributeInfoMessage(&AttributeInfoMessage{
+		Flags:              AttributeInfoTrackCreationOrder,
+		MaxCreationIndex:   n,
+		FractalHeapAddr:    undefinedAddress,
+		BTreeNameIndexAddr: undefinedAddress,
+	}, sb)
+	if err != nil {
+		return err
+	}
+	ohw.Messages = append(ohw.Messages[:insertAt],
+		append([]MessageWriter{{Type: MsgAttributeInfo, Data: data}}, ohw.Messages[insertAt:]...)...)
+	return nil
+}
+
+// maxCreationIndex is the largest attribute creation index (2 bytes, like
+// libhdf5's H5O_MAX_CRT_ORDER_IDX).
+const maxCreationIndex = 0xFFFF
 
 // NewMinimalRootGroupHeader creates a minimal object header v2 for an empty root group.
 // This is suitable for MVP file creation - just enough to make a valid HDF5 file.
@@ -139,9 +220,9 @@ func (ohw *ObjectHeaderWriter) sizeV1() uint64 {
 func (ohw *ObjectHeaderWriter) sizeV2() uint64 {
 	// Calculate message data size
 	var messageDataSize uint64
+	h := uint64(v2MessageHeaderSize(ohw.Flags)) //nolint:gosec // G115: 4 or 6
 	for _, msg := range ohw.Messages {
-		// Each message: Type (1) + Size (2) + Flags (1) + Data (variable)
-		messageDataSize += 1 + 2 + 1 + uint64(len(msg.Data))
+		messageDataSize += h + uint64(len(msg.Data))
 	}
 
 	// Determine chunk size field width based on message size
@@ -301,15 +382,12 @@ func (ohw *ObjectHeaderWriter) writeToV1(w io.WriterAt, address uint64) (uint64,
 // writeToV2 writes an object header v2 to the writer.
 // V2 format (current MVP implementation).
 func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64, error) {
-	// Calculate message data size
+	// Calculate message data size: every message has a 4- or 6-byte header
+	// (see v2MessageHeaderSize) and its data.
 	var messageDataSize uint64
+	h := uint64(v2MessageHeaderSize(ohw.Flags)) //nolint:gosec // G115: 4 or 6
 	for _, msg := range ohw.Messages {
-		// Each message has:
-		// - Type (1 byte for v2)
-		// - Size (2 bytes for v2)
-		// - Flags (1 byte for v2)
-		// - Data (variable)
-		messageDataSize += 1 + 2 + 1 + uint64(len(msg.Data))
+		messageDataSize += h + uint64(len(msg.Data))
 	}
 
 	// Calculate total chunk size
@@ -369,21 +447,9 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 	}
 
 	// Write messages
+	tracked := ohw.Flags&ObjectHeaderAttrCreationOrderTracked != 0
 	for _, msg := range ohw.Messages {
-		// Message type (1 byte for v2)
-		buf[offset] = uint8(msg.Type) //nolint:gosec // Safe: message type is limited enum
-		offset++
-
-		// Message data size (2 bytes, little-endian)
-		binary.LittleEndian.PutUint16(buf[offset:offset+2], uint16(len(msg.Data))) //nolint:gosec // Safe: message size validated
-		offset += 2
-
-		// Message flags (1 byte)
-		// For MVP: flags = 0 (not shared, not constant, not shareable)
-		buf[offset] = 0
-		offset++
-
-		// Message data
+		offset = len(appendV2MessageHeader(buf[:offset], msg.Type, len(msg.Data), msg.Flags, msg.CrtIdx, tracked))
 		copy(buf[offset:offset+len(msg.Data)], msg.Data)
 		offset += len(msg.Data)
 	}
@@ -420,6 +486,10 @@ const MaxHeaderMessageSize = 0xFFFF
 // Returns:
 //   - error: Non-nil if header full or add fails
 //
+// In a header that tracks attribute creation order, an attribute message
+// takes the next creation index from the Attribute Info message, which is
+// updated.
+//
 // Limitations:
 //   - Only object header v2 supported
 //   - No message flags (always 0)
@@ -451,11 +521,48 @@ func AddMessageToObjectHeader(oh *ObjectHeader, msgType MessageType, msgData []b
 		Data:   make([]byte, len(msgData)),
 	}
 	copy(newMessage.Data, msgData)
+	if msgType == MsgAttribute && oh.Flags&ObjectHeaderAttrCreationOrderTracked != 0 {
+		idx, err := nextAttributeCreationIndex(oh)
+		if err != nil {
+			return err
+		}
+		newMessage.CrtIdx = idx
+	}
 
 	// Add to messages list
 	oh.Messages = append(oh.Messages, newMessage)
 
 	return nil
+}
+
+// nextAttributeCreationIndex returns the creation index of a new attribute
+// of a header that tracks attribute creation order and advances the maximum
+// creation index of its Attribute Info message. Without one (or one that does
+// not track the order), the index follows the largest one in use.
+func nextAttributeCreationIndex(oh *ObjectHeader) (uint16, error) {
+	for _, m := range oh.Messages {
+		// Version (1), flags (1), then the maximum creation index (2) if
+		// tracked.
+		if m.Type != MsgAttributeInfo || len(m.Data) < 4 || m.Data[1]&AttributeInfoTrackCreationOrder == 0 {
+			continue
+		}
+		idx := binary.LittleEndian.Uint16(m.Data[2:4])
+		if idx == maxCreationIndex {
+			return 0, fmt.Errorf("maximum attribute creation index reached")
+		}
+		binary.LittleEndian.PutUint16(m.Data[2:4], idx+1)
+		return idx, nil
+	}
+	var next uint32
+	for _, m := range oh.Messages {
+		if m.Type == MsgAttribute {
+			next = max(next, uint32(m.CrtIdx)+1)
+		}
+	}
+	if next > maxCreationIndex {
+		return 0, fmt.Errorf("maximum attribute creation index reached")
+	}
+	return uint16(next), nil
 }
 
 // WriteObjectHeader writes an object header back to disk at a given address.
@@ -508,8 +615,10 @@ func WriteObjectHeader(w io.WriterAt, addr uint64, oh *ObjectHeader, sb *Superbl
 	// Convert messages
 	for i, msg := range oh.Messages {
 		ohw.Messages[i] = MessageWriter{
-			Type: msg.Type,
-			Data: msg.Data,
+			Type:   msg.Type,
+			Flags:  msg.Flags,
+			CrtIdx: msg.CrtIdx,
+			Data:   msg.Data,
 		}
 	}
 
@@ -661,37 +770,39 @@ func readV2Chunk0Layout(r io.ReaderAt, addr uint64) (chunkSize, prefixLen uint64
 	return binary.LittleEndian.Uint64(sizeBuf), pos + width, nil
 }
 
-// encodeV2Messages encodes messages as v2 header messages (type, size, flags, data).
-func encodeV2Messages(msgs []*HeaderMessage) ([]byte, error) {
+// encodeV2Messages encodes messages as v2 header messages (type, size,
+// flags, creation index if tracked, data).
+func encodeV2Messages(msgs []*HeaderMessage, tracked bool) ([]byte, error) {
+	h := 4
+	if tracked {
+		h = 6
+	}
 	size := 0
 	for _, m := range msgs {
-		size += 4 + len(m.Data)
+		size += h + len(m.Data)
 	}
 	out := make([]byte, 0, size)
 	for _, m := range msgs {
 		if len(m.Data) > 0xFFFF {
 			return nil, fmt.Errorf("message type %d too large (%d bytes)", m.Type, len(m.Data))
 		}
-		out = append(out, byte(m.Type))
-		out = binary.LittleEndian.AppendUint16(out, uint16(len(m.Data))) //nolint:gosec // G115: checked above
-		out = append(out, 0)
+		out = appendV2MessageHeader(out, m.Type, len(m.Data), m.Flags, m.CrtIdx, tracked)
 		out = append(out, m.Data...)
 	}
 	return out, nil
 }
 
 // appendV2Gap pads a v2 chunk with gap bytes, using NIL messages where possible.
-func appendV2Gap(buf []byte, gap uint64) []byte {
-	for gap >= 4 {
-		n := gap - 4
-		if n > 0xFFFF {
-			n = 0xFFFF
-		}
-		buf = append(buf, byte(MsgNil))
-		buf = binary.LittleEndian.AppendUint16(buf, uint16(n)) //nolint:gosec // G115: n <= 0xFFFF
-		buf = append(buf, 0)
+func appendV2Gap(buf []byte, gap uint64, tracked bool) []byte {
+	h := uint64(4)
+	if tracked {
+		h = 6
+	}
+	for gap >= h {
+		n := min(gap-h, 0xFFFF)
+		buf = appendV2MessageHeader(buf, MsgNil, int(n), 0, 0, tracked)
 		buf = append(buf, make([]byte, n)...)
-		gap -= 4 + n
+		gap -= h + n
 	}
 	// A gap smaller than a message header is allowed at the end of a chunk.
 	return append(buf, make([]byte, gap)...)
@@ -709,9 +820,7 @@ func rewriteObjectHeaderV2InPlace(rw ReaderWriterAt, alloc SpaceAllocator, addr 
 	if _, err := rw.ReadAt(prefix, int64(addr)); err != nil { //nolint:gosec // Safe: address within file bounds
 		return fmt.Errorf("failed to read object header prefix: %w", err)
 	}
-	if prefix[5]&0x04 != 0 {
-		return fmt.Errorf("object header at %d tracks attribute creation order; rewriting not supported", addr)
-	}
+	tracked := prefix[5]&ObjectHeaderAttrCreationOrderTracked != 0
 
 	// Drop NIL and continuation messages: layout is recomputed from scratch.
 	// A single existing continuation chunk is reused when the spilled
@@ -735,19 +844,19 @@ func rewriteObjectHeaderV2InPlace(rw ReaderWriterAt, alloc SpaceAllocator, addr 
 		reuse = nil
 	}
 
-	all, err := encodeV2Messages(msgs)
+	all, err := encodeV2Messages(msgs, tracked)
 	if err != nil {
 		return err
 	}
 
 	chunk := all
 	if uint64(len(all)) > capacity {
-		chunk, err = spillToContinuationChunk(rw, alloc, addr, capacity, msgs, sb, reuse)
+		chunk, err = spillToContinuationChunk(rw, alloc, addr, capacity, msgs, sb, reuse, tracked)
 		if err != nil {
 			return err
 		}
 	}
-	chunk = appendV2Gap(chunk, capacity-uint64(len(chunk)))
+	chunk = appendV2Gap(chunk, capacity-uint64(len(chunk)), tracked)
 
 	buf := make([]byte, 0, uint64(len(prefix))+capacity+ObjectHeaderV2ChecksumSize)
 	buf = append(buf, prefix...)
@@ -793,13 +902,17 @@ func readUintN(b []byte) uint64 {
 // (together with a continuation message), writes the rest into a new "OCHK"
 // continuation chunk and returns the encoded (unpadded) chunk #0 messages.
 func spillToContinuationChunk(rw ReaderWriterAt, alloc SpaceAllocator, addr, capacity uint64,
-	msgs []*HeaderMessage, sb *Superblock, reuse *continuationChunk,
+	msgs []*HeaderMessage, sb *Superblock, reuse *continuationChunk, tracked bool,
 ) ([]byte, error) {
 	offsetSize, lengthSize := uint64(8), uint64(8)
 	if sb != nil && sb.OffsetSize != 0 {
 		offsetSize, lengthSize = uint64(sb.OffsetSize), uint64(sb.LengthSize)
 	}
-	contMsgSize := 4 + offsetSize + lengthSize
+	h := uint64(4)
+	if tracked {
+		h = 6
+	}
+	contMsgSize := h + offsetSize + lengthSize
 	if capacity < contMsgSize {
 		return nil, fmt.Errorf("object header at %d too small (%d bytes) for a continuation message", addr, capacity)
 	}
@@ -807,18 +920,18 @@ func spillToContinuationChunk(rw ReaderWriterAt, alloc SpaceAllocator, addr, cap
 	var used uint64
 	split := 0
 	for split < len(msgs) {
-		sz := 4 + uint64(len(msgs[split].Data))
+		sz := h + uint64(len(msgs[split].Data))
 		if used+sz > capacity-contMsgSize {
 			break
 		}
 		used += sz
 		split++
 	}
-	head, err := encodeV2Messages(msgs[:split])
+	head, err := encodeV2Messages(msgs[:split], tracked)
 	if err != nil {
 		return nil, err
 	}
-	tail, err := encodeV2Messages(msgs[split:])
+	tail, err := encodeV2Messages(msgs[split:], tracked)
 	if err != nil {
 		return nil, err
 	}
@@ -841,7 +954,7 @@ func spillToContinuationChunk(rw ReaderWriterAt, alloc SpaceAllocator, addr, cap
 	block := make([]byte, 0, blockLen)
 	block = append(block, "OCHK"...)
 	block = append(block, tail...)
-	block = appendV2Gap(block, blockLen-need)
+	block = appendV2Gap(block, blockLen-need, tracked)
 	block = binary.LittleEndian.AppendUint32(block, utils.JenkinsChecksum(block))
 	if _, err := rw.WriteAt(block, int64(blockAddr)); err != nil { //nolint:gosec // Safe: allocated address
 		return nil, fmt.Errorf("failed to write continuation chunk: %w", err)
@@ -850,7 +963,7 @@ func spillToContinuationChunk(rw ReaderWriterAt, alloc SpaceAllocator, addr, cap
 	cont := make([]byte, offsetSize+lengthSize)
 	writeUint64(cont[:offsetSize], blockAddr, int(offsetSize), binary.LittleEndian)          //nolint:gosec // G115: 2..8
 	writeUint64(cont[offsetSize:], uint64(len(block)), int(lengthSize), binary.LittleEndian) //nolint:gosec // G115: 2..8
-	contEnc, err := encodeV2Messages([]*HeaderMessage{{Type: MsgContinuation, Data: cont}})
+	contEnc, err := encodeV2Messages([]*HeaderMessage{{Type: MsgContinuation, Data: cont}}, tracked)
 	if err != nil {
 		return nil, err
 	}

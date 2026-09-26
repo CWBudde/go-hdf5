@@ -45,6 +45,15 @@ type AttributeInfoMessage struct {
 	BTreeOrderIndexAddr uint64 // Only present if creation order indexed
 }
 
+// Flags of the Attribute Info message.
+const (
+	// AttributeInfoTrackCreationOrder: the maximum creation index is stored.
+	AttributeInfoTrackCreationOrder uint8 = 0x01
+	// AttributeInfoIndexCreationOrder: dense storage has a creation order
+	// index (v2 B-tree type 9), which go-hdf5 cannot write yet.
+	AttributeInfoIndexCreationOrder uint8 = 0x02
+)
+
 // ParseAttributeMessage parses an attribute message (type 0x000C).
 // Format according to HDF5 spec:
 // - Version (1 byte).
