@@ -52,7 +52,7 @@ const (
 //   - Attributes cannot be modified after creation (write-once)
 //   - No attribute deletion
 func (ds *DatasetWriter) WriteAttribute(name string, value interface{}) error {
-	value, err := ds.fileWriter.prepareAttributeValue(value)
+	value, err := ds.fileWriter.prepareAttributeValue(dimScaleStringAttribute(name, value))
 	if err != nil {
 		return fmt.Errorf("attribute %q: %w", name, err)
 	}
@@ -1077,22 +1077,38 @@ func inferFloat(v reflect.Value) (*core.DatatypeMessage, *core.DataspaceMessage,
 }
 
 // inferString infers datatype for strings.
+//
+// A Go string is written like a netCDF-C text attribute (NC_CHAR): a
+// fixed-length string of exactly len(s) bytes (at least 1), NULLTERM
+// padding, ASCII or (for non-ASCII content) UTF-8 character set, in a
+// scalar dataspace. netCDF-C reads a one-element simple dataspace as an
+// NC_STRING array instead, which e.g. the SOFA Toolbox rejects.
 func inferString(v reflect.Value) (*core.DatatypeMessage, *core.DataspaceMessage, error) {
 	str := v.String()
-	size := uint32(len(str) + 1) //nolint:gosec // Safe: string length fits in uint32
+	size := uint32(max(len(str), 1)) //nolint:gosec // Safe: string length fits in uint32
 
+	var bitField uint32 // NULLTERM, ASCII
+	if !isASCII(str) {
+		bitField |= 0x10 // character set UTF-8
+	}
 	dt := &core.DatatypeMessage{
 		Class:         core.DatatypeString,
 		Size:          size,
-		ClassBitField: 0, // ASCII, null-terminated
+		ClassBitField: bitField,
 	}
 
-	ds := &core.DataspaceMessage{
-		Dimensions: []uint64{1}, // Scalar
-		MaxDims:    nil,
-	}
+	ds := &core.DataspaceMessage{Type: core.DataspaceScalar} // H5S_SCALAR
 
 	return dt, ds, nil
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // inferSlice infers datatype for slices (1D arrays).
@@ -1227,10 +1243,10 @@ func encodeAttributeValue(value interface{}) ([]byte, error) {
 		binary.LittleEndian.PutUint64(buf, bits)
 		return buf, nil
 	case reflect.String:
+		// Exactly the string bytes (see inferString); "" is one NUL byte.
 		str := v.String()
-		buf := make([]byte, len(str)+1)
+		buf := make([]byte, max(len(str), 1))
 		copy(buf, str)
-		buf[len(str)] = 0 // Null terminator
 		return buf, nil
 	case reflect.Slice:
 		return encodeSliceValue(v)
