@@ -312,8 +312,9 @@ func parsePath(path string) (parent, name string) {
 	return path[:lastSlash], path[lastSlash+1:]
 }
 
-// linkToParent links a child object to its parent group.
-// Links the child by adding an entry to the parent's symbol table.
+// linkToParent links a child object to its parent group: a Link message or
+// dense storage entry for new-style groups (the root of superblock v2/v3
+// files), an entry in the symbol table otherwise.
 //
 // Parameters:
 //   - parentPath: Path to parent group ("" or "/" for root)
@@ -323,20 +324,12 @@ func parsePath(path string) (parent, name string) {
 // Returns:
 //   - error: If linking fails
 func (fw *FileWriter) linkToParent(parentPath, childName string, childAddr uint64) error {
-	// Get parent group metadata
-	var heapAddr, btreeAddr uint64
-	if parentPath == "" || parentPath == "/" {
-		// Root group - use root metadata
-		heapAddr = fw.rootHeapAddr
-		btreeAddr = fw.rootBTreeAddr
-	} else {
-		// Non-root group - look up metadata
-		meta, exists := fw.groups[parentPath]
-		if !exists {
-			return fmt.Errorf("parent group %q not found (create it first)", parentPath)
-		}
-		heapAddr = meta.heapAddr
-		btreeAddr = meta.btreeAddr
+	newStyle, heapAddr, btreeAddr, err := fw.parentLinkStorage(parentPath)
+	if err != nil {
+		return err
+	}
+	if newStyle != nil {
+		return fw.addLink(newStyle, parentPath, childName, childAddr)
 	}
 
 	// Step 1: Read the group B-tree and all its symbol table nodes.
@@ -403,6 +396,28 @@ func (fw *FileWriter) linkToParent(parentPath, childName string, childAddr uint6
 	// entries (the C library reads nodes with exactly that capacity) and
 	// rebuild the group B-tree.
 	return fw.writeGroupSymbolTable(btreeAddr, tree, entries)
+}
+
+// parentLinkStorage returns how the group at parentPath stores its links:
+// the group's links for a new-style group (the root of superblock v2/v3
+// files), otherwise the local heap and B-tree of its symbol table.
+func (fw *FileWriter) parentLinkStorage(parentPath string) (newStyle *groupLinks, heapAddr, btreeAddr uint64, err error) {
+	if parentPath != "" && parentPath != "/" {
+		meta, exists := fw.groups[parentPath]
+		if !exists {
+			return nil, 0, 0, fmt.Errorf("parent group %q not found (create it first)", parentPath)
+		}
+		return nil, meta.heapAddr, meta.btreeAddr, nil
+	}
+	// Root group: its object header says how links are stored.
+	root, err := fw.readGroupLinks(fw.rootGroupAddr)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if root.linkInfo != nil {
+		return root, 0, 0, nil
+	}
+	return nil, root.heapAddr, root.btreeAddr, nil
 }
 
 // addHeapString adds s to a group's local heap. When the data segment is
@@ -844,20 +859,16 @@ func (fw *FileWriter) resolveObjectAddress(path string) (uint64, error) {
 	// Parse path
 	parent, name := parsePath(path)
 
-	// Get parent group metadata
-	var btreeAddr, heapAddr uint64
-	if parent == "" || parent == "/" {
-		// Root group
-		btreeAddr = fw.rootBTreeAddr
-		heapAddr = fw.rootHeapAddr
-	} else {
-		// Non-root group - look up metadata
-		meta, exists := fw.groups[parent]
-		if !exists {
-			return 0, fmt.Errorf("parent group %q not found", parent)
+	newStyle, heapAddr, btreeAddr, err := fw.parentLinkStorage(parent)
+	if err != nil {
+		return 0, err
+	}
+	if newStyle != nil {
+		addr, err := fw.lookupLink(newStyle, name)
+		if err != nil {
+			return 0, fmt.Errorf("object not found: %s", path)
 		}
-		btreeAddr = meta.btreeAddr
-		heapAddr = meta.heapAddr
+		return addr, nil
 	}
 
 	// Read the parent group's symbol table nodes to find the object

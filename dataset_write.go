@@ -555,11 +555,13 @@ type FileWriter struct {
 	// sink receives the finished in-memory file on Close (CreateForWriteTo).
 	sink io.Writer
 
-	// Root group metadata for linking objects
+	// Root group metadata for linking objects. Links are added through the
+	// root object header (readGroupLinks); the symbol table addresses are
+	// only set for new superblock v0 files, whose root is old-style.
 	rootGroupAddr  uint64 // Address of root group object header
-	rootBTreeAddr  uint64 // Address of root group B-tree
-	rootHeapAddr   uint64 // Address of root group local heap
-	rootStNodeAddr uint64 // Address of root group symbol table node
+	rootBTreeAddr  uint64 // Address of root group B-tree (v0)
+	rootHeapAddr   uint64 // Address of root group local heap (v0)
+	rootStNodeAddr uint64 // Address of root group symbol table node (v0)
 
 	// Group metadata tracking (supports nested groups)
 	// Maps group path → metadata (heap, symbol table, B-tree addresses)
@@ -811,7 +813,7 @@ func newFileWriter(fw *writer.FileWriter, filename string, cfg *FileWriteConfig,
 		}
 	}()
 
-	// Create root group with Symbol Table structure
+	// Create the root group (symbol table for v0, new-style otherwise)
 	rootInfo, err := createRootGroupStructure(fw, cfg.SuperblockVersion, cfg.orderedRootAttributes())
 	if err != nil {
 		return nil, err
@@ -2949,51 +2951,44 @@ func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8, ro
 	return createRootGroupStructureV2(fw, rootAttributes)
 }
 
-// createRootGroupStructureV2 creates root group for modern format (v2/v3).
-// Order: Heap → B-tree → Object Header (v2 doesn't cache addresses in superblock).
+// createRootGroupStructureV2 creates the root group for superblock v2/v3 as a
+// new-style group, like netCDF-C and libhdf5 with the latest file format:
+// Link Info (no dense storage yet) + Group Info + root attributes. Links are
+// added as compact Link messages and move to dense storage after
+// max_compact (8) links; see linkToParentNewStyle. Readers that only know
+// new-style groups (libmysofa) cannot read symbol table roots in v2 files.
 func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes []namedAttribute) (*rootGroupInfo, error) {
 	const offsetSize = 8
 	const lengthSize = 8
 
-	// Create local heap for root group names
-	rootHeap := structures.NewLocalHeap(256) // Initial capacity for ~10-20 names
-	rootHeapAddr, err := fw.Allocate(rootHeap.Size())
+	sb := &core.Superblock{OffsetSize: offsetSize, LengthSize: lengthSize, Endianness: binary.LittleEndian}
+	linkInfo, err := core.EncodeLinkInfoMessage(&core.LinkInfoMessage{
+		FractalHeapAddress: undefinedAddress,
+		NameBTreeAddress:   undefinedAddress,
+	}, sb)
 	if err != nil {
-		return nil, fmt.Errorf("failed to allocate root heap: %w", err)
+		return nil, fmt.Errorf("failed to encode root link info message: %w", err)
+	}
+	groupMessages := []core.MessageWriter{
+		{Type: core.MsgLinkInfo, Data: linkInfo},
+		{Type: core.MsgGroupInfo, Data: core.EncodeGroupInfoMessage(&core.GroupInfoMessage{})},
 	}
 
-	// Create and write symbol table node
-	rootStNodeAddr, err := createSymbolTableNode(fw, offsetSize)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create and write B-tree
-	rootBTreeAddr, err := createBTreeNode(fw, rootStNodeAddr, offsetSize)
-	if err != nil {
-		return nil, err
-	}
-
-	// Write local heap
-	if err := rootHeap.WriteTo(fw, rootHeapAddr); err != nil {
-		return nil, fmt.Errorf("failed to write root heap: %w", err)
-	}
-
-	// Create and write root group object header
-	rootGroupAddr, rootGroupSize, err := writeRootGroupHeader(fw, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize, 2, rootAttributes)
+	rootGroupAddr, rootGroupSize, err := writeRootGroupHeader(fw, groupMessages, rootLinkSlack, offsetSize, lengthSize, 2, rootAttributes)
 	if err != nil {
 		return nil, err
 	}
 
 	return &rootGroupInfo{
-		groupAddr:  rootGroupAddr,
-		groupSize:  rootGroupSize,
-		btreeAddr:  rootBTreeAddr,
-		heapAddr:   rootHeapAddr,
-		stNodeAddr: rootStNodeAddr,
-		heapSize:   rootHeap.Size(), // For v0 EOF calculation (v2 uses allocator)
+		groupAddr: rootGroupAddr,
+		groupSize: rootGroupSize,
 	}, nil
 }
+
+// rootLinkSlack is the free space (a NIL message) reserved in the first chunk
+// of a new-style root object header, so that the compact Link messages of up
+// to 8 links with short names fit without a continuation chunk.
+const rootLinkSlack = 8 * 32
 
 // createRootGroupStructureV0 creates root group for legacy format (v0).
 //
@@ -3042,7 +3037,9 @@ func createRootGroupStructureV0(fw *writer.FileWriter, rootAttributes []namedAtt
 
 	// V0 superblock requires Object Header v1 (not v2!)
 	const objectHeaderVersion = 1
-	rootGroupAddr, rootGroupSize, err := writeRootGroupHeader(fw, rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize, objectHeaderVersion, rootAttributes)
+	stMsg := core.EncodeSymbolTableMessage(rootBTreeAddr, rootHeapAddr, offsetSize, lengthSize)
+	groupMessages := []core.MessageWriter{{Type: core.MsgSymbolTable, Data: stMsg}}
+	rootGroupAddr, rootGroupSize, err := writeRootGroupHeader(fw, groupMessages, 0, offsetSize, lengthSize, objectHeaderVersion, rootAttributes)
 	if err != nil {
 		return nil, err
 	}
@@ -3084,59 +3081,6 @@ func writeBTreeNodeAt(fw *writer.FileWriter, addr, stNodeAddr uint64, offsetSize
 	}
 
 	return nil
-}
-
-// createSymbolTableNode creates and writes a symbol table node for a group.
-// Returns the address where the node was written.
-func createSymbolTableNode(fw *writer.FileWriter, offsetSize int) (uint64, error) {
-	rootStNode := structures.NewSymbolTableNode(32) // Standard capacity (2*K where K=16)
-
-	// Calculate symbol table node size
-	// Format: 8-byte header + 32 * entrySize
-	// entrySize = 2*offsetSize + 4 + 4 + 16 = 2*8 + 24 = 40 bytes
-	entrySize := 2*offsetSize + 4 + 4 + 16
-	stNodeSize := uint64(8 + 32*entrySize) //nolint:gosec // Safe: constant calculation always fits in uint64
-
-	rootStNodeAddr, err := fw.Allocate(stNodeSize)
-	if err != nil {
-		return 0, fmt.Errorf("failed to allocate root symbol table node: %w", err)
-	}
-
-	// Write symbol table node (empty initially)
-	if err := rootStNode.WriteAt(fw, rootStNodeAddr, uint8(offsetSize), 32, binary.LittleEndian); err != nil { //nolint:gosec // Safe: offsetSize validated to be 8
-		return 0, fmt.Errorf("failed to write root symbol table node: %w", err)
-	}
-
-	return rootStNodeAddr, nil
-}
-
-// createBTreeNode creates and writes a B-tree node for a group.
-// Returns the address where the node was written.
-func createBTreeNode(fw *writer.FileWriter, stNodeAddr uint64, offsetSize int) (uint64, error) {
-	rootBTree := structures.NewBTreeNodeV1(0, 16) // Type 0 = group symbol table, K=16
-
-	// Add symbol table node address as child (with key 0 for empty group)
-	if err := rootBTree.AddKey(0, stNodeAddr); err != nil {
-		return 0, fmt.Errorf("failed to add root B-tree key: %w", err)
-	}
-
-	// Calculate B-tree size
-	// Header: 4 (sig) + 1 (type) + 1 (level) + 2 (entries) + 2*8 (siblings) = 24 bytes
-	// Keys: (2K+1) * offsetSize = 33 * 8 = 264 bytes
-	// Children: 2K * offsetSize = 32 * 8 = 256 bytes
-	btreeSize := uint64(24 + (2*16+1)*offsetSize + 2*16*offsetSize) //nolint:gosec // Safe: constant calculation always fits in uint64
-
-	rootBTreeAddr, err := fw.Allocate(btreeSize)
-	if err != nil {
-		return 0, fmt.Errorf("failed to allocate root B-tree: %w", err)
-	}
-
-	// Write B-tree
-	if err := rootBTree.WriteAt(fw, rootBTreeAddr, uint8(offsetSize), 16, binary.LittleEndian); err != nil { //nolint:gosec // Safe: offsetSize validated to be 8
-		return 0, fmt.Errorf("failed to write root B-tree: %w", err)
-	}
-
-	return rootBTreeAddr, nil
 }
 
 // buildRootAttributeMessages encodes root group attributes as object header
@@ -3213,18 +3157,22 @@ func buildDenseRootAttributes(fw *writer.FileWriter, offsetSize, lengthSize int,
 }
 
 // writeRootGroupHeader creates, allocates and writes the root group object
-// header (symbol table message + attributes). objectHeaderVersion is 1 for
-// superblock v0 files and 2 otherwise.
+// header: the group messages (Symbol Table, or Link Info + Group Info), the
+// root attributes and, if slack > 0, a NIL message of slack bytes reserving
+// room for later messages. objectHeaderVersion is 1 for superblock v0 files
+// and 2 otherwise.
 // Returns the address where the header was written and its size.
-func writeRootGroupHeader(fw *writer.FileWriter, btreeAddr, heapAddr uint64, offsetSize, lengthSize int, objectHeaderVersion uint8, rootAttributes []namedAttribute) (uint64, uint64, error) {
-	stMsg := core.EncodeSymbolTableMessage(btreeAddr, heapAddr, offsetSize, lengthSize)
-	messages := []core.MessageWriter{{Type: core.MsgSymbolTable, Data: stMsg}}
+func writeRootGroupHeader(fw *writer.FileWriter, groupMessages []core.MessageWriter, slack, offsetSize, lengthSize int, objectHeaderVersion uint8, rootAttributes []namedAttribute) (uint64, uint64, error) {
+	messages := append([]core.MessageWriter{}, groupMessages...)
 
 	attrMsgs, err := buildRootAttributeMessages(fw, offsetSize, lengthSize, rootAttributes)
 	if err != nil {
 		return 0, 0, err
 	}
 	messages = append(messages, attrMsgs...)
+	if slack > 0 {
+		messages = append(messages, core.MessageWriter{Type: core.MsgNil, Data: make([]byte, slack)})
+	}
 
 	rootGroupHeader := &core.ObjectHeaderWriter{
 		Version:  objectHeaderVersion,
