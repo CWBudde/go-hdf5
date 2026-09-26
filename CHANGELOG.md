@@ -38,6 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compound datatypes: the writer puts the member count in the class bit
+  field and uses minimal-width member offsets as the spec requires, so h5py
+  reads compound datasets written by `CreateCompoundDataset`; the reader
+  handles compound versions 1–5 (h5py `libver="latest"` writes v5), sizes
+  string/vlen/array/enum/opaque members exactly and decodes 1- and 2-byte
+  integers. Files from v0.16.1 and earlier still read.
+- `CreateBasicDatatypeMessage` writes signed integers with bit offset and
+  precision as two uint16 properties and full IEEE float properties.
+- Contiguous hyperslab reads (`ReadSlice`, `ReadHyperslab`): 3-D+
+  selections starting inside a row returned zeros, partial outer
+  selections returned neighbouring rows, and 1-D reads ignored stride and
+  block.
+
 - Null dataspaces (version 2) were reported as scalar.
 
 ## [v0.16.1] - 2026-09-25
