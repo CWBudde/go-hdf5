@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.17.0] - 2026-09-26
+
 ### Added
 
 - `OpenReader(r io.ReaderAt, size int64)` opens a file from any
