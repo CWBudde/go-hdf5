@@ -318,7 +318,7 @@ func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef) (*encodedA
 			continue // empty sequence: zero length, null heap ID
 		}
 		seq := encodeObjectReferences(refs).data
-		hid, err := fw.globalHeapWriter.WriteToGlobalHeap(seq)
+		hid, err := fw.globalHeapWriter.WriteDimensionReferences(seq)
 		if err != nil {
 			return nil, fmt.Errorf("write reference list %d to global heap: %w", i, err)
 		}

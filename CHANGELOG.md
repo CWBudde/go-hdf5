@@ -43,10 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute, which `Close` writes. It no longer adds a continuation chunk
   to every variable (libmysofa follows at most 25 per file). Attributes
   written after creation can still use up that space.
-- Files with superblock v2/v3 reserve their first global heap collection
-  right after the root group, like netCDF-C files. libmysofa cannot
-  resolve `DIMENSION_LIST` references into a collection beyond 64 KiB.
-  Every such file therefore has at least one 4 KiB global heap collection.
+- Files with superblock v2/v3 reserve a global heap collection for the
+  `DIMENSION_LIST` references right after the root group, like netCDF-C
+  files. libmysofa cannot resolve references into a collection beyond
+  64 KiB. Other variable-length data gets collections of its own, so it
+  cannot push the references there. Every such file therefore has at
+  least one 4 KiB global heap collection.
 
 ### Fixed
 

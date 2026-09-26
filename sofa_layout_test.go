@@ -32,7 +32,6 @@ func TestSOFALayoutForLibmysofa(t *testing.T) {
 
 	scales := map[string]bool{"C": true, "E": true, "I": true, "M": true, "N": true, "R": true}
 	continuations := 0
-	collections := map[uint64]bool{}
 	datasets := 0
 	f.Walk(func(p string, obj Object) {
 		d, ok := obj.(*Dataset)
@@ -51,14 +50,6 @@ func TestSOFALayoutForLibmysofa(t *testing.T) {
 				t.Errorf("%s: attributes must stay compact", p)
 			case core.MsgAttribute:
 				attrs++
-				a, err := core.ParseAttributeMessage(m.Data, sb.Endianness)
-				require.NoError(t, err)
-				if a.Name != dimensionListAttr {
-					continue
-				}
-				for i := 0; i+vlenElementSize <= len(a.Data); i += vlenElementSize {
-					collections[binary.LittleEndian.Uint64(a.Data[i+4:])] = true
-				}
 			}
 		}
 		continuations += conts
@@ -72,6 +63,75 @@ func TestSOFALayoutForLibmysofa(t *testing.T) {
 	})
 	require.Equal(t, 30, datasets)
 	assert.Less(t, continuations, 25, "libmysofa follows at most 25 continuation messages")
+	assertDimensionListHeapBelow64KiB(t, f)
+}
+
+// TestDimensionListHeapReservedForReferences checks that variable-length
+// data written before Close does not take the global heap collection
+// reserved for DIMENSION_LIST: its references would otherwise go to a
+// later collection beyond libmysofa's 64 KiB.
+func TestDimensionListHeapReservedForReferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vlen.h5")
+	fw, err := CreateForWrite(path, CreateTruncate)
+	require.NoError(t, err)
+	x, err := fw.CreateDataset("/x", Float64, []uint64{4})
+	require.NoError(t, err)
+	require.NoError(t, x.Write(seqFloat64(4)))
+	require.NoError(t, x.SetDimensionScale("x"))
+
+	// 160 KiB of data, then 10 KiB of strings: more than the reserved 4 KiB,
+	// so further collections are allocated beyond 64 KiB.
+	big, err := fw.CreateDataset("/big", Float64, []uint64{20000})
+	require.NoError(t, err)
+	require.NoError(t, big.Write(make([]float64, 20000)))
+	texts := make([]string, 50)
+	for i := range texts {
+		texts[i] = strings.Repeat(string(rune('a'+i%26)), 200)
+	}
+	s, err := fw.CreateDataset("/s", VLenString, []uint64{uint64(len(texts))})
+	require.NoError(t, err)
+	require.NoError(t, s.Write(texts))
+
+	v, err := fw.CreateDataset("/v", Float64, []uint64{4})
+	require.NoError(t, err)
+	require.NoError(t, v.Write(seqFloat64(4)))
+	require.NoError(t, v.AttachDimensionScale(0, x))
+	require.NoError(t, fw.Close())
+
+	f, err := Open(path)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	assertDimensionListHeapBelow64KiB(t, f)
+}
+
+// assertDimensionListHeapBelow64KiB checks that the DIMENSION_LIST
+// attributes of all datasets of f reference one global heap collection
+// that ends below 64 KiB, which libmysofa needs.
+func assertDimensionListHeapBelow64KiB(t *testing.T, f *File) {
+	t.Helper()
+	sb := f.Superblock()
+	collections := map[uint64]bool{}
+	f.Walk(func(_ string, obj Object) {
+		d, ok := obj.(*Dataset)
+		if !ok {
+			return
+		}
+		oh, err := core.ReadObjectHeader(f.Reader(), d.Address(), sb)
+		require.NoError(t, err)
+		for _, m := range oh.Messages {
+			if m.Type != core.MsgAttribute {
+				continue
+			}
+			a, err := core.ParseAttributeMessage(m.Data, sb.Endianness)
+			require.NoError(t, err)
+			if a.Name != dimensionListAttr {
+				continue
+			}
+			for i := 0; i+vlenElementSize <= len(a.Data); i += vlenElementSize {
+				collections[binary.LittleEndian.Uint64(a.Data[i+4:])] = true
+			}
+		}
+	})
 
 	assert.Len(t, collections, 1, "all DIMENSION_LIST references in one global heap collection")
 	for addr := range collections {
