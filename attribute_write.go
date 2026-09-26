@@ -1090,35 +1090,24 @@ func inferFloat(v reflect.Value) (*core.DatatypeMessage, *core.DataspaceMessage,
 //
 // A Go string is written like a netCDF-C text attribute (NC_CHAR): a
 // fixed-length string of exactly len(s) bytes (at least 1), NULLTERM
-// padding, ASCII or (for non-ASCII content) UTF-8 character set, in a
-// scalar dataspace. netCDF-C reads a one-element simple dataspace as an
-// NC_STRING array instead, which e.g. the SOFA Toolbox rejects.
+// padding, ASCII character set, in a scalar dataspace. netCDF-C reads a
+// one-element simple dataspace as an NC_STRING array instead, which e.g. the
+// SOFA Toolbox rejects. Like netCDF-C, non-ASCII content keeps its UTF-8
+// bytes under the ASCII character set: libmysofa does not read attributes
+// marked UTF-8 from dense storage.
 func inferString(v reflect.Value) (*core.DatatypeMessage, *core.DataspaceMessage, error) {
 	str := v.String()
 	size := uint32(max(len(str), 1)) //nolint:gosec // Safe: string length fits in uint32
 
-	var bitField uint32 // NULLTERM, ASCII
-	if !isASCII(str) {
-		bitField |= 0x10 // character set UTF-8
-	}
 	dt := &core.DatatypeMessage{
 		Class:         core.DatatypeString,
 		Size:          size,
-		ClassBitField: bitField,
+		ClassBitField: 0, // NULLTERM, ASCII
 	}
 
 	ds := &core.DataspaceMessage{Type: core.DataspaceScalar} // H5S_SCALAR
 
 	return dt, ds, nil
-}
-
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
 }
 
 // inferSlice infers datatype for slices (1D arrays).

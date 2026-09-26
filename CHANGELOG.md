@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[][]ObjectRef`, gets collections of its own, so it cannot push the
   references there. Every such file therefore has at least one 4 KiB
   global heap collection, room for about 170 dimension references.
+- String attributes with non-ASCII content keep their UTF-8 bytes but use
+  the ASCII character set, as netCDF-C writes text attributes. libmysofa
+  rejects attributes marked UTF-8 in dense storage, so it could not load
+  files with such a global attribute among more than 8.
 
 ### Fixed
 

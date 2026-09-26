@@ -297,6 +297,8 @@ func requireRootLinkScenario(t *testing.T, name string, got map[string]h5pyEntry
 		require.Contains(t, got["/Extra13"].Attrs, "DIMENSION_LIST")
 		require.Len(t, got["/Annotated"].Attrs, 11)
 		require.Equal(t, []interface{}{"annotation 9"}, got["/Annotated"].Attrs["Description09"])
+		require.Len(t, got["/"].Attrs, 10)
+		require.Equal(t, []interface{}{largeSOFARoomDescription}, got["/"].Attrs["RoomDescription"])
 	case "root_links_dense_attrs":
 		require.Len(t, got["/"].Attrs, 12)
 		for i := 0; i < 30; i++ {

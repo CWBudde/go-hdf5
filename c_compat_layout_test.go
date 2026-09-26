@@ -325,9 +325,15 @@ type sofaShape struct {
 	M, N int // measurements and samples
 	// Extras adds that many (M, C) variables without attributes, plus one
 	// (M, C) variable "Annotated" with 10 string attributes (11 with
-	// DIMENSION_LIST), as go-sofa writes non-standard variables.
+	// DIMENSION_LIST), as go-sofa writes non-standard variables. It also
+	// adds 4 global attributes, so the root's 10 attributes use dense
+	// storage, one of them non-ASCII (largeSOFARoomDescription).
 	Extras int
 }
+
+// largeSOFARoomDescription is a non-ASCII global attribute of files written
+// with Extras, like the "×" in the RoomDescription of SOFA's example files.
+const largeSOFARoomDescription = "Anechoic chamber, 5 m × 4 m × 3 m"
 
 // largeSOFAShape is a SimpleFreeFieldHRIR file with 30 datasets whose data
 // (400 KiB of Data.IR) pushes everything written at Close past 64 KiB.
@@ -337,13 +343,22 @@ var largeSOFAShape = sofaShape{M: 100, N: 256, Extras: 14}
 // with the given shape.
 func writeSOFA(t *testing.T, path string, shape sofaShape) {
 	t.Helper()
-	fw, err := CreateForWrite(path, CreateTruncate,
+	opts := []interface{}{
 		WithRootAttribute("Conventions", "SOFA"),
 		WithRootAttribute("Version", "2.1"),
 		WithRootAttribute("SOFAConventions", "SimpleFreeFieldHRIR"),
 		WithRootAttribute("SOFAConventionsVersion", "1.0"),
 		WithRootAttribute("DataType", "FIR"),
-		WithRootAttribute("RoomType", "free field"))
+		WithRootAttribute("RoomType", "free field"),
+	}
+	if shape.Extras > 0 {
+		opts = append(opts,
+			WithRootAttribute("Title", "large test file"),
+			WithRootAttribute("Organization", "go-hdf5"),
+			WithRootAttribute("License", "No license provided."),
+			WithRootAttribute("RoomDescription", largeSOFARoomDescription))
+	}
+	fw, err := CreateForWrite(path, CreateTruncate, opts...)
 	require.NoError(t, err)
 
 	m, n := shape.M, shape.N
