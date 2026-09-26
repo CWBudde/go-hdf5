@@ -62,7 +62,12 @@ func (d *Dataset) Attributes() ([]*core.Attribute, error) {
 	if err != nil {
 		return nil, err
 	}
-	return header.Attributes, nil
+	if len(header.Attributes) > 0 {
+		return header.Attributes, nil
+	}
+	// Dense attributes in indirect fractal heap blocks are read through the
+	// structures package (see Group.Attributes).
+	return readDenseAttributes(d.file, header)
 }
 
 // ListAttributes returns the names of all attributes attached to this dataset.
@@ -196,7 +201,7 @@ func (g *Group) Attributes() ([]*core.Attribute, error) {
 	// Core parsing may fail for dense attributes stored in indirect fractal heap
 	// blocks. Fall back to reading them via the structures package which handles
 	// both direct and indirect blocks.
-	return g.readDenseAttributes(header)
+	return readDenseAttributes(g.file, header)
 }
 
 // ReadAttribute reads a single attribute by name from this group.
@@ -218,9 +223,9 @@ func (g *Group) ReadAttribute(name string) (interface{}, error) {
 // readDenseAttributes reads attributes from dense storage using the structures
 // package. This handles indirect fractal heap blocks that core.readDenseAttributes
 // cannot.
-func (g *Group) readDenseAttributes(header *core.ObjectHeader) ([]*core.Attribute, error) {
-	sb := g.file.sb
-	r := g.file.osFile
+func readDenseAttributes(file *File, header *core.ObjectHeader) ([]*core.Attribute, error) {
+	sb := file.sb
+	r := file.osFile
 
 	// Find AttributeInfo message in the header.
 	var attrInfo *core.AttributeInfoMessage
@@ -264,7 +269,7 @@ func (g *Group) readDenseAttributes(header *core.ObjectHeader) ([]*core.Attribut
 	for _, heapID := range heapIDs {
 		attrData, err := fh.ReadObjectSpecCompliant(heapID)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read attribute %x from fractal heap: %w", heapID, err)
 		}
 
 		attr, err := core.ParseAttributeMessage(attrData, sb.Endianness)
@@ -511,33 +516,32 @@ func loadDenseGroupChildren(file *File, group *Group, linkInfo *core.LinkInfoMes
 		return fmt.Errorf("open fractal heap: %w", err)
 	}
 
-	// Load B-tree v2 to get all link name records.
-	bt := structures.NewWritableBTreeV2(0)
-	if err := bt.LoadFromFile(r, linkInfo.NameBTreeAddress, sb); err != nil {
-		return fmt.Errorf("load B-tree v2: %w", err)
+	// Read all link name records (any B-tree depth).
+	heapIDs, err := structures.ReadBTreeV2LinkNameHeapIDs(r, linkInfo.NameBTreeAddress, sb)
+	if err != nil {
+		return fmt.Errorf("read link name index: %w", err)
 	}
 
 	// Iterate all records and load each linked object.
-	for _, rec := range bt.GetRecords() {
+	for _, heapID := range heapIDs {
 		// Read the link message data from the fractal heap.
-		// Use spec-compliant read: official HDF5 files encode heap offsets
-		// from the start of the direct block (including header).
-		// Name-index records hold 7-byte heap IDs. Older go-hdf5 files use
-		// 8-byte heap IDs whose last (length) byte is zero for link-sized
-		// objects: pad the record to the heap's ID length.
-		heapID := rec.HeapID[:]
+		// Official HDF5 files encode heap offsets from the start of the
+		// direct block (including header). Name-index records hold 7-byte
+		// heap IDs. Older go-hdf5 files use 8-byte heap IDs whose last
+		// (length) byte is zero for link-sized objects: pad the record to
+		// the heap's ID length.
 		if n := int(fh.Header.HeapIDLen); n > len(heapID) {
-			heapID = append(append(make([]byte, 0, n), heapID...), make([]byte, n-len(heapID))...)
+			heapID = append(heapID, make([]byte, n-len(heapID))...)
 		}
 		linkData, err := fh.ReadObjectSpecCompliant(heapID)
 		if err != nil {
-			continue
+			return fmt.Errorf("read link %x from fractal heap: %w", heapID, err)
 		}
 
 		// Parse as a link message.
 		linkMsg, err := structures.ParseLinkMessage(linkData, sb)
 		if err != nil {
-			continue
+			return fmt.Errorf("parse link message: %w", err)
 		}
 
 		if linkMsg.IsHardLink() {

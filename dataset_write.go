@@ -1961,7 +1961,7 @@ func buildCompactAttributeMessages(attrs map[string]interface{}, order []string)
 	msgs := make([]core.MessageWriter, 0, len(attrs))
 	seen := make(map[string]bool, len(order))
 	emit := func(name string) error {
-		value := attrs[name]
+		value := dimScaleStringAttribute(name, attrs[name])
 		datatype, dataspace, err := inferDatatypeFromValue(value)
 		if err != nil {
 			return fmt.Errorf("attribute %q: %w", name, err)

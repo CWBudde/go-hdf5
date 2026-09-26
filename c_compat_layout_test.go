@@ -244,6 +244,8 @@ func compatScenarios() []writeScenario {
 			}
 			closeOK(t, fw)
 		}},
+		{"links_100", func(t *testing.T, p string) { writeManyLinks(t, p, 100) }},
+		{"links_1000", func(t *testing.T, p string) { writeManyLinks(t, p, 1000) }},
 		{"vlen_dataset", func(t *testing.T, p string) {
 			fw, err := CreateForWrite(p, CreateTruncate)
 			require.NoError(t, err)
@@ -266,6 +268,35 @@ func compatScenarios() []writeScenario {
 			closeOK(t, fw)
 		}},
 	}
+}
+
+// manyLinkName is the name of link i written by writeManyLinks: long names
+// fill the local heap quickly.
+func manyLinkName(i int) string {
+	return fmt.Sprintf("variable_with_a_descriptive_name_%04d", i)
+}
+
+// writeManyLinks writes n datasets at the root and n/2 in a subgroup (in
+// reverse order, so every insertion reshuffles the symbol table nodes). The
+// local heaps outgrow their initial 256 bytes and the group B-trees their
+// single leaf of 32 symbol table nodes (256 links) when n is large.
+func writeManyLinks(t *testing.T, p string, n int) {
+	t.Helper()
+	fw, err := CreateForWrite(p, CreateTruncate)
+	require.NoError(t, err)
+	_, err = fw.CreateGroup("/sub")
+	require.NoError(t, err)
+	for i := n - 1; i >= 0; i-- {
+		ds, err := fw.CreateDataset("/"+manyLinkName(i), Float64, []uint64{1})
+		require.NoError(t, err)
+		require.NoError(t, ds.Write([]float64{float64(i)}))
+		if i%2 == 0 {
+			ds, err := fw.CreateDataset("/sub/"+manyLinkName(i), Float64, []uint64{1})
+			require.NoError(t, err)
+			require.NoError(t, ds.Write([]float64{float64(i)}))
+		}
+	}
+	require.NoError(t, fw.Close())
 }
 
 // TestWrittenFilesSatisfyCLibraryInvariants validates the on-disk structure of
@@ -554,19 +585,39 @@ func (c *layoutChecker) checkSymbolTableGroup(btree, heap uint64) {
 	}
 	require.Equal(t, byte(0), c.d[heapData], "heap offset 0 must hold the empty string")
 
+	prev := ""
+	c.checkGroupBTreeNode(btree, -1, name, &prev)
+}
+
+// checkGroupBTreeNode validates a group B-tree node and its subtree: levels
+// decrease by one, left keys continue the previous right key, right keys are
+// the largest name below their child and entries are sorted across nodes.
+func (c *layoutChecker) checkGroupBTreeNode(btree uint64, wantLevel int, name func(uint64) string, prev *string) {
+	t := c.t
 	c.inside("group B-tree node", btree, 24+33*8+32*8)
 	require.Equal(t, "TREE", string(c.d[btree:btree+4]))
 	require.Equal(t, byte(0), c.d[btree+4], "group B-tree node type")
-	require.Equal(t, byte(0), c.d[btree+5], "group B-tree level")
+	level := int(c.d[btree+5])
+	if wantLevel >= 0 {
+		require.Equal(t, wantLevel, level, "group B-tree level")
+	}
 	n := uint64(c.u16(btree + 6))
+	require.LessOrEqual(t, n, uint64(32), "group B-tree node holds at most 2*internalK children")
+	require.Positive(t, n, "group B-tree node must not be empty")
 	pos := btree + 24
-	prev := name(c.u64(pos)) // left-most key
+	require.Equal(t, *prev, name(c.u64(pos)), "left key must be the previous right key")
 	pos += 8
 	for i := uint64(0); i < n; i++ {
-		snod := c.u64(pos)
+		child := c.u64(pos)
 		rightKey := name(c.u64(pos + 8))
 		pos += 16
 
+		if level > 0 {
+			c.checkGroupBTreeNode(child, level-1, name, prev)
+			require.Equal(t, *prev, rightKey, "B-tree right key must be the largest name in its child")
+			continue
+		}
+		snod := child
 		c.inside("symbol table node", snod, 8+8*40)
 		require.Equal(t, "SNOD", string(c.d[snod:snod+4]))
 		cnt := uint64(c.u16(snod + 6))
@@ -574,11 +625,11 @@ func (c *layoutChecker) checkSymbolTableGroup(btree, heap uint64) {
 		for e := uint64(0); e < cnt; e++ {
 			ent := snod + 8 + e*40
 			nm := name(c.u64(ent))
-			require.Greater(t, nm, prev, "symbol table entries must be sorted and within B-tree keys")
-			prev = nm
+			require.Greater(t, nm, *prev, "symbol table entries must be sorted and within B-tree keys")
+			*prev = nm
 			c.checkObjectHeader(c.u64(ent + 8))
 		}
-		require.Equal(t, prev, rightKey, "B-tree right key must be the largest name in its child")
+		require.Equal(t, *prev, rightKey, "B-tree right key must be the largest name in its child")
 	}
 }
 

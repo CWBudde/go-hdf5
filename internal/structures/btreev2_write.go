@@ -956,73 +956,51 @@ func readBTreeV2LeafNode(r io.ReaderAt, address uint64, numRecords int, btreeTyp
 // and returns the heap IDs for all attribute records. This handles the different
 // record format used by attribute name index B-trees.
 func ReadBTreeV2AttrNameRecords(r io.ReaderAt, headerAddr uint64, sb *core.Superblock) ([][]byte, error) {
-	header, err := readBTreeV2Header(r, headerAddr, sb)
+	info, records, err := core.ReadBTreeV2Records(r, headerAddr, sb)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read B-tree header: %w", err)
+		return nil, fmt.Errorf("failed to read B-tree: %w", err)
 	}
 
-	if header.Type != BTreeV2TypeAttrNameIndex {
+	if info.Type != BTreeV2TypeAttrNameIndex {
 		return nil, fmt.Errorf("expected attribute name B-tree (type %d), got type %d",
-			BTreeV2TypeAttrNameIndex, header.Type)
+			BTreeV2TypeAttrNameIndex, info.Type)
 	}
 
-	if header.Depth != 0 {
-		return nil, fmt.Errorf("only depth-0 B-trees supported, got depth %d", header.Depth)
-	}
-
-	if header.NumRecordsRoot == 0 {
-		return nil, nil
-	}
-
-	// Read leaf node raw data
-	recordSize := int(header.RecordSize)
-	numRecords := int(header.NumRecordsRoot)
-	// Computed in uint64 so it cannot overflow; a leaf never exceeds the
-	// node size. ReadAtChecked validates it against the file size before
-	// allocating.
-	leafSize := 4 + 1 + 1 + uint64(numRecords)*uint64(recordSize) + 4 //nolint:gosec // G115: both non-negative
-	if leafSize > uint64(header.NodeSize) {
-		return nil, fmt.Errorf("B-tree v2 leaf of %d records (%d bytes) exceeds node size %d",
-			numRecords, leafSize, header.NodeSize)
-	}
-	buf, err := utils.ReadAtChecked(r, header.RootNodeAddr, leafSize, "B-tree v2 leaf")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read leaf at 0x%X: %w", header.RootNodeAddr, err)
-	}
-
-	// Validate signature
-	if string(buf[0:4]) != BTreeV2LeafSignature {
-		return nil, fmt.Errorf("invalid leaf signature: %q", buf[0:4])
-	}
-
-	// Validate checksum
-	checksumOffset := 4 + 1 + 1 + (numRecords * recordSize)
-	storedChecksum := binary.LittleEndian.Uint32(buf[checksumOffset : checksumOffset+4])
-	expectedChecksum := utils.JenkinsChecksum(buf[:checksumOffset])
-	if storedChecksum != expectedChecksum {
-		return nil, fmt.Errorf("leaf checksum mismatch: got 0x%X, want 0x%X",
-			storedChecksum, expectedChecksum)
-	}
-
-	// Extract heap IDs from each record.
-	// Type 8 record layout (empirically verified):
-	//   [heap_id(heapIDLen)] + [creation_order(4)] + [hash(4)] + [shared_flags(1)]
+	// Type 8 record layout (H5A__dense_btree2_name_encode):
+	//   [heap_id(heapIDLen)] + [flags(1)] + [creation_order(4)] + [hash(4)]
 	// The heap ID is at the START of the record.
-	heapIDSuffix := 4 + 4 + 1 // corder + hash + flags
-	heapIDLen := recordSize - heapIDSuffix
+	heapIDLen := int(info.RecordSize) - (1 + 4 + 4)
 	if heapIDLen <= 0 {
-		return nil, fmt.Errorf("record size %d too small for attribute name record", recordSize)
+		return nil, fmt.Errorf("record size %d too small for attribute name record", info.RecordSize)
 	}
 
-	var heapIDs [][]byte
-	dataStart := 6 // after signature(4) + version(1) + type(1)
-	for i := range numRecords {
-		recStart := dataStart + (i * recordSize)
-		heapID := make([]byte, heapIDLen)
-		copy(heapID, buf[recStart:recStart+heapIDLen])
-		heapIDs = append(heapIDs, heapID)
+	heapIDs := make([][]byte, 0, len(records))
+	for _, rec := range records {
+		heapIDs = append(heapIDs, append([]byte(nil), rec[:heapIDLen]...))
 	}
+	return heapIDs, nil
+}
 
+// ReadBTreeV2LinkNameHeapIDs reads a link name index (type 5) of any depth
+// and returns the fractal heap IDs of all its records.
+//
+// Type 5 record layout (H5G__dense_btree2_name_encode): hash (4) + heap ID.
+func ReadBTreeV2LinkNameHeapIDs(r io.ReaderAt, headerAddr uint64, sb *core.Superblock) ([][]byte, error) {
+	info, records, err := core.ReadBTreeV2Records(r, headerAddr, sb)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read B-tree: %w", err)
+	}
+	if info.Type != BTreeV2TypeLinkNameIndex {
+		return nil, fmt.Errorf("expected link name B-tree (type %d), got type %d",
+			BTreeV2TypeLinkNameIndex, info.Type)
+	}
+	if info.RecordSize <= 4 {
+		return nil, fmt.Errorf("record size %d too small for link name record", info.RecordSize)
+	}
+	heapIDs := make([][]byte, 0, len(records))
+	for _, rec := range records {
+		heapIDs = append(heapIDs, append([]byte(nil), rec[4:]...))
+	}
 	return heapIDs, nil
 }
 

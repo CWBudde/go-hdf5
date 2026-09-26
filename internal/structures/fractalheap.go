@@ -154,9 +154,15 @@ func OpenFractalHeap(r io.ReaderAt, address uint64, sizeofSize, sizeofAddr uint8
 }
 
 // DirectBlockHeaderSize returns the size of a direct block header in bytes.
-// HDF5 spec: sig(4) + version(1) + heap_header_addr(sizeofAddr) + block_offset(HeapOffsetSize).
+// HDF5 spec: sig(4) + version(1) + heap_header_addr(sizeofAddr) +
+// block_offset(HeapOffsetSize) + checksum(4, when the heap flags enable
+// direct block checksums). Object data follows the header.
 func (fh *FractalHeap) DirectBlockHeaderSize() uint64 {
-	return 5 + uint64(fh.sizeofAddr) + uint64(fh.Header.HeapOffsetSize)
+	size := 5 + uint64(fh.sizeofAddr) + uint64(fh.Header.HeapOffsetSize)
+	if fh.Header.ChecksumDirectBlocks {
+		size += 4
+	}
+	return size
 }
 
 // parseFractalHeapHeader reads and parses the fractal heap header.
@@ -539,9 +545,6 @@ func (fh *FractalHeap) readDirectBlock(address, blockSize uint64) (*DirectBlock,
 
 	// Read entire block (header + data)
 	minSize := fh.DirectBlockHeaderSize()
-	if fh.Header.ChecksumDirectBlocks {
-		minSize += 4
-	}
 	if blockSize < minSize {
 		return nil, fmt.Errorf("direct block size %d smaller than header size %d", blockSize, minSize)
 	}
@@ -549,7 +552,6 @@ func (fh *FractalHeap) readDirectBlock(address, blockSize uint64) (*DirectBlock,
 	if err != nil {
 		return nil, err
 	}
-	totalSize := len(buf)
 
 	dblock := &DirectBlock{}
 	offset := 0
@@ -583,24 +585,28 @@ func (fh *FractalHeap) readDirectBlock(address, blockSize uint64) (*DirectBlock,
 		int(fh.Header.HeapOffsetSize), fh.endianness)
 	offset += int(fh.Header.HeapOffsetSize)
 
-	// Checksum (4 bytes) - if enabled, at end of block
-	// Checksum validation deferred to v0.11.0-RC (feature-complete release).
-	// Current implementation reads but does not verify checksums.
-	// For production use, rely on file system integrity or external validation.
-	// Target version: v0.11.0-RC (comprehensive data integrity features)
-	// dblock.Checksum = fh.endianness.Uint32(buf[totalSize-4 : totalSize])
+	// Checksum (4 bytes) - part of the header when the heap enables direct
+	// block checksums (H5HF__cache_dblock_deserialize); it covers the whole
+	// block with the checksum field itself zeroed. Objects start after it.
+	if fh.Header.ChecksumDirectBlocks {
+		dblock.Checksum = binary.LittleEndian.Uint32(buf[offset : offset+4])
+		zeroed := make([]byte, len(buf))
+		copy(zeroed, buf)
+		clear(zeroed[offset : offset+4])
+		if sum := utils.JenkinsChecksum(zeroed); sum != dblock.Checksum {
+			return nil, fmt.Errorf("direct block checksum mismatch at 0x%X: stored 0x%X, computed 0x%X",
+				address, dblock.Checksum, sum)
+		}
+		offset += 4
+	}
 
 	// Store header size for heap ID offset correction (HDF5 spec: heap IDs use
 	// offsets from block start including header, not from data start).
 	dblock.HeaderSize = uint64(offset)
 
-	// Data (remaining bytes, excluding checksum if present)
-	dataEnd := totalSize
-	if fh.Header.ChecksumDirectBlocks {
-		dataEnd -= 4
-	}
-	dblock.Data = make([]byte, dataEnd-offset)
-	copy(dblock.Data, buf[offset:dataEnd])
+	// Data: everything after the header up to the end of the block.
+	dblock.Data = make([]byte, len(buf)-offset)
+	copy(dblock.Data, buf[offset:])
 
 	return dblock, nil
 }

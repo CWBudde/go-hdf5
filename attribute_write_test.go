@@ -64,8 +64,8 @@ func TestInferDatatypeFromValue(t *testing.T) {
 			name:           "string scalar",
 			value:          "hello",
 			wantClass:      core.DatatypeString,
-			wantSize:       6, // 5 + 1 (null terminator)
-			wantDimensions: []uint64{1},
+			wantSize:       5,   // netCDF-C text: no terminator
+			wantDimensions: nil, // scalar dataspace
 			wantErr:        false,
 		},
 		{
@@ -163,9 +163,9 @@ func TestEncodeAttributeValue(t *testing.T) {
 		{
 			name:    "string scalar",
 			value:   "test",
-			wantLen: 5, // 4 chars + 1 null terminator
+			wantLen: 4, // netCDF-C text: no terminator
 			validate: func(t *testing.T, data []byte) {
-				assert.Equal(t, []byte{'t', 'e', 's', 't', 0}, data)
+				assert.Equal(t, []byte{'t', 'e', 's', 't'}, data)
 			},
 			wantErr: false,
 		},

@@ -55,6 +55,26 @@ const (
 	objectReferenceSize = 8
 )
 
+// dimScaleStringAttribute returns the value to write for a dataset
+// attribute. The dimension scale attributes CLASS and NAME are C strings in
+// the H5DS convention (H5DSset_scale writes strlen+1 bytes, NUL included;
+// H5DSget_scale_name relies on the terminator), unlike other string
+// attributes, which are written like netCDF-C text (see inferString).
+func dimScaleStringAttribute(name string, value interface{}) interface{} {
+	s, ok := value.(string)
+	if !ok || (name != dimScaleClassAttr && name != dimScaleNameAttr) {
+		return value
+	}
+	return &encodedAttributeValue{
+		datatype: &core.DatatypeMessage{
+			Class: core.DatatypeString,
+			Size:  uint32(len(s) + 1), //nolint:gosec // G115: attribute strings are small
+		},
+		dataspace: &core.DataspaceMessage{Type: core.DataspaceScalar}, // H5S_SCALAR
+		data:      append([]byte(s), 0),
+	}
+}
+
 // SetDimensionScale marks the dataset as a dimension scale, like
 // H5DSset_scale: it writes CLASS="DIMENSION_SCALE" and, when name is not
 // empty, NAME=name.
