@@ -197,7 +197,7 @@ type WritableHeapHeader struct {
 	StartingBlockSize  uint64 // Size of first direct block
 	MaxDirectBlockSize uint64 // Same as starting for MVP
 	MaxHeapSize        uint16 // Max rows (MVP: 16 to allow offset encoding)
-	StartingNumRows    uint16 // For indirect blocks (MVP: 0)
+	StartingNumRows    uint16 // Rows of a new root indirect block
 	RootBlockAddress   uint64 // Address of direct block
 	CurrentNumRows     uint16 // For indirect blocks (MVP: 0)
 
@@ -267,9 +267,13 @@ func NewWritableFractalHeap(blockSize uint64) *WritableFractalHeap {
 		StartingBlockSize:  blockSize,
 		MaxDirectBlockSize: blockSize,
 		MaxHeapSize:        maxHeapSize,
-		StartingNumRows:    0, // Not used in MVP
-		RootBlockAddress:   0, // Will be set when written
-		CurrentNumRows:     0, // 0 = direct block at root
+		// Rows of a root indirect block created when the root direct block is
+		// full. libhdf5 treats 0 as "allocate the whole root indirect block"
+		// and then miscomputes the managed space when it adds an object to a
+		// heap written here; it uses 1 itself (H5*_FHEAP_MAN_START_ROOT_ROWS).
+		StartingNumRows:  1,
+		RootBlockAddress: 0, // Will be set when written
+		CurrentNumRows:   0, // 0 = direct block at root
 
 		HeapOffsetSize: heapOffsetSize,
 		HeapLengthSize: heapLengthSize,

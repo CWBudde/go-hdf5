@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with more than 8 of them.
 - `OpenForWrite` + `CreateDataset` (and other links) at the root of a v2
   file failed with "no group B-tree at address 0".
+- Fractal heaps (dense attribute and link storage) are written with one
+  starting row for a root indirect block, like libhdf5 writes them. With 0,
+  libhdf5 corrupted the heap when it added an object to it.
 - `File.objectIndex` is built under a `sync.Once`, so concurrent first
   calls of `Dataset.Path`, `File.ObjectPath` and `File.Dereference` no
   longer race. A reference attribute with a one-element simple dataspace

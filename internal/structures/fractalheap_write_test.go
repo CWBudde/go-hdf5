@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/stretchr/testify/require"
 )
 
 // MockWriter implements the Writer interface for testing.
@@ -485,5 +486,26 @@ func BenchmarkFractalHeapGetObject(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		heap.GetObject(heapID)
+	}
+}
+
+// TestFractalHeapStartingRootRows checks that written heaps start a root
+// indirect block with one row, like libhdf5. With 0 ("allocate the whole
+// root indirect block") libhdf5 miscomputes the managed space when it adds
+// an object to the heap and can no longer read the heap afterwards.
+func TestFractalHeapStartingRootRows(t *testing.T) {
+	sb := &core.Superblock{OffsetSize: 8, LengthSize: 8, Endianness: binary.LittleEndian}
+	for _, heap := range []*WritableFractalHeap{
+		NewWritableFractalHeap(DefaultStartingBlockSize),
+		NewGrowableFractalHeap(LinkHeapStartBlockSize),
+	} {
+		_, err := heap.InsertObject([]byte("object"))
+		require.NoError(t, err)
+		w := NewMockWriter()
+		addr, err := heap.WriteToFile(w, NewMockAllocator(0x1000), sb)
+		require.NoError(t, err)
+		read, err := OpenFractalHeap(w, addr, sb.LengthSize, sb.OffsetSize, sb.Endianness)
+		require.NoError(t, err)
+		require.Equal(t, uint16(1), read.Header.StartRootIndirectRows)
 	}
 }
