@@ -672,22 +672,22 @@ func readDenseAttributes(r io.ReaderAt, attrInfo *AttributeInfoMessage, sb *Supe
 	return attributes, nil
 }
 
-// attributeHeapIDs extracts the 7-byte heap IDs of attribute name index
-// records. Record layouts:
+// attributeHeapIDs extracts the heap IDs of attribute name index records.
+// Record layouts:
 //
 //	type 8 (attribute name index): heap ID (8) + flags (1) + creation order (4) + hash (4)
 //	legacy go-hdf5 (type 5 layout): hash (4) + heap ID (7)
-func attributeHeapIDs(info *BTreeV2Info, records [][]byte) ([][7]byte, error) {
-	heapIDPos := 4
+func attributeHeapIDs(info *BTreeV2Info, records [][]byte) ([][8]byte, error) {
+	heapIDPos, heapIDLen := 4, 7
 	if info.Type == 8 {
-		heapIDPos = 0
+		heapIDPos, heapIDLen = 0, 8
 	}
-	if int(info.RecordSize) < heapIDPos+7 {
+	if int(info.RecordSize) < heapIDPos+heapIDLen {
 		return nil, fmt.Errorf("attribute name record size %d too small", info.RecordSize)
 	}
-	ids := make([][7]byte, len(records))
+	ids := make([][8]byte, len(records))
 	for i, rec := range records {
-		copy(ids[i][:], rec[heapIDPos:heapIDPos+7])
+		copy(ids[i][:], rec[heapIDPos:heapIDPos+heapIDLen])
 	}
 	return ids, nil
 }
@@ -835,12 +835,12 @@ func computeOffsetSize(value uint64) uint8 {
 	return uint8((bits + 7) / 8)
 }
 
-// parseHeapID parses a 7-byte heap ID into offset and length.
+// parseHeapID parses a heap ID into offset and length.
 // Format:
 //   - Byte 0: Version (bits 4-7) and Type (bits 0-3)
 //   - Bytes 1-4: Offset (uint32, little-endian)
 //   - Bytes 5-6: Length (uint16, little-endian)
-func parseHeapID(heapID [7]byte, header *fractalHeapHeaderRaw) (offset, length uint64, err error) {
+func parseHeapID(heapID [8]byte, header *fractalHeapHeaderRaw) (offset, length uint64, err error) {
 	// Check type (bits 4-5 of byte 0, per HDF5 format spec)
 	heapType := (heapID[0] & 0x30) >> 4
 	if heapType != 0 {
@@ -851,14 +851,14 @@ func parseHeapID(heapID [7]byte, header *fractalHeapHeaderRaw) (offset, length u
 
 	// Offset (variable-length, HeapOffsetSize bytes, little-endian)
 	offset = 0
-	for i := 0; i < int(header.HeapOffsetSize) && idx < 7; i++ {
+	for i := 0; i < int(header.HeapOffsetSize) && idx < len(heapID); i++ {
 		offset |= uint64(heapID[idx]) << (8 * i)
 		idx++
 	}
 
 	// Length (variable-length, HeapLengthSize bytes, little-endian)
 	length = 0
-	for i := 0; i < int(header.HeapLengthSize) && idx < 7; i++ {
+	for i := 0; i < int(header.HeapLengthSize) && idx < len(heapID); i++ {
 		length |= uint64(heapID[idx]) << (8 * i)
 		idx++
 	}

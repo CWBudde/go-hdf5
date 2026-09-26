@@ -12,7 +12,7 @@ import (
 func TestParseHeapID(t *testing.T) {
 	tests := []struct {
 		name       string
-		heapID     [7]byte
+		heapID     [8]byte
 		header     *fractalHeapHeaderRaw
 		wantOffset uint64
 		wantLength uint64
@@ -21,7 +21,7 @@ func TestParseHeapID(t *testing.T) {
 	}{
 		{
 			name: "managed object with 2-byte offset and 2-byte length",
-			heapID: [7]byte{
+			heapID: [8]byte{
 				0x00,       // type = 0 (managed), flags = 0
 				0x10, 0x00, // offset = 0x0010 (little-endian)
 				0x20, 0x00, // length = 0x0020 (little-endian)
@@ -37,7 +37,7 @@ func TestParseHeapID(t *testing.T) {
 		},
 		{
 			name: "managed object with 4-byte offset and 2-byte length",
-			heapID: [7]byte{
+			heapID: [8]byte{
 				0x00,                   // type = 0 (managed)
 				0x34, 0x12, 0x00, 0x00, // offset = 0x00001234 (little-endian)
 				0x56, 0x00, // length = 0x0056
@@ -52,7 +52,7 @@ func TestParseHeapID(t *testing.T) {
 		},
 		{
 			name: "managed object with 3-byte offset and 3-byte length",
-			heapID: [7]byte{
+			heapID: [8]byte{
 				0x00,             // type = 0 (managed)
 				0xFF, 0xFF, 0x01, // offset = 0x01FFFF (little-endian)
 				0x00, 0x10, 0x00, // length = 0x001000 (little-endian)
@@ -67,7 +67,7 @@ func TestParseHeapID(t *testing.T) {
 		},
 		{
 			name: "all zeros (minimal valid)",
-			heapID: [7]byte{
+			heapID: [8]byte{
 				0x00, // type = 0 (managed)
 				0x00, // offset byte 1
 				0x00, // offset byte 2 (or length byte 1)
@@ -83,7 +83,7 @@ func TestParseHeapID(t *testing.T) {
 		},
 		{
 			name: "maximum offset and length with 2-byte sizes",
-			heapID: [7]byte{
+			heapID: [8]byte{
 				0x00,       // type = 0 (managed)
 				0xFF, 0xFF, // offset = 0xFFFF
 				0xFF, 0xFF, // length = 0xFFFF
@@ -99,7 +99,7 @@ func TestParseHeapID(t *testing.T) {
 		},
 		{
 			name: "unsupported heap type (type = 1)",
-			heapID: [7]byte{
+			heapID: [8]byte{
 				0x10, // type = 1 (bits 4-5), unsupported
 				0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 			},
@@ -114,7 +114,7 @@ func TestParseHeapID(t *testing.T) {
 		},
 		{
 			name: "unsupported heap type (type = 2)",
-			heapID: [7]byte{
+			heapID: [8]byte{
 				0x20, // type = 2 (bits 4-5), unsupported
 				0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 			},
@@ -129,7 +129,7 @@ func TestParseHeapID(t *testing.T) {
 		},
 		{
 			name: "unsupported heap type (type = 3)",
-			heapID: [7]byte{
+			heapID: [8]byte{
 				0x30, // type = 3 (bits 4-5), unsupported
 				0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 			},
@@ -144,7 +144,7 @@ func TestParseHeapID(t *testing.T) {
 		},
 		{
 			name: "1-byte offset and length (minimal size)",
-			heapID: [7]byte{
+			heapID: [8]byte{
 				0x00,                   // type = 0 (managed)
 				0x42,                   // offset = 0x42
 				0x99,                   // length = 0x99
@@ -182,7 +182,7 @@ func TestParseHeapID(t *testing.T) {
 func TestParseHeapID_EdgeCases(t *testing.T) {
 	t.Run("flags in byte 0 (should be ignored)", func(t *testing.T) {
 		// Bits 0-3 and 6-7 of byte 0 are flags, should not affect parsing
-		heapID := [7]byte{
+		heapID := [8]byte{
 			0x0F,       // type = 0, flags = 0x0F (all flag bits set)
 			0x12, 0x00, // offset = 0x0012
 			0x34, 0x00, // length = 0x0034
@@ -200,7 +200,7 @@ func TestParseHeapID_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("large values with 4-byte sizes", func(t *testing.T) {
-		heapID := [7]byte{
+		heapID := [8]byte{
 			0x00,             // type = 0 (managed)
 			0xFF, 0xFF, 0xFF, // offset bytes (only 3 bytes used out of possible 4)
 			0xFF, 0xFF, 0xFF, // length bytes (only 3 bytes used)

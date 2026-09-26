@@ -647,8 +647,6 @@ func addDenseAttributeMessages(daw *writer.DenseAttributeWriter, attrs []denseAt
 		if err := daw.AddEncodedAttribute(name, attrMsg); err != nil {
 			return fmt.Errorf("attribute %q: %w", name, err)
 		}
-	case len(attrs) == 1 && attrMsg == nil:
-		return fmt.Errorf("attribute %q: deleting the last dense attribute is not supported", name)
 	}
 	return nil
 }
@@ -666,6 +664,14 @@ func (fw *FileWriter) rebuildDenseAttributes(objectAddr uint64, oh *core.ObjectH
 	if err != nil {
 		return err
 	}
+	if attrMsg == nil && len(attrs) == 1 && attrs[0].name == name {
+		// No attributes remain: drop the dense storage, as libhdf5 does,
+		// keeping the Attribute Info message (and the creation order
+		// tracked in it) without it.
+		attrInfo.FractalHeapAddr = undefinedAddress
+		attrInfo.BTreeNameIndexAddr = undefinedAddress
+		return writeAttributeInfo(fw, objectAddr, oh, attrInfo)
+	}
 	daw := writer.NewDenseAttributeWriter(objectAddr)
 	if attrInfo.Flags&core.AttributeInfoTrackCreationOrder != 0 {
 		daw.TrackCreationOrder(uint16(min(attrInfo.MaxCreationIndex, 0xFFFF)))
@@ -678,7 +684,14 @@ func (fw *FileWriter) rebuildDenseAttributes(objectAddr uint64, oh *core.ObjectH
 	if err != nil {
 		return fmt.Errorf("failed to write dense storage: %w", err)
 	}
-	data, err := core.EncodeAttributeInfoMessage(newInfo, sb)
+	return writeAttributeInfo(fw, objectAddr, oh, newInfo)
+}
+
+// writeAttributeInfo replaces the Attribute Info message of oh, the object
+// header of the object at objectAddr, with attrInfo and rewrites the header.
+func writeAttributeInfo(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader, attrInfo *core.AttributeInfoMessage) error {
+	sb := fw.file.Superblock()
+	data, err := core.EncodeAttributeInfoMessage(attrInfo, sb)
 	if err != nil {
 		return fmt.Errorf("failed to encode attribute info: %w", err)
 	}

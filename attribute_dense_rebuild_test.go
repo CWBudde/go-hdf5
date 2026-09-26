@@ -199,6 +199,53 @@ func TestOpenDatasetAttributesAfterDenseTransition(t *testing.T) {
 	oh, err := core.ReadObjectHeader(f.Reader(), addr, f.Superblock())
 	require.NoError(t, err)
 	require.True(t, hasDenseAttributeStorage(oh, f.Superblock()), "attributes must be dense")
+	// The core reader must use all 8 bytes of the heap IDs: the length of
+	// the 64 KiB attribute reaches the 8th.
+	attrs, err := core.ParseAttributesFromMessages(f.Reader(), oh.Messages, f.Superblock())
+	require.NoError(t, err)
+	require.Len(t, attrs, 3)
+	for _, a := range attrs {
+		if a.Name == "big" {
+			require.Len(t, a.Data, len(big))
+		}
+	}
 	require.NoError(t, f.Close())
 	requireNoCompactAttributesBesideDense(t, path, addr)
+}
+
+// TestDeleteLastRebuiltDenseAttribute deletes the only attribute of a
+// dataset that libhdf5 keeps in dense storage (attribute phase change 0/0):
+// the dense storage goes, the Attribute Info message stays without it.
+func TestDeleteLastRebuiltDenseAttribute(t *testing.T) {
+	path := copyFixture(t, "testdata/dense/h5py_attrs_small.h5")
+	f, err := Open(path)
+	require.NoError(t, err)
+	addr := findDataset(f, "/one").Address()
+	oh, err := core.ReadObjectHeader(f.Reader(), addr, f.Superblock())
+	require.NoError(t, err)
+	require.True(t, hasDenseAttributeStorage(oh, f.Superblock()), "fixture must store the attribute densely")
+	require.NoError(t, f.Close())
+
+	fw, err := OpenForWrite(path, OpenReadWrite)
+	require.NoError(t, err)
+	ds, err := fw.OpenDataset("/one")
+	require.NoError(t, err)
+	require.NoError(t, ds.DeleteAttribute("only"))
+	require.NoError(t, ds.WriteAttribute("again", int32(5)))
+	require.NoError(t, fw.Close())
+
+	require.Equal(t, map[string]string{"again": "5"}, attributeValues(t, path, "/one"))
+	f, err = Open(path)
+	require.NoError(t, err)
+	oh, err = core.ReadObjectHeader(f.Reader(), addr, f.Superblock())
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	require.False(t, hasDenseAttributeStorage(oh, f.Superblock()), "no dense storage without attributes")
+	if h5dump := findH5Dump(); h5dump != "" {
+		out, err := exec.Command(h5dump, "-A", "-d", "/one", path).CombinedOutput()
+		require.NoError(t, err, "h5dump failed:\n%s", out)
+		require.Contains(t, string(out), `ATTRIBUTE "again"`)
+		require.NotContains(t, string(out), `ATTRIBUTE "only"`)
+	}
+	require.Equal(t, 1, h5pyAttributeCount(t, path, "/one"))
 }
