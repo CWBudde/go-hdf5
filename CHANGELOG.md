@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Links added to a group that indexes link creation order are added to its
   creation order index (v2 B-tree type 6), which the compact → dense
   conversion now creates.
+- Dense link storage holds Link messages up to 64 KiB (libhdf5 stores
+  those above 4 KiB as huge heap objects, which neither this library nor
+  libmysofa reads), so links with long names no longer fail when a group
+  converts to dense storage.
 
 ### Fixed
 

@@ -200,10 +200,13 @@ type EncodedLink struct {
 
 // NewLinkHeap returns an empty fractal heap for dense link storage: 7-byte
 // heap IDs (H5G_DENSE_FHEAP_ID_LEN) and a root direct block that grows as
-// needed.
+// needed. It holds any Link message an object header can hold (see
+// structures.LinkHeapMaxManagedObjectSize).
 func NewLinkHeap() *structures.WritableFractalHeap {
 	heap := structures.NewGrowableFractalHeap(structures.LinkHeapStartBlockSize)
 	heap.SetMaxManagedObjectSize(structures.LinkHeapMaxManagedObjectSize)
+	heap.Header.MaxDirectBlockSize = structures.LinkHeapMaxDirectBlockSize
+	heap.MaxDirectBlockSize = structures.LinkHeapMaxDirectBlockSize
 	return heap
 }
 

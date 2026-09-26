@@ -99,7 +99,9 @@ func TestInteropH5py(t *testing.T) {
 			sc.write(t, path)
 
 			args := []string{"-c", h5pyDumpScript, path}
-			if strings.HasPrefix(sc.name, "lzf") {
+			// LZF is an h5py-only filter; netCDF-C aborts on names longer
+			// than NC_MAX_NAME (256), also in files written by libhdf5.
+			if strings.HasPrefix(sc.name, "lzf") || sc.name == "root_links_long_names" {
 				args = append(args, "no-netcdf")
 			}
 			out, err := exec.Command(python, args...).CombinedOutput()
@@ -296,6 +298,10 @@ func requireRootLinkScenario(t *testing.T, name string, got map[string]h5pyEntry
 	case "root_links_reopen":
 		for i := 0; i < 15; i++ {
 			require.InDelta(t, float64(i), got["/"+rootLinkName(i)].Sum, 0)
+		}
+	case "root_links_long_names":
+		for i := 0; i < 10; i++ {
+			require.InDelta(t, float64(i), got["/"+longRootLinkName(i)].Sum, 0)
 		}
 	}
 }

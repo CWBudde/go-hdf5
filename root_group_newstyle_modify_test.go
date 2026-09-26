@@ -18,7 +18,14 @@ import (
 
 // This file checks adding links to new-style roots whose dense link storage
 // the writer cannot extend in place: roots written by the HDF5 C library
-// (multi-level fractal heaps and name indexes, creation order indexes).
+// (multi-level fractal heaps and name indexes, creation order indexes) and
+// links whose Link message exceeds libhdf5's 4 KiB managed heap object size.
+
+// longRootLinkName is a link name of about 5 KiB: its Link message is larger
+// than the 4 KiB libhdf5 allows for managed objects in a link heap.
+func longRootLinkName(i int) string {
+	return fmt.Sprintf("%s_%02d", strings.Repeat("long", 1250), i)
+}
 
 // writeRootDataset creates the one-element dataset /name holding v.
 func writeRootDataset(t *testing.T, fw *FileWriter, name string, v float64) {
@@ -52,6 +59,47 @@ func requireRootDatasets(t *testing.T, path string, want map[string]float64, oth
 		require.NoError(t, err)
 		require.Equal(t, []float64{v}, vals, "dataset %.20s...", name)
 	}
+}
+
+// TestRootGroupNewStyleLongLinkNames adds links whose Link messages exceed
+// libhdf5's 4 KiB managed link heap objects: when the compact root converts
+// to dense storage, when they are added to dense storage and when the root
+// direct block of the link heap must grow beyond 64 KiB.
+func TestRootGroupNewStyleLongLinkNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "long.h5")
+	want := map[string]float64{}
+	add := func(fw *FileWriter, name string) {
+		writeRootDataset(t, fw, name, float64(len(want)))
+		want[name] = float64(len(want))
+	}
+
+	fw, err := CreateForWrite(path, CreateTruncate)
+	require.NoError(t, err)
+	for i := 0; i < 8; i++ {
+		add(fw, longRootLinkName(i))
+	}
+	add(fw, "short")                    // 9th link: moves the long names to dense storage
+	add(fw, longRootLinkName(9))        // into dense storage
+	add(fw, strings.Repeat("x", 65400)) // does not fit a 64 KiB direct block
+	require.NoError(t, fw.Close())
+	require.True(t, readRootLinkStorage(t, path).dense)
+	requireRootDatasets(t, path, want)
+
+	fw, err = OpenForWrite(path, OpenReadWrite)
+	require.NoError(t, err)
+	add(fw, longRootLinkName(11))
+	_, err = fw.CreateDataset("/"+longRootLinkName(3), Float64, []uint64{1})
+	require.ErrorContains(t, err, "already exists")
+	require.NoError(t, fw.Close())
+	requireRootDatasets(t, path, want)
+
+	t.Run("h5py", func(t *testing.T) {
+		res := runH5pyModify(t, path, "name", "short")
+		require.Len(t, res.Before, len(want))
+		require.ElementsMatch(t, append(res.Before, "by_h5py"), res.After)
+		require.Equal(t, []float64{8}, res.Values["short"])
+		requireRootDatasets(t, path, want, "by_h5py")
+	})
 }
 
 // denseRootIndexes describes the dense link storage of a root group.
@@ -163,6 +211,7 @@ func TestRootGroupNewStyleModifyLibhdf5DenseRoot(t *testing.T) {
 	fw, err := OpenForWrite(path, OpenReadWrite)
 	require.NoError(t, err)
 	writeRootDataset(t, fw, "added", 42)
+	writeRootDataset(t, fw, longRootLinkName(0), 43)
 	_, err = fw.CreateDataset("/data", Float64, []uint64{1})
 	require.ErrorContains(t, err, "already exists")
 	require.NoError(t, fw.Close())
@@ -177,7 +226,7 @@ func TestRootGroupNewStyleModifyLibhdf5DenseRoot(t *testing.T) {
 	for i := 0; i < 400; i++ {
 		others = append(others, fmt.Sprintf("l%03d_a_rather_long_link_name_to_fill_the_fractal_heap_quickly", i))
 	}
-	want := map[string]float64{"added": 42, "added2": 44}
+	want := map[string]float64{"added": 42, longRootLinkName(0): 43, "added2": 44}
 	requireRootDatasets(t, path, want, others...)
 
 	f, err := Open(path)
@@ -191,9 +240,10 @@ func TestRootGroupNewStyleModifyLibhdf5DenseRoot(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	t.Run("h5py", func(t *testing.T) {
-		res := runH5pyModify(t, path, "name", "added", "added2")
-		require.Len(t, res.Before, 403)
+		res := runH5pyModify(t, path, "name", "added", longRootLinkName(0), "added2")
+		require.Len(t, res.Before, 404)
 		require.Equal(t, []float64{42}, res.Values["added"])
+		require.Equal(t, []float64{43}, res.Values[longRootLinkName(0)])
 		require.Equal(t, []float64{44}, res.Values["added2"])
 		require.ElementsMatch(t, append(res.Before, "by_h5py"), res.After)
 		requireRootDatasets(t, path, want, append(others, "by_h5py")...)

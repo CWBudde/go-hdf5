@@ -296,6 +296,16 @@ func compatScenarios() []writeScenario {
 			writeRootLinks(t, fw, 5, 10)
 			closeOK(t, fw)
 		}},
+		{"root_links_long_names", func(t *testing.T, p string) {
+			// Link messages above libhdf5's 4 KiB managed link heap objects,
+			// moved to dense storage by the 9th link.
+			fw, err := CreateForWrite(p, CreateTruncate)
+			require.NoError(t, err)
+			for i := 0; i < 10; i++ {
+				writeRootDataset(t, fw, longRootLinkName(i), float64(i))
+			}
+			closeOK(t, fw)
+		}},
 	}
 }
 

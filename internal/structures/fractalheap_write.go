@@ -79,10 +79,20 @@ type WritableFractalHeap struct {
 const (
 	AttributeHeapStartBlockSize = 1024
 	LinkHeapStartBlockSize      = 512
-	// LinkHeapMaxManagedObjectSize is libhdf5's H5G_FHEAP_MAX_MAN_SIZE.
-	LinkHeapMaxManagedObjectSize = 4096
-	DefaultMaxDirectBlockSize    = 64 * 1024
-	maxGrowableDirectBlockSize   = 1 << 30
+	// LinkHeapMaxManagedObjectSize is the largest Link message stored in a
+	// link heap: the largest message an object header can hold, so every
+	// link of a compact group fits when the group converts to dense storage.
+	// libhdf5 uses 4 KiB (H5G_FHEAP_MAX_MAN_SIZE) and stores larger links as
+	// huge objects, which neither this library nor libmysofa can read. Heap
+	// IDs keep 2 length bytes, i.e. the 7 bytes of link name index records.
+	LinkHeapMaxManagedObjectSize = 0xFFFF
+	// LinkHeapMaxDirectBlockSize lets a direct block hold the largest managed
+	// link object, as libhdf5 requires of the heaps it creates
+	// (H5HF__hdr_create: max direct block size - block overhead >= max
+	// managed object size).
+	LinkHeapMaxDirectBlockSize = 128 * 1024
+	DefaultMaxDirectBlockSize  = 64 * 1024
+	maxGrowableDirectBlockSize = 1 << 30
 )
 
 // NewGrowableFractalHeap creates a fractal heap whose root is a single direct
