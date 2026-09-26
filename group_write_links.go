@@ -81,31 +81,66 @@ func decodeAddress(b []byte) uint64 {
 	return v
 }
 
-// addLink adds a hard link name → childAddr to the new-style group g.
+// addLink adds a hard link name → childAddr to the new-style group g. When
+// the group tracks creation order, the link gets the next order and the Link
+// Info message's maximum is advanced (H5G__obj_insert).
 func (fw *FileWriter) addLink(g *groupLinks, groupPath, name string, childAddr uint64) error {
 	sb := fw.file.Superblock()
-	link := writer.EncodedLink{Name: name, Message: writer.EncodeHardLinkMessage(name, childAddr, sb)}
-	if g.dense() {
-		return fw.insertDenseLink(g, groupPath, link)
+	order := int64(-1)
+	tracked := g.linkInfo.HasCreationOrderTracking()
+	if tracked {
+		order = g.linkInfo.MaxCreationOrder
 	}
+	link := writer.EncodedLink{Name: name, Message: writer.EncodeHardLinkMessage(name, childAddr, order, sb)}
 
-	compact, err := compactLinks(g, sb)
+	if g.dense() {
+		if err := fw.insertDenseLink(g, groupPath, link); err != nil {
+			return err
+		}
+		if !tracked {
+			return nil // the object header is unchanged
+		}
+	} else if err := fw.addCompactLink(g, groupPath, link); err != nil {
+		return err
+	}
+	if tracked {
+		g.linkInfo.MaxCreationOrder++
+	}
+	return fw.writeGroupHeader(g)
+}
+
+// addCompactLink adds link to the header of the compact group g, or moves
+// all links to dense storage when the group already holds max_compact
+// links. The caller writes the header.
+func (fw *FileWriter) addCompactLink(g *groupLinks, groupPath string, link writer.EncodedLink) error {
+	compact, err := compactLinks(g, fw.file.Superblock())
 	if err != nil {
 		return err
 	}
 	for _, l := range compact {
-		if l.Name == name {
-			return fmt.Errorf("link %q already exists in group %q", name, groupPath)
+		if l.Name == link.Name {
+			return fmt.Errorf("link %q already exists in group %q", link.Name, groupPath)
 		}
 	}
-
 	if len(compact) < int(g.groupInfo.MaxCompactLinks()) {
 		if err := core.AddMessageToObjectHeader(g.oh, core.MsgLinkMessage, link.Message); err != nil {
 			return fmt.Errorf("add link message: %w", err)
 		}
-		return core.WriteObjectHeader(fw.writer, g.addr, g.oh, sb)
+		return nil
 	}
 	return fw.convertToDenseLinks(g, append(compact, link))
+}
+
+// writeGroupHeader re-encodes g's Link Info message and rewrites its object
+// header in place.
+func (fw *FileWriter) writeGroupHeader(g *groupLinks) error {
+	sb := fw.file.Superblock()
+	data, err := core.EncodeLinkInfoMessage(g.linkInfo, sb)
+	if err != nil {
+		return fmt.Errorf("encode link info message: %w", err)
+	}
+	g.linkInfoMsg.Data = data
+	return core.WriteObjectHeader(fw.writer, g.addr, g.oh, sb)
 }
 
 // compactLinks returns the Link messages in g's object header.
@@ -127,21 +162,15 @@ func compactLinks(g *groupLinks, sb *core.Superblock) ([]writer.EncodedLink, err
 // convertToDenseLinks moves the links of a compact group, plus the new one,
 // to dense storage: it writes the fractal heap and name index, points the
 // Link Info message at them and drops the Link messages from the header
-// (H5G__obj_insert, "convert to dense storage").
+// (H5G__obj_insert, "convert to dense storage"). The caller writes the
+// header.
 func (fw *FileWriter) convertToDenseLinks(g *groupLinks, links []writer.EncodedLink) error {
-	sb := fw.file.Superblock()
-	heapAddr, btreeAddr, err := writer.WriteDenseLinkStorage(fw.writer, fw.writer.Allocator(), sb, links)
+	heapAddr, btreeAddr, err := writer.WriteDenseLinkStorage(fw.writer, fw.writer.Allocator(), fw.file.Superblock(), links)
 	if err != nil {
 		return fmt.Errorf("write dense link storage: %w", err)
 	}
-	li := *g.linkInfo
-	li.FractalHeapAddress = heapAddr
-	li.NameBTreeAddress = btreeAddr
-	data, err := core.EncodeLinkInfoMessage(&li, sb)
-	if err != nil {
-		return fmt.Errorf("encode link info message: %w", err)
-	}
-	g.linkInfoMsg.Data = data
+	g.linkInfo.FractalHeapAddress = heapAddr
+	g.linkInfo.NameBTreeAddress = btreeAddr
 
 	msgs := g.oh.Messages[:0]
 	for _, m := range g.oh.Messages {
@@ -150,7 +179,7 @@ func (fw *FileWriter) convertToDenseLinks(g *groupLinks, links []writer.EncodedL
 		}
 	}
 	g.oh.Messages = msgs
-	return core.WriteObjectHeader(fw.writer, g.addr, g.oh, sb)
+	return nil
 }
 
 // loadDenseLinks loads the fractal heap and name index of a dense group.

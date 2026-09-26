@@ -4,6 +4,7 @@
 package writer
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -358,7 +359,7 @@ func TestDenseGroupWriter_UTF8Names(t *testing.T) {
 func TestEncodeHardLinkMessage(t *testing.T) {
 	sb := createTestSuperblock()
 
-	msg := EncodeHardLinkMessage("testlink", 0x123456, sb)
+	msg := EncodeHardLinkMessage("testlink", 0x123456, -1, sb)
 
 	// Verify message is not empty
 	if len(msg) == 0 {
@@ -561,5 +562,23 @@ func BenchmarkDenseGroupWriter_AddLink_1000(b *testing.B) {
 		for j := 0; j < 1000; j++ {
 			_ = dgw.AddLink(fmt.Sprintf("link%d", j), uint64(j*0x1000))
 		}
+	}
+}
+
+// TestEncodeHardLinkMessageCreationOrder checks the creation order field
+// (flags bit 2, 8 bytes right after the flags) that netCDF-C writes and
+// libmysofa's dense link reader depends on.
+func TestEncodeHardLinkMessageCreationOrder(t *testing.T) {
+	sb := createTestSuperblock()
+	msg := EncodeHardLinkMessage("M", 0x800, 5, sb)
+	want := []byte{
+		1,                      // version
+		0x04,                   // flags: creation order present, 1-byte name length
+		5, 0, 0, 0, 0, 0, 0, 0, // creation order
+		1, 'M', // name length, name
+		0x00, 0x08, 0, 0, 0, 0, 0, 0, // target address
+	}
+	if !bytes.Equal(want, msg) {
+		t.Fatalf("link message\n got % x\nwant % x", msg, want)
 	}
 }

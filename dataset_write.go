@@ -2953,7 +2953,8 @@ func createRootGroupStructure(fw *writer.FileWriter, superblockVersion uint8, ro
 
 // createRootGroupStructureV2 creates the root group for superblock v2/v3 as a
 // new-style group, like netCDF-C and libhdf5 with the latest file format:
-// Link Info (no dense storage yet) + Group Info + root attributes. Links are
+// Link Info (tracking link creation order, no dense storage yet) + Group
+// Info + root attributes. Links are
 // added as compact Link messages and move to dense storage after
 // max_compact (8) links; see linkToParentNewStyle. Readers that only know
 // new-style groups (libmysofa) cannot read symbol table roots in v2 files.
@@ -2962,7 +2963,10 @@ func createRootGroupStructureV2(fw *writer.FileWriter, rootAttributes []namedAtt
 	const lengthSize = 8
 
 	sb := &core.Superblock{OffsetSize: offsetSize, LengthSize: lengthSize, Endianness: binary.LittleEndian}
+	// Like netCDF-C, track link creation order (not indexed): every link
+	// then stores its order, which libmysofa's dense link reader relies on.
 	linkInfo, err := core.EncodeLinkInfoMessage(&core.LinkInfoMessage{
+		Flags:              core.LinkInfoTrackCreationOrder,
 		FractalHeapAddress: undefinedAddress,
 		NameBTreeAddress:   undefinedAddress,
 	}, sb)

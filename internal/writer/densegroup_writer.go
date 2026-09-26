@@ -121,7 +121,7 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 
 	encoded := make([]EncodedLink, len(dgw.links))
 	for i, link := range dgw.links {
-		encoded[i] = EncodedLink{Name: link.name, Message: EncodeHardLinkMessage(link.name, link.targetAddr, sb)}
+		encoded[i] = EncodedLink{Name: link.name, Message: EncodeHardLinkMessage(link.name, link.targetAddr, -1, sb)}
 	}
 	heapAddr, btreeAddr, err := WriteDenseLinkStorage(fw, allocator, sb, encoded)
 	if err != nil {
@@ -145,15 +145,17 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 // EncodeHardLinkMessage encodes a version 1 Link message for a hard link
 // to the object header at targetAddr. The same bytes serve as a compact Link
 // message in a group's object header and as a dense storage heap object.
+// A creationOrder >= 0 is stored in the message (groups that track link
+// creation order, as netCDF-C creates them); pass -1 for none.
 //
 // Format (H5O__link_encode):
 //
 //	version (1) | flags (1) | [link type] [creation order] [charset] |
 //	name length (1/2/4/8 bytes, flags bits 0-1) | name | link info
 //
-// A hard link with an ASCII name needs no optional fields; the link info is
-// the target object header address.
-func EncodeHardLinkMessage(name string, targetAddr uint64, sb *core.Superblock) []byte {
+// A hard link with an ASCII name needs no link type or charset field; the
+// link info is the target object header address.
+func EncodeHardLinkMessage(name string, targetAddr uint64, creationOrder int64, sb *core.Superblock) []byte {
 	nameBytes := []byte(name)
 	nameLen := uint64(len(nameBytes))
 
@@ -168,8 +170,13 @@ func EncodeHardLinkMessage(name string, targetAddr uint64, sb *core.Superblock) 
 		sizeCode, lenBytes = 1, 2
 	}
 
-	buf := make([]byte, 0, 2+lenBytes+len(nameBytes)+int(sb.OffsetSize))
-	buf = append(buf, 1, sizeCode)
+	buf := make([]byte, 0, 2+8+lenBytes+len(nameBytes)+int(sb.OffsetSize))
+	if creationOrder >= 0 {
+		buf = append(buf, 1, sizeCode|linkFlagCreationOrder)
+		buf = binary.LittleEndian.AppendUint64(buf, uint64(creationOrder))
+	} else {
+		buf = append(buf, 1, sizeCode)
+	}
 	var lenBuf [8]byte
 	binary.LittleEndian.PutUint64(lenBuf[:], nameLen)
 	buf = append(buf, lenBuf[:lenBytes]...)
@@ -178,6 +185,9 @@ func EncodeHardLinkMessage(name string, targetAddr uint64, sb *core.Superblock) 
 	writeUint64(addr, targetAddr, int(sb.OffsetSize), sb.Endianness)
 	return append(buf, addr...)
 }
+
+// linkFlagCreationOrder marks a Link message that stores the creation order.
+const linkFlagCreationOrder = 0x04
 
 // EncodedLink is a link name with its encoded Link message.
 type EncodedLink struct {

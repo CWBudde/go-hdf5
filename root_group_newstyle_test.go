@@ -1,12 +1,15 @@
 package hdf5
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
+	"github.com/cwbudde/go-hdf5/internal/structures"
 	"github.com/stretchr/testify/require"
 )
 
@@ -238,4 +241,91 @@ func TestRootGroupNewStyleH5Dump(t *testing.T) {
 			}
 		})
 	}
+}
+
+// readRootLinkOrders returns the creation order of every root link and the
+// Link Info's maximum creation order (the next order to assign).
+func readRootLinkOrders(t *testing.T, path string) (orders map[string]int64, maxOrder int64) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	f, err := Open(path)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	sb := f.Superblock()
+	oh, err := core.ReadObjectHeader(f.Reader(), sb.RootGroup, sb)
+	require.NoError(t, err)
+
+	orders = map[string]int64{}
+	add := func(msg []byte) {
+		lm, err := structures.ParseLinkMessage(msg, sb)
+		require.NoError(t, err)
+		require.True(t, lm.CreationOrderValid, "link %q has no creation order", lm.Name)
+		orders[lm.Name] = lm.CreationOrder
+	}
+	var li *core.LinkInfoMessage
+	for _, m := range oh.Messages {
+		switch m.Type {
+		case core.MsgLinkInfo:
+			li, err = core.ParseLinkInfoMessage(m.Data, sb)
+			require.NoError(t, err)
+		case core.MsgLinkMessage:
+			add(m.Data)
+		}
+	}
+	require.NotNil(t, li)
+	require.True(t, li.HasCreationOrderTracking(), "root must track link creation order")
+	if li.FractalHeapAddress != undefAddr {
+		r := bytes.NewReader(data)
+		fh, err := structures.OpenFractalHeap(r, li.FractalHeapAddress, sb.LengthSize, sb.OffsetSize, sb.Endianness)
+		require.NoError(t, err)
+		ids, err := structures.ReadBTreeV2LinkNameHeapIDs(r, li.NameBTreeAddress, sb)
+		require.NoError(t, err)
+		for _, id := range ids {
+			obj, err := fh.ReadObjectSpecCompliant(id)
+			require.NoError(t, err)
+			add(obj)
+		}
+	}
+	return orders, li.MaxCreationOrder
+}
+
+// TestRootGroupNewStyleCreationOrder checks that root links carry their
+// creation order, like netCDF-C writes them (libmysofa relies on it for
+// dense links), and that it continues after reopening the file.
+func TestRootGroupNewStyleCreationOrder(t *testing.T) {
+	for _, n := range []int{3, 8, 9, 30} {
+		t.Run(fmt.Sprintf("links_%d", n), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "order.h5")
+			fw, err := CreateForWrite(path, CreateTruncate)
+			require.NoError(t, err)
+			writeRootLinks(t, fw, 0, n)
+			require.NoError(t, fw.Close())
+
+			orders, maxOrder := readRootLinkOrders(t, path)
+			require.Len(t, orders, n)
+			for i := 0; i < n; i++ {
+				require.Equal(t, int64(i), orders[rootLinkName(i)], "creation order of %s", rootLinkName(i))
+			}
+			require.Equal(t, int64(n), maxOrder)
+		})
+	}
+
+	t.Run("reopen", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "order.h5")
+		fw, err := CreateForWrite(path, CreateTruncate)
+		require.NoError(t, err)
+		writeRootLinks(t, fw, 0, 5)
+		require.NoError(t, fw.Close())
+		fw, err = OpenForWrite(path, OpenReadWrite)
+		require.NoError(t, err)
+		writeRootLinks(t, fw, 5, 10)
+		require.NoError(t, fw.Close())
+
+		orders, maxOrder := readRootLinkOrders(t, path)
+		for i := 0; i < 15; i++ {
+			require.Equal(t, int64(i), orders[rootLinkName(i)])
+		}
+		require.Equal(t, int64(15), maxOrder)
+	})
 }
