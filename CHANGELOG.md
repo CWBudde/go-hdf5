@@ -38,6 +38,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Groups with many links can be written: a full local heap moves its data
+  to a larger block (name offsets unchanged) and the symbol-table B-tree
+  grows extra levels (32 children per node); output stays deterministic.
+  Previously about 25 links failed with "local heap is full".
+- Dense storage written by libhdf5/netCDF-C: fractal heap direct-block
+  checksums are read from the block header, so an object ending exactly at
+  the end of a block is no longer read from the wrong bytes (a link was
+  silently dropped). Dense link/attribute heap errors are returned instead
+  of skipped.
+- v2 B-trees of any depth (link names, group and dataset attributes) are
+  read, with signature, checksum, record-count and cycle checks; before,
+  only depth-0 trees were supported.
+- A Go `string` attribute is written as a scalar fixed-length string, which
+  netCDF-C reads as text (NC_CHAR) instead of an NC_STRING array. The old
+  one-element form still reads.
+
 - Compound datatypes: the writer puts the member count in the class bit
   field and uses minimal-width member offsets as the spec requires, so h5py
   reads compound datasets written by `CreateCompoundDataset`; the reader
