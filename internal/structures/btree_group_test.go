@@ -222,6 +222,7 @@ func TestReadGroupBTreeEntries_Success(t *testing.T) {
 			reader := &mockReaderAt{data: tt.data}
 			sb := createMockSuperblock()
 			sb.OffsetSize = tt.offsetSize
+			sb.LengthSize = tt.offsetSize // keys (heap offsets) have the length size
 
 			entries, err := ReadGroupBTreeEntries(reader, tt.address, sb)
 			require.NoError(t, err)
@@ -293,20 +294,46 @@ func TestReadGroupBTreeEntries_InvalidNodeType(t *testing.T) {
 	}
 }
 
+// levelOneGroupBTree places a level-1 group B-tree node at 3000 whose single
+// child is the level-0 node built by createTestBTreeWithSNOD, moved to 2000.
+func levelOneGroupBTree(childAddr uint64) []byte {
+	buf := createTestBTreeWithSNOD(8, binary.LittleEndian, 512, []struct {
+		linkNameOffset uint64
+		objectAddress  uint64
+		cacheType      uint32
+	}{
+		{0x10, 0x800, 0},
+		{0x20, 0x900, 0},
+	})
+	buf = append(buf, make([]byte, 1024)...)
+	copy(buf[2000:2048], buf[0:48])
+	clear(buf[0:48])
+	n := buf[3000:]
+	copy(n[0:4], "TREE")
+	n[5] = 1 // level 1
+	binary.LittleEndian.PutUint16(n[6:8], 1)
+	binary.LittleEndian.PutUint64(n[8:16], 0xFFFFFFFFFFFFFFFF)
+	binary.LittleEndian.PutUint64(n[16:24], 0xFFFFFFFFFFFFFFFF)
+	binary.LittleEndian.PutUint64(n[24:32], 0)         // key 0
+	binary.LittleEndian.PutUint64(n[32:40], childAddr) // child 0
+	binary.LittleEndian.PutUint64(n[40:48], 0x20)      // key 1
+	return buf
+}
+
 func TestReadGroupBTreeEntries_NonLeafNode(t *testing.T) {
-	buf := make([]byte, 1024)
-	copy(buf[0:4], "TREE")
-	buf[4] = 0
-	buf[5] = 1 // Level 1 (non-leaf)
-	binary.LittleEndian.PutUint16(buf[6:8], 1)
+	reader := &mockReaderAt{data: levelOneGroupBTree(2000)}
+	entries, err := ReadGroupBTreeEntries(reader, 3000, createMockSuperblock())
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	require.Equal(t, uint64(0x900), entries[1].ObjectAddress)
+}
 
-	reader := &mockReaderAt{data: buf}
-	sb := createMockSuperblock()
-
-	entries, err := ReadGroupBTreeEntries(reader, 0, sb)
+func TestReadGroupBTreeEntries_Cycle(t *testing.T) {
+	// The level-1 node points at itself: rejected by the level check
+	// before it could loop.
+	reader := &mockReaderAt{data: levelOneGroupBTree(3000)}
+	_, err := ReadGroupBTreeEntries(reader, 3000, createMockSuperblock())
 	require.Error(t, err)
-	require.Nil(t, entries)
-	require.Contains(t, err.Error(), "non-leaf B-tree nodes not supported")
 }
 
 func TestReadGroupBTreeEntries_ReadErrors(t *testing.T) {
@@ -323,7 +350,7 @@ func TestReadGroupBTreeEntries_ReadErrors(t *testing.T) {
 					err:  errors.New("IO error"),
 				}, createMockSuperblock()
 			},
-			wantErr: "B-tree node header read failed",
+			wantErr: "group B-tree node header",
 		},
 		{
 			name: "insufficient header data",
@@ -346,7 +373,7 @@ func TestReadGroupBTreeEntries_ReadErrors(t *testing.T) {
 				binary.LittleEndian.PutUint64(buf[16:24], 0xFFFFFFFFFFFFFFFF)
 				return &mockReaderAt{data: buf}, createMockSuperblock()
 			},
-			wantErr: "B-tree data read failed",
+			wantErr: "group B-tree node",
 		},
 	}
 

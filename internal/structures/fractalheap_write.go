@@ -890,6 +890,17 @@ func (fh *WritableFractalHeap) writeDirectBlockAt(writer Writer, addr uint64, sb
 	writeUintVar(buf[offset:], fh.DirectBlock.BlockOffset, int(fh.Header.HeapOffsetSize), sb.Endianness)
 	offset += int(fh.Header.HeapOffsetSize)
 
+	if fh.Header.Flags&0x02 != 0 {
+		// Heaps with direct block checksums (e.g. loaded from libhdf5
+		// files) keep the checksum in the block header; it covers the
+		// whole block with the checksum field zeroed.
+		chkPos := offset
+		offset += checksumSize
+		copy(buf[offset:], fh.DirectBlock.Objects)
+		binary.LittleEndian.PutUint32(buf[chkPos:], utils.JenkinsChecksum(buf))
+		return writer.WriteAtAddress(buf, addr)
+	}
+
 	// Object data (used portion) - rest is padding
 	copy(buf[offset:], fh.DirectBlock.Objects)
 
@@ -907,7 +918,7 @@ func (fh *WritableFractalHeap) writeDirectBlockAt(writer Writer, addr uint64, sb
 //
 // Reference: H5HFdblock.c - H5HF__cache_dblock_deserialize().
 func (fh *WritableFractalHeap) readDirectBlockFromFile(reader io.ReaderAt, address, blockSize uint64,
-	heapOffsetSize, fileOffsetSize uint8, endianness binary.ByteOrder, headerAddr uint64,
+	heapOffsetSize, fileOffsetSize uint8, endianness binary.ByteOrder, headerAddr uint64, checksummed bool,
 ) (*DirectBlock, error) {
 	if address == 0 || address == ^uint64(0) {
 		return nil, fmt.Errorf("invalid direct block address: 0x%X", address)
@@ -953,13 +964,21 @@ func (fh *WritableFractalHeap) readDirectBlockFromFile(reader io.ReaderAt, addre
 	dblock.BlockOffset = readUint(buf[offset:offset+int(heapOffsetSize)], int(heapOffsetSize), endianness)
 	offset += int(heapOffsetSize)
 
-	// Data (remaining bytes, excluding checksum if present)
-	// For simplicity, we assume checksum is always present for now
-	dataEnd := totalSize - 4 // Exclude checksum
+	if checksummed {
+		// The checksum is part of the block header; objects follow it and
+		// run to the end of the block.
+		dblock.Checksum = binary.LittleEndian.Uint32(buf[offset : offset+4])
+		offset += 4
+		dblock.Data = make([]byte, totalSize-offset)
+		copy(dblock.Data, buf[offset:])
+		return dblock, nil
+	}
+
+	// Blocks written by go-hdf5 without the checksum flag reserve their
+	// last 4 bytes (see writeDirectBlockAt).
+	dataEnd := totalSize - 4
 	dblock.Data = make([]byte, dataEnd-offset)
 	copy(dblock.Data, buf[offset:dataEnd])
-
-	// Checksum at end (not validated in this MVP)
 	dblock.Checksum = endianness.Uint32(buf[totalSize-4 : totalSize])
 
 	return dblock, nil
@@ -1008,7 +1027,7 @@ func (fh *WritableFractalHeap) LoadFromFile(reader io.ReaderAt, address uint64, 
 
 	// Read the direct block manually (readDirectBlock is private)
 	dblock, err := fh.readDirectBlockFromFile(reader, readHeap.Header.RootBlockAddr, readHeap.Header.StartingBlockSize,
-		readHeap.Header.HeapOffsetSize, sb.OffsetSize, sb.Endianness, readHeap.headerAddr)
+		readHeap.Header.HeapOffsetSize, sb.OffsetSize, sb.Endianness, readHeap.headerAddr, readHeap.Header.ChecksumDirectBlocks)
 	if err != nil {
 		return fmt.Errorf("failed to read direct block: %w", err)
 	}

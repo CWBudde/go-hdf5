@@ -9,6 +9,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.17.0] - 2026-09-26
+
+### Added
+
+- `OpenReader(r io.ReaderAt, size int64)` opens a file from any
+  `io.ReaderAt` (e.g. `bytes.Reader`); all bounds checks use `size`.
+  `Open` is now built on it.
+- `CreateForWriteTo(w io.Writer, opts...)` creates a file in memory and
+  writes it to `w` on `Close` (same options as `CreateForWrite`; wrap an
+  `io.WriterAt` with `io.NewOffsetWriter`). The output is byte-identical to
+  `CreateForWrite`.
+- Dataset metadata without reading data: `Dataset.Shape()`, `MaxShape()`
+  (`Unlimited` for unlimited dimensions), `NumElements()`, `Datatype()`.
+- Dimension scale reading (H5DS): `Dataset.IsDimensionScale()`,
+  `DimensionScaleName()`, `DimensionList()`, `AttachedScales(dim)`,
+  `ReferenceList()`.
+- Object references: `File.Dereference(ref)`, `File.ObjectPath(ref)`,
+  `Dataset.Reference()`, `Dataset.Path()`. `ReadAttribute` decodes object
+  reference attributes (`ObjectRef`, `[]ObjectRef`), variable-length
+  reference lists (`[][]ObjectRef`) and compound attributes
+  (`core.CompoundValue`); compound datasets and attributes decode object
+  reference members as `ObjectRef` (previously "unsupported datatype class
+  6/7").
+- `WithAttribute` accepts more than `MaxCompactDatasetAttributes` (8)
+  attributes per dataset: `CreateDataset` then stores all of them densely
+  (fractal heap + B-tree v2, read by h5py and netCDF-C), and later
+  attributes such as `DIMENSION_LIST` join the dense storage. Previously
+  it returned an error.
+- `Dataset.ChunkShape()` returns a chunked dataset's chunk dimensions
+  (dataset rank; `false` for compact and contiguous layouts).
+- `Dataset.SetChunkCacheSize(maxChunks, maxBytes)` bounds the per-dataset
+  cache of decompressed chunks used by `ReadSlice`/`ReadHyperslab`
+  (default `DefaultChunkCacheChunks` = 8 chunks and
+  `DefaultChunkCacheBytes` = 16 MiB; 0 disables it).
+
+### Changed
+
+- `ReadSlice`/`ReadHyperslab` parse a dataset's object header (datatype,
+  dataspace, layout, filter pipeline) and walk its chunk B-tree once per
+  `*Dataset` instead of on every call, keep recently used chunks
+  decompressed (LRU, see `SetChunkCacheSize`), look up only the chunk
+  positions a selection touches when that is cheaper than scanning the
+  index, and copy chunk data in runs along the last dimension instead of
+  element by element. Deflate decodes into a buffer sized for the chunk
+  (bounded by the input's maximum expansion) instead of growing one.
+  Repeated one-row reads of a chunked, deflated dataset: 720 → 13 µs
+  (510 µs with the chunk cache disabled); of a contiguous one: 7.5 → 4 µs
+  (`BenchmarkReadSlice_*`). `File.Close` drops the caches; a `Dataset`
+  may be read from several goroutines at once.
+- `ObjectRef` is now an alias of `core.ObjectReference` so read and write
+  use the same type (source compatible).
+
+### Fixed
+
+- Groups with many links can be written: a full local heap moves its data
+  to a larger block (name offsets unchanged) and the symbol-table B-tree
+  grows extra levels (32 children per node); output stays deterministic.
+  Previously about 25 links failed with "local heap is full".
+- Dense storage written by libhdf5/netCDF-C: fractal heap direct-block
+  checksums are read from the block header, so an object ending exactly at
+  the end of a block is no longer read from the wrong bytes (a link was
+  silently dropped). Dense link/attribute heap errors are returned instead
+  of skipped.
+- v2 B-trees of any depth (link names, group and dataset attributes) are
+  read, with signature, checksum, record-count and cycle checks; before,
+  only depth-0 trees were supported.
+- Attributes moved from compact to dense storage (the ninth attribute of a
+  dataset or group) kept their values but turned scalar dataspaces into
+  one-element arrays, so netCDF-C read former text attributes as
+  NC_STRING. Re-encoding a parsed attribute now keeps a scalar dataspace.
+- A Go `string` attribute is written as a scalar fixed-length string, which
+  netCDF-C reads as text (NC_CHAR) instead of an NC_STRING array. The old
+  one-element form still reads.
+
+- Compound datatypes: the writer puts the member count in the class bit
+  field and uses minimal-width member offsets as the spec requires, so h5py
+  reads compound datasets written by `CreateCompoundDataset`; the reader
+  handles compound versions 1–5 (h5py `libver="latest"` writes v5), sizes
+  string/vlen/array/enum/opaque members exactly and decodes 1- and 2-byte
+  integers. Files from v0.16.1 and earlier still read.
+- `CreateBasicDatatypeMessage` writes signed integers with bit offset and
+  precision as two uint16 properties and full IEEE float properties.
+- Contiguous hyperslab reads (`ReadSlice`, `ReadHyperslab`): 3-D+
+  selections starting inside a row returned zeros, partial outer
+  selections returned neighbouring rows, and 1-D reads ignored stride and
+  block.
+
+- Null dataspaces (version 2) were reported as scalar.
+
 ## [v0.16.1] - 2026-09-25
 
 ### Fixed

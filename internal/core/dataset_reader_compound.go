@@ -175,6 +175,23 @@ func parseMemberValue(data []byte, datatype *DatatypeMessage, r io.ReaderAt, sb 
 		//nolint:gosec // G115: HDF5 binary format requires uint64 to int64 conversion
 		return int64(byteOrder.Uint64(data[0:8])), nil
 
+	case datatype.Class == DatatypeFixed && (datatype.Size == 1 || datatype.Size == 2):
+		if uint32(len(data)) < datatype.Size { //nolint:gosec // G115: length comparison
+			return nil, errors.New("insufficient data for small integer")
+		}
+		signed := datatype.ClassBitField&0x08 != 0
+		if datatype.Size == 1 {
+			if signed {
+				return int8(data[0]), nil
+			}
+			return data[0], nil
+		}
+		v := byteOrder.Uint16(data[0:2])
+		if signed {
+			return int16(v), nil //nolint:gosec // G115: two's complement reinterpretation
+		}
+		return v, nil
+
 	case datatype.IsFixedString():
 		// CVE-2025-2926 fix: Validate string size before processing.
 		stringSize := uint64(datatype.Size)
@@ -206,6 +223,9 @@ func parseMemberValue(data []byte, datatype *DatatypeMessage, r io.ReaderAt, sb 
 			return nil, err
 		}
 		return values[0], nil
+
+	case datatype.IsObjectReference():
+		return decodeObjectReference(data, datatype.Size)
 
 	default:
 		return nil, fmt.Errorf("unsupported member datatype: %s", datatype)

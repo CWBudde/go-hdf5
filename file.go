@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
 	"github.com/cwbudde/go-hdf5/internal/utils"
@@ -15,7 +16,11 @@ import (
 
 // File represents an open HDF5 file with its metadata and root group.
 type File struct {
-	osFile        *os.File
+	// osFile is the reader all metadata and data are read from. It is an
+	// io.SectionReader bounded to the file size, so bounds checks see the
+	// size given to OpenReader (or the size of the file opened by Open).
+	osFile        io.ReaderAt
+	closer        io.Closer // Closed by Close; nil for OpenReader.
 	sb            *core.Superblock
 	root          *Group
 	visitedBTrees map[uint64]bool // Track visited B-tree addresses to prevent cycles
@@ -27,6 +32,11 @@ type File struct {
 	expandedGroups map[uint64]bool
 	// loadDepth is the current object-loading recursion depth.
 	loadDepth int
+
+	// objects maps object header addresses to objects and their paths,
+	// built once on first use by reference resolution (see objectIndex).
+	objects     map[uint64]objectEntry
+	objectsOnce sync.Once
 }
 
 // maxLoadDepth bounds object nesting while loading the group hierarchy.
@@ -54,44 +64,63 @@ func Open(filename string) (*File, error) {
 		return nil, utils.WrapError("file open failed", err)
 	}
 
-	// Verify HDF5 signature before reading superblock.
-	if !isHDF5File(f) {
-		_ = f.Close()
-		return nil, errors.New("not an HDF5 file")
-	}
-
 	// Get file size for address validation.
 	fi, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
 		return nil, utils.WrapError("file stat failed", err)
 	}
-	fileSize := fi.Size()
 
-	sb, err := core.ReadSuperblock(f)
+	file, err := OpenReader(f, fi.Size())
 	if err != nil {
 		_ = f.Close()
+		return nil, err
+	}
+	file.closer = f
+	return file, nil
+}
+
+// OpenReader reads an HDF5 file of size bytes from r, e.g. a bytes.Reader
+// over an in-memory file or an embedded asset. All reads stay within the
+// first size bytes of r; size is also the bound used to reject corrupt
+// addresses and lengths.
+//
+// The returned File reads from r lazily (dataset data is read on demand),
+// so r must remain valid while the File is in use. Close does not close r.
+func OpenReader(r io.ReaderAt, size int64) (*File, error) {
+	if r == nil {
+		return nil, errors.New("nil reader")
+	}
+	if size < 0 {
+		return nil, fmt.Errorf("negative file size %d", size)
+	}
+	sr := io.NewSectionReader(r, 0, size)
+
+	// Verify HDF5 signature before reading superblock.
+	if !isHDF5File(sr) {
+		return nil, errors.New("not an HDF5 file")
+	}
+
+	sb, err := core.ReadSuperblock(sr)
+	if err != nil {
 		return nil, utils.WrapError("superblock read failed", err)
 	}
 
 	file := &File{
-		osFile:        f,
+		osFile:        sr,
 		sb:            sb,
 		visitedBTrees: make(map[uint64]bool),
 	}
 
 	// Validate root group address.
-	//nolint:gosec // G115: File size is always positive, safe to convert int64 to uint64
-	if sb.RootGroup >= uint64(fileSize) {
-		_ = f.Close()
+	if sb.RootGroup >= uint64(size) {
 		return nil, fmt.Errorf("root group address %d beyond file size %d",
-			sb.RootGroup, fileSize)
+			sb.RootGroup, size)
 	}
 
 	// For all versions, sb.RootGroup now contains the correct object header address.
 	file.root, err = loadGroup(file, sb.RootGroup)
 	if err != nil {
-		_ = f.Close()
 		return nil, utils.WrapError("root group load failed", err)
 	}
 
@@ -114,12 +143,22 @@ func isHDF5File(r utils.ReaderAt) bool {
 
 // Close closes the HDF5 file and releases associated resources.
 // It is safe to call Close multiple times.
+//
+// For a File from OpenReader, Close does not close the underlying reader.
 func (f *File) Close() error {
-	if f.osFile == nil {
-		return nil // Already closed.
+	if f.root != nil {
+		// Cached metadata and chunks must not outlive the file.
+		f.Walk(func(_ string, obj Object) {
+			if ds, ok := obj.(*Dataset); ok {
+				ds.dropCache()
+			}
+		})
 	}
-	err := f.osFile.Close()
-	f.osFile = nil // Prevent double close.
+	if f.closer == nil {
+		return nil // Already closed, or nothing to close.
+	}
+	err := f.closer.Close()
+	f.closer = nil // Prevent double close.
 	return err
 }
 

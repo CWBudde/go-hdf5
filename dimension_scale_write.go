@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 
 	"github.com/cwbudde/go-hdf5/internal/core"
@@ -21,7 +20,12 @@ import (
 //   - []DimensionReference: 1D array of the compound
 //     {"dataset": H5T_STD_REF_OBJ, "dimension": H5T_STD_U32LE} (the layout of the
 //     REFERENCE_LIST attribute)
-type ObjectRef uint64
+//
+// When reading, ReadAttribute returns ObjectRef, []ObjectRef and
+// [][]ObjectRef for these datatypes (compound values hold ObjectRef
+// members); resolve references with File.Dereference or File.ObjectPath.
+// ObjectRef is an alias of core.ObjectReference, the type the reader uses.
+type ObjectRef = core.ObjectReference
 
 // DimensionReference is one element of a REFERENCE_LIST attribute: the
 // dataset a dimension scale is attached to, and the dimension index.
@@ -50,6 +54,26 @@ const (
 	referenceListAttr   = "REFERENCE_LIST"
 	objectReferenceSize = 8
 )
+
+// dimScaleStringAttribute returns the value to write for a dataset
+// attribute. The dimension scale attributes CLASS and NAME are C strings in
+// the H5DS convention (H5DSset_scale writes strlen+1 bytes, NUL included;
+// H5DSget_scale_name relies on the terminator), unlike other string
+// attributes, which are written like netCDF-C text (see inferString).
+func dimScaleStringAttribute(name string, value interface{}) interface{} {
+	s, ok := value.(string)
+	if !ok || (name != dimScaleClassAttr && name != dimScaleNameAttr) {
+		return value
+	}
+	return &encodedAttributeValue{
+		datatype: &core.DatatypeMessage{
+			Class: core.DatatypeString,
+			Size:  uint32(len(s) + 1), //nolint:gosec // G115: attribute strings are small
+		},
+		dataspace: &core.DataspaceMessage{Type: core.DataspaceScalar}, // H5S_SCALAR
+		data:      append([]byte(s), 0),
+	}
+}
 
 // SetDimensionScale marks the dataset as a dimension scale, like
 // H5DSset_scale: it writes CLASS="DIMENSION_SCALE" and, when name is not
@@ -171,64 +195,7 @@ func (fw *FileWriter) readDimensionList(addr uint64) ([][]ObjectRef, error) {
 	if err != nil {
 		return nil, err
 	}
-	if attr.Datatype.Class != core.DatatypeVarLen {
-		return nil, fmt.Errorf("%s is not a variable-length attribute", dimensionListAttr)
-	}
-	offsetSize := int(fw.file.Superblock().OffsetSize)
-	elemSize := 4 + offsetSize + 4
-	n := int(attr.Dataspace.TotalElements()) //nolint:gosec // G115: bounded by attribute data below
-	if n < 0 || n*elemSize > len(attr.Data) {
-		return nil, fmt.Errorf("%s data too short", dimensionListAttr)
-	}
-
-	reader := fw.writer.Reader()
-	heaps := make(map[uint64]*core.GlobalHeapCollection)
-	out := make([][]ObjectRef, n)
-	for i := range out {
-		elem := attr.Data[i*elemSize : (i+1)*elemSize]
-		count := int(binary.LittleEndian.Uint32(elem[0:4]))
-		ref, err := core.ParseGlobalHeapReference(elem[4:], offsetSize)
-		if err != nil {
-			return nil, fmt.Errorf("%s[%d]: %w", dimensionListAttr, i, err)
-		}
-		if count == 0 || !isDefinedAddress(ref.HeapAddress) {
-			continue
-		}
-		refs, err := readReferenceSequence(reader, heaps, ref, count, offsetSize)
-		if err != nil {
-			return nil, fmt.Errorf("%s[%d]: %w", dimensionListAttr, i, err)
-		}
-		out[i] = refs
-	}
-	return out, nil
-}
-
-// readReferenceSequence reads a variable-length sequence of count object
-// references from the global heap object ref points to.
-func readReferenceSequence(reader io.ReaderAt, heaps map[uint64]*core.GlobalHeapCollection,
-	ref *core.GlobalHeapReference, count, offsetSize int,
-) ([]ObjectRef, error) {
-	heap, ok := heaps[ref.HeapAddress]
-	if !ok {
-		var err error
-		heap, err = core.ReadGlobalHeapCollection(reader, ref.HeapAddress, offsetSize)
-		if err != nil {
-			return nil, err
-		}
-		heaps[ref.HeapAddress] = heap
-	}
-	obj, err := heap.GetObject(ref.ObjectIndex)
-	if err != nil {
-		return nil, err
-	}
-	if count*objectReferenceSize > len(obj.Data) {
-		return nil, fmt.Errorf("sequence of %d references exceeds heap object", count)
-	}
-	refs := make([]ObjectRef, count)
-	for j := range refs {
-		refs[j] = ObjectRef(binary.LittleEndian.Uint64(obj.Data[j*objectReferenceSize:]))
-	}
-	return refs, nil
+	return decodeDimensionList(attr)
 }
 
 // readReferenceList decodes an existing REFERENCE_LIST attribute (a 1D
@@ -241,34 +208,7 @@ func (fw *FileWriter) readReferenceList(addr uint64) ([]DimensionReference, erro
 	if err != nil {
 		return nil, err
 	}
-	if attr.Datatype.Class != core.DatatypeCompound {
-		return nil, fmt.Errorf("%s is not a compound attribute", referenceListAttr)
-	}
-	refOff, dimOff := uint32(0), uint32(8) // libhdf5 ds_list_t layout
-	if ct, err := core.ParseCompoundType(attr.Datatype); err == nil {
-		for _, m := range ct.Members {
-			switch m.Name {
-			case "dataset":
-				refOff = m.Offset
-			case "dimension":
-				dimOff = m.Offset
-			}
-		}
-	}
-	elemSize := int(attr.Datatype.Size)
-	n := int(attr.Dataspace.TotalElements()) //nolint:gosec // G115: bounded by attribute data below
-	if elemSize < int(refOff)+objectReferenceSize || elemSize < int(dimOff)+4 || n < 0 || n*elemSize > len(attr.Data) {
-		return nil, fmt.Errorf("unsupported %s layout", referenceListAttr)
-	}
-	out := make([]DimensionReference, n)
-	for i := range out {
-		elem := attr.Data[i*elemSize : (i+1)*elemSize]
-		out[i] = DimensionReference{
-			Dataset: ObjectRef(binary.LittleEndian.Uint64(elem[refOff:])),
-			Index:   int32(binary.LittleEndian.Uint32(elem[dimOff:])), //nolint:gosec // G115: two's complement
-		}
-	}
-	return out, nil
+	return decodeReferenceList(attr)
 }
 
 // dimensionScaleState collects dimension scale attachments until Close.

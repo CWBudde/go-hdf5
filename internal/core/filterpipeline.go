@@ -293,10 +293,43 @@ func applyDeflate(data []byte) ([]byte, error) {
 
 // readAllLimited reads all of r but fails if more than limit bytes are produced.
 func readAllLimited(r io.Reader, limit int) ([]byte, error) {
-	out, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
-	if err != nil {
-		return nil, err
+	return readAllLimitedHint(r, limit, 0)
+}
+
+// maxDeflateRatio bounds the expansion of deflate data (the format's
+// maximum is about 1032:1).
+const maxDeflateRatio = 1032
+
+// readAllLimitedHint is readAllLimited with the output buffer sized for
+// min(limit, hint) bytes up front, so decoding a chunk of known size does
+// not grow (and copy) the buffer repeatedly.
+func readAllLimitedHint(r io.Reader, limit, hint int) ([]byte, error) {
+	lr := io.LimitReader(r, int64(limit)+1)
+	if hint <= 0 {
+		out, err := io.ReadAll(lr)
+		if err != nil {
+			return nil, err
+		}
+		return checkLimit(out, limit)
 	}
+	out := make([]byte, 0, min(limit, hint)+1)
+	for {
+		if len(out) == cap(out) {
+			out = append(out, 0)[:len(out)]
+		}
+		n, err := lr.Read(out[len(out):cap(out)])
+		out = out[:len(out)+n]
+		if errors.Is(err, io.EOF) {
+			return checkLimit(out, limit)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+// checkLimit fails if out holds more than limit bytes.
+func checkLimit(out []byte, limit int) ([]byte, error) {
 	if len(out) > limit {
 		return nil, fmt.Errorf("decompressed data exceeds expected size %d", limit)
 	}
@@ -312,8 +345,13 @@ func applyDeflateLimit(data []byte, limit int) ([]byte, error) {
 	}
 	defer func() { _ = reader.Close() }()
 
-	// Read all decompressed data.
-	decompressed, err := readAllLimited(reader, limit)
+	// Read all decompressed data into a buffer sized for the limit (the
+	// expected chunk size), bounded by what the input can expand to.
+	hint := limit
+	if len(data) < hint/maxDeflateRatio {
+		hint = len(data)*maxDeflateRatio + 512
+	}
+	decompressed, err := readAllLimitedHint(reader, limit, hint)
 	if err != nil {
 		return nil, fmt.Errorf("zlib decompression failed: %w", err)
 	}
