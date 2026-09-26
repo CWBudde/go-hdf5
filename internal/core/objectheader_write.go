@@ -186,6 +186,12 @@ func (ohw *ObjectHeaderWriter) sizeV2() uint64 {
 //   - No attribute phase change (flags bit 4 = 0)
 //   - Chunk size in 1 byte (flags bits 0-1 = 0)
 func (ohw *ObjectHeaderWriter) WriteTo(w io.WriterAt, address uint64) (uint64, error) {
+	for _, msg := range ohw.Messages {
+		if len(msg.Data) > MaxHeaderMessageSize {
+			return 0, fmt.Errorf("message type %d of %d bytes exceeds the %d byte header message limit",
+				msg.Type, len(msg.Data), MaxHeaderMessageSize)
+		}
+	}
 	switch ohw.Version {
 	case 1:
 		return ohw.writeToV1(w, address)
@@ -398,9 +404,9 @@ func (ohw *ObjectHeaderWriter) writeToV2(w io.WriterAt, address uint64) (uint64,
 	return headerSize, nil
 }
 
-// maxHeaderMessageSize is the largest message body an object header message
+// MaxHeaderMessageSize is the largest message body an object header message
 // can hold (2-byte size field).
-const maxHeaderMessageSize = 0xFFFF
+const MaxHeaderMessageSize = 0xFFFF
 
 // AddMessageToObjectHeader adds a message to an object header.
 // Only object header v2 is supported. The header may grow beyond its
@@ -433,9 +439,9 @@ func AddMessageToObjectHeader(oh *ObjectHeader, msgType MessageType, msgData []b
 	// caller moves attributes to dense storage instead. There is no limit on
 	// the total size: WriteObjectHeader moves messages that do not fit into
 	// chunk #0 into a continuation chunk.
-	if len(msgData) > maxHeaderMessageSize {
+	if len(msgData) > MaxHeaderMessageSize {
 		return fmt.Errorf("object header full: message of %d bytes exceeds the %d byte header message limit",
-			len(msgData), maxHeaderMessageSize)
+			len(msgData), MaxHeaderMessageSize)
 	}
 
 	// Create new message

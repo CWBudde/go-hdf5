@@ -230,7 +230,13 @@ func (fw *FileWriter) writeDimensionScaleAttributes() error {
 	fw.dimScales = nil
 
 	for _, ds := range st.datasets {
-		if err := ds.WriteAttribute(dimensionListAttr, st.dimLists[ds.address]); err != nil {
+		// Only DIMENSION_LIST goes to the global heap collection reserved
+		// for it (see reserveDimensionHeap).
+		value, err := fw.encodeObjectReferenceLists(st.dimLists[ds.address], true)
+		if err != nil {
+			return fmt.Errorf("encode %s on %s: %w", dimensionListAttr, ds.name, err)
+		}
+		if err := ds.WriteAttribute(dimensionListAttr, value); err != nil {
 			return fmt.Errorf("write %s on %s: %w", dimensionListAttr, ds.name, err)
 		}
 	}
@@ -274,7 +280,7 @@ func (fw *FileWriter) prepareAttributeValue(value interface{}) (interface{}, err
 		}
 		return encodeObjectReferences(v), nil
 	case [][]ObjectRef:
-		return fw.encodeObjectReferenceLists(v)
+		return fw.encodeObjectReferenceLists(v, false)
 	case []DimensionReference:
 		return encodeDimensionReferences(v)
 	default:
@@ -297,7 +303,8 @@ func encodeObjectReferences(refs []ObjectRef) *encodedAttributeValue {
 // encodeObjectReferenceLists encodes a 1D array of variable-length sequences
 // of object references. Each sequence is stored in the global heap; the
 // attribute holds {uint32 length, heap collection address, uint32 index}.
-func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef) (*encodedAttributeValue, error) {
+// DIMENSION_LIST (dimensionList) uses the collection reserved for it.
+func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef, dimensionList bool) (*encodedAttributeValue, error) {
 	if len(lists) == 0 {
 		return nil, fmt.Errorf("cannot write empty [][]ObjectRef attribute")
 	}
@@ -305,12 +312,12 @@ func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef) (*encodedA
 		fw.globalHeapWriter = newGlobalHeapWriter(fw)
 	}
 
-	base, err := core.EncodeDatatypeMessage(objectReferenceDatatype())
+	datatype, err := objectReferenceListDatatype()
 	if err != nil {
-		return nil, fmt.Errorf("encode reference base type: %w", err)
+		return nil, err
 	}
 
-	const elemSize = 4 + 8 + 4 // length + heap address + object index
+	const elemSize = vlenElementSize // length + heap address + object index
 	data := make([]byte, len(lists)*elemSize)
 	for i, refs := range lists {
 		elem := data[i*elemSize : (i+1)*elemSize]
@@ -318,7 +325,12 @@ func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef) (*encodedA
 			continue // empty sequence: zero length, null heap ID
 		}
 		seq := encodeObjectReferences(refs).data
-		hid, err := fw.globalHeapWriter.WriteToGlobalHeap(seq)
+		var hid HeapID
+		if dimensionList {
+			hid, err = fw.globalHeapWriter.WriteDimensionReferences(seq)
+		} else {
+			hid, err = fw.globalHeapWriter.WriteToGlobalHeap(seq)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("write reference list %d to global heap: %w", i, err)
 		}
@@ -328,16 +340,44 @@ func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef) (*encodedA
 	}
 
 	return &encodedAttributeValue{
-		datatype: &core.DatatypeMessage{
-			Class:         core.DatatypeVarLen,
-			Version:       1,
-			Size:          elemSize,
-			ClassBitField: 0, // sequence
-			Properties:    base,
-		},
+		datatype:  datatype,
 		dataspace: &core.DataspaceMessage{Dimensions: []uint64{uint64(len(lists))}},
 		data:      data,
 	}, nil
+}
+
+// objectReferenceListDatatype returns the datatype of DIMENSION_LIST: a
+// variable-length sequence of object references.
+func objectReferenceListDatatype() (*core.DatatypeMessage, error) {
+	base, err := core.EncodeDatatypeMessage(objectReferenceDatatype())
+	if err != nil {
+		return nil, fmt.Errorf("encode reference base type: %w", err)
+	}
+	return &core.DatatypeMessage{
+		Class:         core.DatatypeVarLen,
+		Version:       1,
+		Size:          vlenElementSize,
+		ClassBitField: 0, // sequence
+		Properties:    base,
+	}, nil
+}
+
+// dimensionListMessageSize returns the size of the DIMENSION_LIST attribute
+// message of a dataset with the given rank. Dataset object headers reserve
+// this much free space, so that the attribute written at Close stays in the
+// first header chunk instead of adding a continuation chunk per dataset
+// (libmysofa follows at most 25 continuation messages per file).
+func dimensionListMessageSize(rank int) (int, error) {
+	datatype, err := objectReferenceListDatatype()
+	if err != nil {
+		return 0, err
+	}
+	dataspace := &core.DataspaceMessage{Dimensions: []uint64{uint64(rank)}} //nolint:gosec // G115: rank is small
+	msg, err := core.EncodeAttributeMessage(dimensionListAttr, datatype, dataspace, make([]byte, rank*vlenElementSize))
+	if err != nil {
+		return 0, fmt.Errorf("encode %s: %w", dimensionListAttr, err)
+	}
+	return len(msg), nil
 }
 
 // encodeDimensionReferences encodes a REFERENCE_LIST style compound array,

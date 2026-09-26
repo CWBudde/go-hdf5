@@ -33,9 +33,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   those above 4 KiB as huge heap objects, which neither this library nor
   libmysofa reads), so links with long names no longer fail when a group
   converts to dense storage.
+- Dataset attributes stay in the object header (compact storage) whatever
+  their number; they used to move to dense storage with the 9th, where
+  libmysofa cannot read attributes other than scalar strings (e.g.
+  `DIMENSION_LIST`). `WithAttribute` accepts more than 8 attributes.
+  Datasets that already use dense storage keep using it; groups still
+  switch at 9. `MaxCompactDatasetAttributes` is deprecated.
+- Dataset object headers reserve free space for their `DIMENSION_LIST`
+  attribute, which `Close` writes. It no longer adds a continuation chunk
+  to every variable (libmysofa follows at most 25 per file). Attributes
+  written after creation can still use up that space.
+- Files with superblock v2/v3 reserve a global heap collection for the
+  `DIMENSION_LIST` references right after the root group, like netCDF-C
+  files. libmysofa cannot resolve references into a collection beyond
+  64 KiB. Other variable-length data, including user attributes of type
+  `[][]ObjectRef`, gets collections of its own, so it cannot push the
+  references there. Every such file therefore has at least one 4 KiB
+  global heap collection, room for about 170 dimension references.
 
 ### Fixed
 
+- A dataset attribute whose message exceeds the 64 KiB header message
+  limit is an error at `CreateDataset`. It used to produce an object
+  header with a wrapped-around message size, and the dataset disappeared.
 - String datatype messages are 8 bytes as the format specifies; they had
   an extra byte that libmysofa could not skip.
 - Scalar attribute dataspaces are written as the 4-byte version 2 message

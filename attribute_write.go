@@ -16,16 +16,21 @@ import (
 // Attribute storage threshold.
 const (
 	// MaxCompactAttributes is the threshold for transitioning to dense storage.
-	// When an object has 8+ attributes, dense storage (Fractal Heap + B-tree)
-	// is more efficient than compact storage (object header messages).
+	// A group keeps up to 8 attributes compact (object header messages);
+	// adding the 9th moves them to dense storage (Fractal Heap + B-tree).
+	// Datasets keep all their attributes compact (see WriteAttribute).
 	MaxCompactAttributes = 8
+
+	// unlimitedCompactAttributes is the compact limit for datasets.
+	unlimitedCompactAttributes = math.MaxInt
 )
 
 // WriteAttribute writes an attribute to a dataset.
 //
-// Storage strategy (automatic):
-//   - 0-7 attributes: Compact storage (object header messages)
-//   - 8+ attributes: Dense storage (Fractal Heap + B-tree v2)
+// Storage: attributes are stored compactly (object header messages),
+// whatever their number. Only datasets that already use dense storage
+// (Fractal Heap + B-tree v2, e.g. written by libhdf5) get new attributes
+// there.
 //
 // Supported value types:
 //   - Scalars: int8, int16, int32, int64, uint8, uint16, uint32, uint64, float32, float64
@@ -59,11 +64,11 @@ func (ds *DatasetWriter) WriteAttribute(name string, value interface{}) error {
 
 	// For datasets opened with OpenForWrite, use cached object header and dense attr info
 	if ds.objectHeader != nil {
-		return writeAttributeWithCachedHeader(ds.fileWriter, ds.address, ds.objectHeader, ds.denseAttrInfo, name, value)
+		return writeAttributeWithCachedHeader(ds.fileWriter, ds.address, ds.objectHeader, ds.denseAttrInfo, name, value, unlimitedCompactAttributes)
 	}
 
 	// For datasets created in this session, read object header fresh
-	return writeAttribute(ds.fileWriter, ds.address, name, value)
+	return writeAttribute(ds.fileWriter, ds.address, name, value, unlimitedCompactAttributes)
 }
 
 // DeleteAttribute removes an attribute by name from the dataset.
@@ -194,11 +199,16 @@ func (ds *DatasetWriter) RebalanceAttributeBTree() error {
 // writeAttribute is the internal implementation for writing attributes.
 //
 // Storage strategy:
-// - 0-7 attributes: Compact storage (object header messages)
-// - 8+ attributes: Dense storage (Fractal Heap + B-tree v2)
+// - Up to compactLimit attributes: Compact storage (object header messages)
+// - More: Dense storage (Fractal Heap + B-tree v2)
+//
+// Groups use MaxCompactAttributes, datasets unlimitedCompactAttributes:
+// netCDF variables rarely have more than 8 attributes, and libmysofa cannot
+// read dense attributes other than scalar strings (e.g. DIMENSION_LIST).
+// Objects that already use dense storage keep using it.
 //
 // Automatic transition:
-// - When adding the 8th attribute, all attributes are migrated to dense storage
+// - When adding attribute compactLimit+1, all attributes are migrated to dense storage
 // - Compact attribute messages are removed from object header
 // - Attribute Info Message is added to object header
 //
@@ -207,7 +217,7 @@ func (ds *DatasetWriter) RebalanceAttributeBTree() error {
 // - No attribute deletion support
 //
 // Reference: H5Aint.c - H5A__dense_create().
-func writeAttribute(fw *FileWriter, objectAddr uint64, name string, value interface{}) error {
+func writeAttribute(fw *FileWriter, objectAddr uint64, name string, value interface{}, compactLimit int) error {
 	// Get superblock
 	sb := fw.file.Superblock()
 
@@ -233,7 +243,7 @@ func writeAttribute(fw *FileWriter, objectAddr uint64, name string, value interf
 		return writeDenseAttribute(fw, objectAddr, oh, name, value, sb)
 	}
 
-	if compactCount < MaxCompactAttributes || hasCompactAttribute(oh, name, sb) {
+	if compactCount < compactLimit || hasCompactAttribute(oh, name, sb) {
 		// Still compact, or replacing an existing compact attribute
 		return writeCompactAttribute(fw, objectAddr, oh, name, value, sb)
 	}
@@ -381,7 +391,7 @@ func upsertAttributeMessage(fw *FileWriter, objectAddr uint64, oh *core.ObjectHe
 //
 // Reference: Same as writeAttribute, but skips object header re-parsing.
 func writeAttributeWithCachedHeader(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
-	denseAttrInfo *core.AttributeInfoMessage, name string, value interface{},
+	denseAttrInfo *core.AttributeInfoMessage, name string, value interface{}, compactLimit int,
 ) error {
 	sb := fw.file.Superblock()
 
@@ -398,12 +408,12 @@ func writeAttributeWithCachedHeader(fw *FileWriter, objectAddr uint64, oh *core.
 		}
 	}
 
-	if compactCount < MaxCompactAttributes || hasCompactAttribute(oh, name, sb) {
+	if compactCount < compactLimit || hasCompactAttribute(oh, name, sb) {
 		// Still compact, or replacing an existing compact attribute
 		return writeCompactAttribute(fw, objectAddr, oh, name, value, sb)
 	}
 
-	// Need to transition to dense storage (9th attribute)
+	// Need to transition to dense storage (attribute compactLimit+1)
 	return transitionToDenseAttributes(fw, objectAddr, oh, name, value, sb)
 }
 
