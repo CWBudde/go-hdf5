@@ -1030,6 +1030,21 @@ func (bt *WritableBTreeV2) GetRecords() []LinkNameRecord {
 	return bt.records
 }
 
+// HeapIDsForName returns the 7-byte heap IDs of all records whose name hash
+// matches name's. Different names can share a hash, so callers compare the
+// names stored in the heap objects.
+func (bt *WritableBTreeV2) HeapIDsForName(name string) [][]byte {
+	hash := jenkinsHash(name)
+	var ids [][]byte
+	for _, r := range bt.records {
+		if r.NameHash == hash {
+			id := r.HeapID
+			ids = append(ids, id[:])
+		}
+	}
+	return ids
+}
+
 // findRecord returns the index of name's record, or -1 when there is none.
 //
 // Files written by go-hdf5 up to v0.16.0 carry legacyJenkinsHash for names

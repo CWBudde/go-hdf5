@@ -31,10 +31,7 @@ import (
 type DenseGroupWriter struct {
 	name string
 
-	// Components
-	fractalHeap *structures.WritableFractalHeap
-	btree       *structures.WritableBTreeV2
-	linkInfo    *core.LinkInfoMessage
+	linkInfo *core.LinkInfoMessage
 
 	// Links to add
 	links []denseLink
@@ -57,13 +54,8 @@ type denseLink struct {
 //
 // Reference: H5Gdense.c - H5G_dense_create().
 func NewDenseGroupWriter(name string) *DenseGroupWriter {
-	heap := structures.NewGrowableFractalHeap(structures.LinkHeapStartBlockSize) // grows as needed
-	// Link name-index records hold 7-byte heap IDs (H5G_DENSE_FHEAP_ID_LEN).
-	heap.SetMaxManagedObjectSize(structures.LinkHeapMaxManagedObjectSize)
 	return &DenseGroupWriter{
-		name:        name,
-		fractalHeap: heap,
-		btree:       structures.NewWritableBTreeV2(0), // libhdf5 node size (512), grows as needed
+		name: name,
 		linkInfo: &core.LinkInfoMessage{
 			Version: 0,
 			Flags:   0, // No creation order tracking for MVP
@@ -108,15 +100,9 @@ func (dgw *DenseGroupWriter) AddLink(name string, targetAddr uint64) error {
 // WriteToFile writes dense group to file, returns object header address.
 //
 // This method:
-//  1. For each link:
-//     a. Create link message (hard link format)
-//     b. Insert link message into fractal heap
-//     c. Insert (name, heapID) into B-tree v2
-//  2. Write fractal heap to file
-//  3. Write B-tree v2 to file
-//  4. Create Link Info Message with heap/B-tree addresses
-//  5. Create object header with Link Info + other messages
-//  6. Write object header to file
+//  1. Writes the links to dense storage (WriteDenseLinkStorage)
+//  2. Creates the Link Info Message with heap/B-tree addresses
+//  3. Writes the object header with Link Info + other messages
 //
 // Parameters:
 //   - fw: FileWriter for write operations
@@ -133,51 +119,21 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 		return 0, errors.New("dense group must have at least one link")
 	}
 
-	// Step 1: Process all links
-	for _, link := range dgw.links {
-		// 1a. Create link message (hard link format)
-		linkMsg := dgw.createLinkMessage(link, sb)
-
-		// 1b. Insert into fractal heap
-		heapID, err := dgw.fractalHeap.InsertObject(linkMsg)
-		if err != nil {
-			return 0, fmt.Errorf("failed to insert link %s into heap: %w", link.name, err)
-		}
-
-		// 1c. Convert heap ID to uint64 for B-tree (7-byte link heap IDs,
-		// zero-extended; the record stores the low 7 bytes)
-		if len(heapID) == 0 || len(heapID) > 7 {
-			return 0, fmt.Errorf("invalid heap ID length for link %s: %d bytes", link.name, len(heapID))
-		}
-		var idBuf [8]byte
-		copy(idBuf[:], heapID)
-		heapIDUint64 := binary.LittleEndian.Uint64(idBuf[:])
-
-		// 1d. Insert into B-tree v2
-		err = dgw.btree.InsertRecord(link.name, heapIDUint64)
-		if err != nil {
-			return 0, fmt.Errorf("failed to insert link %s into B-tree: %w", link.name, err)
-		}
+	encoded := make([]EncodedLink, len(dgw.links))
+	for i, link := range dgw.links {
+		encoded[i] = EncodedLink{Name: link.name, Message: EncodeHardLinkMessage(link.name, link.targetAddr, sb)}
 	}
-
-	// Step 2: Write fractal heap
-	heapAddr, err := dgw.fractalHeap.WriteToFile(fw, allocator, sb)
+	heapAddr, btreeAddr, err := WriteDenseLinkStorage(fw, allocator, sb, encoded)
 	if err != nil {
-		return 0, fmt.Errorf("failed to write fractal heap: %w", err)
+		return 0, err
 	}
 
-	// Step 3: Write B-tree v2
-	btreeAddr, err := dgw.btree.WriteToFile(fw, allocator, sb)
-	if err != nil {
-		return 0, fmt.Errorf("failed to write B-tree v2: %w", err)
-	}
-
-	// Step 4: Create Link Info Message
+	// Link Info Message
 	dgw.linkInfo.FractalHeapAddress = heapAddr
 	dgw.linkInfo.NameBTreeAddress = btreeAddr
 	dgw.linkInfo.CreationOrderBTreeAddress = 0 // No creation order tracking in MVP
 
-	// Step 5: Create object header with Link Info Message
+	// Object header with Link Info Message
 	ohAddr, err := dgw.createObjectHeader(fw, allocator, sb)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create object header: %w", err)
@@ -186,26 +142,19 @@ func (dgw *DenseGroupWriter) WriteToFile(fw *FileWriter, allocator *Allocator, s
 	return ohAddr, nil
 }
 
-// createLinkMessage creates link message for fractal heap storage.
+// EncodeHardLinkMessage encodes a version 1 Link message for a hard link
+// to the object header at targetAddr. The same bytes serve as a compact Link
+// message in a group's object header and as a dense storage heap object.
 //
-// Format (from H5Olinfo.c - link message):
-//   - Version: 1 (1 byte)
-//   - Type: 0 = Hard Link (1 byte)
-//   - Creation Order Present: 0 (1 byte, bit flags) - MVP: no creation order
-//   - Link Name Encoding: 0 = ASCII/UTF-8 (1 byte)
-//   - Link Name Length: variable (compact uint64 encoding)
-//   - Link Name: UTF-8 bytes
-//   - Link Info:
-//   - For hard link: target object header address (offsetSize bytes)
+// Format (H5O__link_encode):
 //
-// Reference: H5Ollink.c - H5O__link_encode().
-func (dgw *DenseGroupWriter) createLinkMessage(link denseLink, sb *core.Superblock) []byte {
-	// Link message, version 1 (H5O__link_encode):
-	//   version (1) | flags (1) | [link type] [creation order] [charset] |
-	//   name length (1/2/4/8 bytes, flags bits 0-1) | name | link info
-	// A hard link with an ASCII name needs no optional fields; the link
-	// info is the target object header address.
-	nameBytes := []byte(link.name)
+//	version (1) | flags (1) | [link type] [creation order] [charset] |
+//	name length (1/2/4/8 bytes, flags bits 0-1) | name | link info
+//
+// A hard link with an ASCII name needs no optional fields; the link info is
+// the target object header address.
+func EncodeHardLinkMessage(name string, targetAddr uint64, sb *core.Superblock) []byte {
+	nameBytes := []byte(name)
 	nameLen := uint64(len(nameBytes))
 
 	var sizeCode byte
@@ -226,14 +175,71 @@ func (dgw *DenseGroupWriter) createLinkMessage(link denseLink, sb *core.Superblo
 	buf = append(buf, lenBuf[:lenBytes]...)
 	buf = append(buf, nameBytes...)
 	addr := make([]byte, sb.OffsetSize)
-	writeUint64(addr, link.targetAddr, int(sb.OffsetSize), sb.Endianness)
+	writeUint64(addr, targetAddr, int(sb.OffsetSize), sb.Endianness)
 	return append(buf, addr...)
+}
+
+// EncodedLink is a link name with its encoded Link message.
+type EncodedLink struct {
+	Name    string
+	Message []byte
+}
+
+// NewLinkHeap returns an empty fractal heap for dense link storage: 7-byte
+// heap IDs (H5G_DENSE_FHEAP_ID_LEN) and a root direct block that grows as
+// needed.
+func NewLinkHeap() *structures.WritableFractalHeap {
+	heap := structures.NewGrowableFractalHeap(structures.LinkHeapStartBlockSize)
+	heap.SetMaxManagedObjectSize(structures.LinkHeapMaxManagedObjectSize)
+	return heap
+}
+
+// InsertDenseLink stores an encoded Link message in the heap and indexes its
+// name in the type 5 name index.
+func InsertDenseLink(heap *structures.WritableFractalHeap, btree *structures.WritableBTreeV2, link EncodedLink) error {
+	heapID, err := heap.InsertObject(link.Message)
+	if err != nil {
+		return fmt.Errorf("failed to insert link %s into heap: %w", link.Name, err)
+	}
+	// Link heap IDs are 7 bytes, zero-extended; the record stores the low 7 bytes.
+	if len(heapID) == 0 || len(heapID) > 7 {
+		return fmt.Errorf("invalid heap ID length for link %s: %d bytes", link.Name, len(heapID))
+	}
+	var idBuf [8]byte
+	copy(idBuf[:], heapID)
+	if err := btree.InsertRecord(link.Name, binary.LittleEndian.Uint64(idBuf[:])); err != nil {
+		return fmt.Errorf("failed to insert link %s into B-tree: %w", link.Name, err)
+	}
+	return nil
+}
+
+// WriteDenseLinkStorage writes the fractal heap and the name index (B-tree
+// v2 type 5) of a dense group holding links and returns their addresses for
+// the group's Link Info message.
+//
+// Reference: H5Gdense.c - H5G__dense_create(), H5G__dense_insert().
+func WriteDenseLinkStorage(fw *FileWriter, allocator *Allocator, sb *core.Superblock, links []EncodedLink) (heapAddr, btreeAddr uint64, err error) {
+	heap := NewLinkHeap()
+	btree := structures.NewWritableBTreeV2(0) // libhdf5 node size (512), grows as needed
+	for _, link := range links {
+		if err := InsertDenseLink(heap, btree, link); err != nil {
+			return 0, 0, err
+		}
+	}
+	if heapAddr, err = heap.WriteToFile(fw, allocator, sb); err != nil {
+		return 0, 0, fmt.Errorf("failed to write fractal heap: %w", err)
+	}
+	if btreeAddr, err = btree.WriteToFile(fw, allocator, sb); err != nil {
+		return 0, 0, fmt.Errorf("failed to write B-tree v2: %w", err)
+	}
+	return heapAddr, btreeAddr, nil
 }
 
 // createObjectHeader creates object header with Link Info Message.
 //
 // Messages to include:
 //   - Link Info Message (type 0x0002)
+//   - Group Info Message (type 0x000A) - libhdf5 needs it to add links
 //   - Dataspace Message (type 0x0001) - scalar for groups
 //   - Datatype Message (type 0x0003) - opaque for groups (optional, skipped in MVP)
 //
@@ -254,6 +260,7 @@ func (dgw *DenseGroupWriter) createObjectHeader(fw *FileWriter, allocator *Alloc
 		Flags:   0,
 		Messages: []core.MessageWriter{
 			{Type: core.MsgLinkInfo, Data: linkInfoData},
+			{Type: core.MsgGroupInfo, Data: core.EncodeGroupInfoMessage(&core.GroupInfoMessage{})},
 			{Type: core.MsgDataspace, Data: dataspaceMsg},
 		},
 	}

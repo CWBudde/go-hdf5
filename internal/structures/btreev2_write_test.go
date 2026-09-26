@@ -711,3 +711,18 @@ type testBTreeWriterError struct{}
 func (w *testBTreeWriterError) WriteAtAddress(_ []byte, _ uint64) error {
 	return fmt.Errorf("write failed")
 }
+
+func TestHeapIDsForName(t *testing.T) {
+	bt := NewWritableBTreeV2(0)
+	require.NoError(t, bt.InsertRecord("alpha", 0x0102030405))
+	require.NoError(t, bt.InsertRecord("beta", 0x0a0b0c))
+
+	ids := bt.HeapIDsForName("alpha")
+	require.Equal(t, [][]byte{{0x05, 0x04, 0x03, 0x02, 0x01, 0, 0}}, ids)
+	require.Empty(t, bt.HeapIDsForName("gamma"))
+
+	// Records whose name hashes collide are all returned; callers compare
+	// the names stored in the heap.
+	bt.records = append(bt.records, LinkNameRecord{NameHash: jenkinsHash("beta"), HeapID: [7]byte{9}})
+	require.Len(t, bt.HeapIDsForName("beta"), 2)
+}

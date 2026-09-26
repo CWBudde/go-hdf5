@@ -29,14 +29,6 @@ func TestDenseGroupWriter_Creation(t *testing.T) {
 		t.Errorf("Links should be empty, got %d", len(dgw.links))
 	}
 
-	if dgw.fractalHeap == nil {
-		t.Error("Fractal heap not initialized")
-	}
-
-	if dgw.btree == nil {
-		t.Error("B-tree not initialized")
-	}
-
 	if dgw.linkInfo == nil {
 		t.Error("Link info not initialized")
 	}
@@ -362,17 +354,11 @@ func TestDenseGroupWriter_UTF8Names(t *testing.T) {
 	t.Logf("Unicode test: %d links with various scripts", len(unicodeLinks))
 }
 
-// TestDenseGroupWriter_LinkMessage tests link message creation.
-func TestDenseGroupWriter_LinkMessage(t *testing.T) {
-	dgw := NewDenseGroupWriter("/test")
+// TestEncodeHardLinkMessage tests link message creation.
+func TestEncodeHardLinkMessage(t *testing.T) {
 	sb := createTestSuperblock()
 
-	link := denseLink{
-		name:       "testlink",
-		targetAddr: 0x123456,
-	}
-
-	msg := dgw.createLinkMessage(link, sb)
+	msg := EncodeHardLinkMessage("testlink", 0x123456, sb)
 
 	// Verify message is not empty
 	if len(msg) == 0 {
