@@ -230,7 +230,13 @@ func (fw *FileWriter) writeDimensionScaleAttributes() error {
 	fw.dimScales = nil
 
 	for _, ds := range st.datasets {
-		if err := ds.WriteAttribute(dimensionListAttr, st.dimLists[ds.address]); err != nil {
+		// Only DIMENSION_LIST goes to the global heap collection reserved
+		// for it (see reserveDimensionHeap).
+		value, err := fw.encodeObjectReferenceLists(st.dimLists[ds.address], true)
+		if err != nil {
+			return fmt.Errorf("encode %s on %s: %w", dimensionListAttr, ds.name, err)
+		}
+		if err := ds.WriteAttribute(dimensionListAttr, value); err != nil {
 			return fmt.Errorf("write %s on %s: %w", dimensionListAttr, ds.name, err)
 		}
 	}
@@ -274,7 +280,7 @@ func (fw *FileWriter) prepareAttributeValue(value interface{}) (interface{}, err
 		}
 		return encodeObjectReferences(v), nil
 	case [][]ObjectRef:
-		return fw.encodeObjectReferenceLists(v)
+		return fw.encodeObjectReferenceLists(v, false)
 	case []DimensionReference:
 		return encodeDimensionReferences(v)
 	default:
@@ -297,7 +303,8 @@ func encodeObjectReferences(refs []ObjectRef) *encodedAttributeValue {
 // encodeObjectReferenceLists encodes a 1D array of variable-length sequences
 // of object references. Each sequence is stored in the global heap; the
 // attribute holds {uint32 length, heap collection address, uint32 index}.
-func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef) (*encodedAttributeValue, error) {
+// DIMENSION_LIST (dimensionList) uses the collection reserved for it.
+func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef, dimensionList bool) (*encodedAttributeValue, error) {
 	if len(lists) == 0 {
 		return nil, fmt.Errorf("cannot write empty [][]ObjectRef attribute")
 	}
@@ -318,7 +325,12 @@ func (fw *FileWriter) encodeObjectReferenceLists(lists [][]ObjectRef) (*encodedA
 			continue // empty sequence: zero length, null heap ID
 		}
 		seq := encodeObjectReferences(refs).data
-		hid, err := fw.globalHeapWriter.WriteDimensionReferences(seq)
+		var hid HeapID
+		if dimensionList {
+			hid, err = fw.globalHeapWriter.WriteDimensionReferences(seq)
+		} else {
+			hid, err = fw.globalHeapWriter.WriteToGlobalHeap(seq)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("write reference list %d to global heap: %w", i, err)
 		}

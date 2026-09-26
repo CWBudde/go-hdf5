@@ -91,6 +91,13 @@ func TestDimensionListHeapReservedForReferences(t *testing.T) {
 	s, err := fw.CreateDataset("/s", VLenString, []uint64{uint64(len(texts))})
 	require.NoError(t, err)
 	require.NoError(t, s.Write(texts))
+	// A user attribute of reference lists (5 KiB in the global heap) does
+	// not take the reserved collection either.
+	lists := make([][]ObjectRef, 200)
+	for i := range lists {
+		lists[i] = []ObjectRef{ObjectRef(big.Address())}
+	}
+	require.NoError(t, s.WriteAttribute("refs", lists))
 
 	v, err := fw.CreateDataset("/v", Float64, []uint64{4})
 	require.NoError(t, err)
