@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The root group of superblock v2/v3 files is a new-style group, like
+  netCDF-C and libhdf5 write it: Link Info (tracking link creation order) +
+  Group Info, compact Link messages up to 8 links and dense link storage
+  (fractal heap + name index) from the 9th. Previously it was a symbol
+  table group in a v2 object header, which libmysofa cannot read.
+  Superblock v0 files keep the symbol table root. Existing files, including
+  v2 files with a symbol table root, are still read and can be extended
+  with `OpenForWrite`.
+- Dense groups written by `CreateDenseGroup` carry a Group Info message.
+
+### Fixed
+
+- String datatype messages are 8 bytes as the format specifies; they had
+  an extra byte that libmysofa could not skip.
+- Scalar attribute dataspaces are written as the 4-byte version 2 message
+  that netCDF-C writes, so libmysofa reads the global attributes of files
+  with more than 8 of them.
+- `OpenForWrite` + `CreateDataset` (and other links) at the root of a v2
+  file failed with "no group B-tree at address 0".
+- `File.objectIndex` is built under a `sync.Once`, so concurrent first
+  calls of `Dataset.Path`, `File.ObjectPath` and `File.Dereference` no
+  longer race. A reference attribute with a one-element simple dataspace
+  (written from `[]ObjectRef{ref}`) reads back as `[]ObjectRef`.
+
+### Added
+
+- `TestLibmysofaLoad` loads a written SOFA file with libmysofa when
+  `LIBMYSOFA_LOAD` names the harness built by `scripts/libmysofa/build.sh`.
+
 ## [v0.17.0] - 2026-09-26
 
 ### Added
