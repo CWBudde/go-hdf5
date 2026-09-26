@@ -878,6 +878,17 @@ func newFileWriter(fw *writer.FileWriter, filename string, cfg *FileWriteConfig,
 	// Initialize global heap writer for variable-length data
 	fileWriter.globalHeapWriter = newGlobalHeapWriter(fileWriter)
 
+	// Reserve the first global heap collection right after the root group,
+	// as netCDF-C files have it. DIMENSION_LIST references are written into
+	// it at Close; libmysofa keeps collection addresses in 16 bits and
+	// cannot resolve references into a collection beyond 64 KiB.
+	if cfg.SuperblockVersion != core.Version0 {
+		if err := fileWriter.globalHeapWriter.createNewHeap(0); err != nil {
+			_ = fw.Close()
+			return nil, fmt.Errorf("reserve global heap collection: %w", err)
+		}
+	}
+
 	return fileWriter, nil
 }
 

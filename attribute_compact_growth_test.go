@@ -107,5 +107,6 @@ func TestContinuationChunkReused(t *testing.T) {
 
 	st, err := os.Stat(path)
 	require.NoError(t, err)
-	require.Less(t, st.Size(), int64(4096))
+	// Everything but the 4 KiB global heap collection reserved at creation.
+	require.Less(t, st.Size()-4096, int64(4096))
 }

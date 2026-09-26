@@ -263,10 +263,11 @@ func TestMultipleHeapCollections(t *testing.T) {
 	fw.globalHeapWriter.minCollectionSize = 512
 
 	// Write objects until we trigger a new collection
-	// Each object: 16 bytes header + data + padding
-	// With 512 byte heap, we can fit ~10-12 small objects
+	// Each object: 16 bytes header + data + padding = 40 bytes.
+	// The first collection (4 KiB, reserved at creation) holds ~100 of
+	// them, the following 512 byte collections ~12.
 	var heapIDs []HeapID
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 120; i++ {
 		data := []byte("Test data for object")
 		hid, err := fw.globalHeapWriter.WriteToGlobalHeap(data)
 		if err != nil {
