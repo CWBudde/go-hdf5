@@ -276,6 +276,7 @@ func compatScenarios() []writeScenario {
 			closeOK(t, fw)
 		}},
 		{"root_links_dense", writeMinimalSOFA},
+		{"sofa_large", func(t *testing.T, p string) { writeSOFA(t, p, largeSOFAShape) }},
 		{"root_links_dense_attrs", func(t *testing.T, p string) {
 			opts := make([]interface{}, 0, 12)
 			for i := 0; i < 12; i++ {
@@ -316,6 +317,26 @@ func compatScenarios() []writeScenario {
 // 15 datasets the root group uses dense link storage.
 func writeMinimalSOFA(t *testing.T, path string) {
 	t.Helper()
+	writeSOFA(t, path, sofaShape{M: 2, N: 4})
+}
+
+// sofaShape sizes a file written by writeSOFA.
+type sofaShape struct {
+	M, N int // measurements and samples
+	// Extras adds that many (M, C) variables without attributes, plus one
+	// (M, C) variable "Annotated" with 10 string attributes (11 with
+	// DIMENSION_LIST), as go-sofa writes non-standard variables.
+	Extras int
+}
+
+// largeSOFAShape is a SimpleFreeFieldHRIR file with 30 datasets whose data
+// (400 KiB of Data.IR) pushes everything written at Close past 64 KiB.
+var largeSOFAShape = sofaShape{M: 100, N: 256, Extras: 14}
+
+// writeSOFA writes a valid SimpleFreeFieldHRIR file like writeMinimalSOFA,
+// with the given shape.
+func writeSOFA(t *testing.T, path string, shape sofaShape) {
+	t.Helper()
 	fw, err := CreateForWrite(path, CreateTruncate,
 		WithRootAttribute("Conventions", "SOFA"),
 		WithRootAttribute("Version", "2.1"),
@@ -325,7 +346,8 @@ func writeMinimalSOFA(t *testing.T, path string) {
 		WithRootAttribute("RoomType", "free field"))
 	require.NoError(t, err)
 
-	dims := map[string]uint64{"M": 2, "R": 2, "E": 1, "N": 4, "C": 3, "I": 1}
+	m, n := shape.M, shape.N
+	dims := map[string]uint64{"M": uint64(m), "R": 2, "E": 1, "N": uint64(n), "C": 3, "I": 1}
 	scales := map[string]*DatasetWriter{}
 	for _, name := range []string{"C", "E", "I", "M", "N", "R"} {
 		n := dims[name]
@@ -342,14 +364,17 @@ func writeMinimalSOFA(t *testing.T, path string) {
 		for i, d := range dimNames {
 			shape[i] = dims[string(d)]
 		}
-		ds, err := fw.CreateDataset("/"+name, Float64, shape)
+		// Attributes are given at creation, as go-sofa does, so the space
+		// reserved for DIMENSION_LIST is still free at Close.
+		opts := make([]DatasetOption, 0, len(attrs)/2)
+		for i := 0; i+1 < len(attrs); i += 2 {
+			opts = append(opts, WithAttribute(attrs[i], attrs[i+1]))
+		}
+		ds, err := fw.CreateDataset("/"+name, Float64, shape, opts...)
 		require.NoError(t, err)
 		require.NoError(t, ds.Write(values))
 		for i, d := range dimNames {
 			require.NoError(t, ds.AttachDimensionScale(i, scales[string(d)]))
-		}
-		for i := 0; i+1 < len(attrs); i += 2 {
-			require.NoError(t, ds.WriteAttribute(attrs[i], attrs[i+1]))
 		}
 	}
 	cartesian := []string{"Type", "cartesian", "Units", "metre"} //nolint:misspell // SOFA unit names
@@ -357,15 +382,31 @@ func writeMinimalSOFA(t *testing.T, path string) {
 	variable("ListenerUp", "IC", []float64{0, 0, 1}, cartesian...)
 	variable("ListenerView", "IC", []float64{1, 0, 0}, cartesian...)
 	variable("ReceiverPosition", "RCI", []float64{0, 0.09, 0, 0, -0.09, 0}, cartesian...)
-	variable("SourcePosition", "MC", []float64{0, 0, 1.2, 90, 0, 1.2},
+	// Source i at azimuth 90*i, 1.2 m; its impulse responses are 1 (left)
+	// and 0.5 (right) at sample i mod N.
+	sources := make([]float64, 0, 3*m)
+	ir := make([]float64, 2*m*n)
+	for i := 0; i < m; i++ {
+		sources = append(sources, float64((90*i)%360), 0, 1.2)
+		ir[(2*i)*n+i%n] = 1
+		ir[(2*i+1)*n+i%n] = 0.5
+	}
+	variable("SourcePosition", "MC", sources,
 		"Type", "spherical", "Units", "degree, degree, metre") //nolint:misspell // SOFA unit names
 	variable("EmitterPosition", "ECI", []float64{0, 0, 0}, cartesian...)
-	variable("Data.IR", "MRN", []float64{
-		1, 0, 0, 0, 0.5, 0, 0, 0,
-		0, 1, 0, 0, 0, 0.5, 0, 0,
-	})
+	variable("Data.IR", "MRN", ir)
 	variable("Data.SamplingRate", "I", []float64{48000}, "Units", "hertz")
 	variable("Data.Delay", "IR", []float64{0, 0})
+	if shape.Extras > 0 {
+		for i := 0; i < shape.Extras; i++ {
+			variable(fmt.Sprintf("Extra%02d", i), "MC", make([]float64, 3*m))
+		}
+		attrs := make([]string, 0, 20)
+		for i := 0; i < 10; i++ {
+			attrs = append(attrs, fmt.Sprintf("Description%02d", i), fmt.Sprintf("annotation %d", i))
+		}
+		variable("Annotated", "MC", sources, attrs...)
+	}
 	require.NoError(t, fw.Close())
 }
 

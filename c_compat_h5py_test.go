@@ -190,7 +190,7 @@ func TestInteropH5py(t *testing.T) {
 				require.InDelta(t, 21.0, got["/v"].Sum, 1e-9)
 			case "compound_dataset":
 				requireCompoundInteropFields(t, got["/cmp"])
-			case "root_links_compact", "root_links_dense", "root_links_dense_attrs", "root_links_reopen":
+			case "root_links_compact", "root_links_dense", "root_links_dense_attrs", "root_links_reopen", "sofa_large":
 				requireRootLinkScenario(t, sc.name, got)
 			case "superblock_v0":
 				require.Equal(t, []interface{}{"SOFA"}, got["/"].Attrs["Conventions"])
@@ -290,6 +290,13 @@ func requireRootLinkScenario(t *testing.T, name string, got map[string]h5pyEntry
 		require.Equal(t, []int{2, 3, 1}, got["/ReceiverPosition"].Shape)
 		require.Contains(t, got["/Data.IR"].Attrs, "DIMENSION_LIST")
 		require.Contains(t, got["/M"].Attrs, "REFERENCE_LIST")
+	case "sofa_large":
+		require.Equal(t, []int{100, 2, 256}, got["/Data.IR"].Shape)
+		require.InDelta(t, 150.0, got["/Data.IR"].Sum, 1e-9)
+		require.Contains(t, got["/Data.IR"].Attrs, "DIMENSION_LIST")
+		require.Contains(t, got["/Extra13"].Attrs, "DIMENSION_LIST")
+		require.Len(t, got["/Annotated"].Attrs, 11)
+		require.Equal(t, []interface{}{"annotation 9"}, got["/Annotated"].Attrs["Description09"])
 	case "root_links_dense_attrs":
 		require.Len(t, got["/"].Attrs, 12)
 		for i := 0; i < 30; i++ {
