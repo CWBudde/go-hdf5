@@ -14,6 +14,10 @@ type globalHeapWriter struct {
 	fileWriter        *FileWriter
 	currentHeap       *globalHeapCollectionBuilder
 	minCollectionSize uint64 // Minimum heap collection size (4KB default)
+
+	// dimensionHeap is the collection reserved by reserveDimensionHeap for
+	// the DIMENSION_LIST references (nil if none was reserved).
+	dimensionHeap *globalHeapCollectionBuilder
 }
 
 // globalHeapCollectionBuilder is used to build a global heap collection before writing.
@@ -86,8 +90,50 @@ func (ghw *globalHeapWriter) WriteToGlobalHeap(data []byte) (HeapID, error) {
 	}, nil
 }
 
+// reserveDimensionHeap allocates a collection at the current end of file
+// that only WriteDimensionReferences writes into. FileWriter reserves it
+// right after the root group: libmysofa cannot resolve references into a
+// collection beyond 64 KiB, and variable-length data written before Close
+// would otherwise fill it and push the references into a later one.
+func (ghw *globalHeapWriter) reserveDimensionHeap() error {
+	heap, err := ghw.newCollection(0)
+	if err != nil {
+		return err
+	}
+	ghw.dimensionHeap = heap
+	return nil
+}
+
+// WriteDimensionReferences writes one DIMENSION_LIST sequence of object
+// references to the reserved collection. Without one, or when it is full,
+// the data goes to the collections used for other variable-length data.
+func (ghw *globalHeapWriter) WriteDimensionReferences(data []byte) (HeapID, error) {
+	heap := ghw.dimensionHeap
+	if heap == nil || !heap.hasSpace(globalHeapObjectSize(data)) {
+		return ghw.WriteToGlobalHeap(data)
+	}
+	return HeapID{CollectionAddress: heap.address, ObjectIndex: heap.addObject(data)}, nil
+}
+
+// globalHeapObjectSize is the size of data stored as a heap object: a
+// 16-byte header followed by the data padded to 8 bytes.
+func globalHeapObjectSize(data []byte) uint64 {
+	return 16 + alignTo8(uint64(len(data)))
+}
+
 // createNewHeap creates a new global heap collection with enough space for the object.
 func (ghw *globalHeapWriter) createNewHeap(minObjectSize uint64) error {
+	heap, err := ghw.newCollection(minObjectSize)
+	if err != nil {
+		return err
+	}
+	ghw.currentHeap = heap
+	return nil
+}
+
+// newCollection allocates a global heap collection with room for an
+// object of minObjectSize bytes (header included).
+func (ghw *globalHeapWriter) newCollection(minObjectSize uint64) (*globalHeapCollectionBuilder, error) {
 	// Calculate heap collection size
 	// Header: 4 (signature) + 1 (version) + 3 (reserved) + 8 (size) = 16 bytes
 	headerSize := uint64(16)
@@ -105,44 +151,45 @@ func (ghw *globalHeapWriter) createNewHeap(minObjectSize uint64) error {
 	// Allocate space in file
 	heapAddr, err := ghw.fileWriter.writer.Allocate(collectionSize)
 	if err != nil {
-		return fmt.Errorf("allocate heap space: %w", err)
+		return nil, fmt.Errorf("allocate heap space: %w", err)
 	}
 
-	// Create new heap builder
-	ghw.currentHeap = &globalHeapCollectionBuilder{
+	return &globalHeapCollectionBuilder{
 		address:   heapAddr,
 		size:      collectionSize,
 		objects:   make([]*globalHeapObjectBuilder, 0),
 		nextIndex: 1, // Object indices start at 1 (0 is reserved for free space)
 		usedSpace: headerSize,
 		freeSpace: collectionSize - headerSize,
-	}
-
-	return nil
+	}, nil
 }
 
 // flushCurrentHeap writes the current heap collection to disk.
 func (ghw *globalHeapWriter) flushCurrentHeap() error {
-	if ghw.currentHeap == nil {
+	return ghw.flushHeap(ghw.currentHeap)
+}
+
+// flushHeap writes a heap collection to disk.
+func (ghw *globalHeapWriter) flushHeap(heap *globalHeapCollectionBuilder) error {
+	if heap == nil {
 		return nil
 	}
 
 	// Encode heap collection to bytes
-	heapData := ghw.encodeHeapCollection()
+	heapData := encodeHeapCollection(heap)
 
 	// Write to file
 	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.WriterAt interface
-	if _, err := ghw.fileWriter.writer.WriteAt(heapData, int64(ghw.currentHeap.address)); err != nil {
+	if _, err := ghw.fileWriter.writer.WriteAt(heapData, int64(heap.address)); err != nil {
 		return fmt.Errorf("write heap to file: %w", err)
 	}
 
 	return nil
 }
 
-// encodeHeapCollection encodes the current heap collection to bytes.
+// encodeHeapCollection encodes a heap collection to bytes.
 // Format follows HDF5 spec section 3.2.6.
-func (ghw *globalHeapWriter) encodeHeapCollection() []byte {
-	heap := ghw.currentHeap
+func encodeHeapCollection(heap *globalHeapCollectionBuilder) []byte {
 	buf := make([]byte, heap.size)
 
 	offset := 0
@@ -289,5 +336,8 @@ func alignTo8(size uint64) uint64 {
 // Flush writes any pending global heap data to disk.
 // Should be called before closing the file.
 func (ghw *globalHeapWriter) Flush() error {
+	if err := ghw.flushHeap(ghw.dimensionHeap); err != nil {
+		return err
+	}
 	return ghw.flushCurrentHeap()
 }

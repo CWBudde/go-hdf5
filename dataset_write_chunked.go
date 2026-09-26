@@ -129,6 +129,9 @@ func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []u
 		return nil, fmt.Errorf("dataset %q: %w", name, err)
 	}
 	ohw.Messages = append(ohw.Messages, attrMsgs...)
+	if err := reserveDimensionListSpace(ohw, len(dims)); err != nil {
+		return nil, err
+	}
 
 	// Calculate header size
 	headerSize, err := calculateObjectHeaderSize(ohw)

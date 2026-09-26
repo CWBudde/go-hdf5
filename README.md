@@ -261,10 +261,12 @@ Root attributes support all standard HDF5 datatypes:
 
 ### Storage Modes
 
-The library automatically selects optimal storage:
+The library automatically selects the storage:
 
-- **≤8 attributes**: Compact storage (inline in object header)
-- **>8 attributes**: Dense storage (Fractal Heap + B-tree index)
+- **Datasets**: Compact storage (inline in the object header), whatever the
+  number of attributes, as netCDF variables need it for libmysofa
+- **Groups**: Compact storage up to 8 attributes, dense storage (Fractal
+  Heap + B-tree index) above
 
 ### Why Use This?
 
