@@ -134,3 +134,22 @@ func TestContinuationChunkReused(t *testing.T) {
 	// Everything but the 4 KiB global heap collection reserved at creation.
 	require.Less(t, st.Size()-4096, int64(4096))
 }
+
+// TestOversizedCreationAttributeFails checks that an attribute given at
+// creation whose message exceeds the 16-bit header message size is an
+// error, not a header whose size field wrapped around.
+func TestOversizedCreationAttributeFails(t *testing.T) {
+	for _, n := range []int{0, 8} {
+		path := filepath.Join(t.TempDir(), "big.h5")
+		fw, err := CreateForWrite(path, CreateTruncate)
+		require.NoError(t, err)
+		opts := make([]DatasetOption, 0, n+1)
+		for i := 0; i < n; i++ {
+			opts = append(opts, WithAttribute(fmt.Sprintf("a%d", i), "small"))
+		}
+		opts = append(opts, WithAttribute("big", strings.Repeat("x", 70000)))
+		_, err = fw.CreateDataset("/d", Float64, []uint64{2}, opts...)
+		require.Error(t, err, "%d small attributes before the big one", n)
+		require.NoError(t, fw.Close())
+	}
+}

@@ -1983,6 +1983,29 @@ type datasetConfig struct {
 // (compact storage), whatever their number; the constant has no effect.
 const MaxCompactDatasetAttributes = 8
 
+// encodeCompactAttribute encodes an attribute message for an object header.
+// Header messages have a 16-bit size, so larger attributes are an error.
+func encodeCompactAttribute(name string, value interface{}) ([]byte, error) {
+	value = dimScaleStringAttribute(name, value)
+	datatype, dataspace, err := inferDatatypeFromValue(value)
+	if err != nil {
+		return nil, err
+	}
+	data, err := encodeAttributeValue(value)
+	if err != nil {
+		return nil, err
+	}
+	attrMsg, err := core.EncodeAttributeMessage(name, datatype, dataspace, data)
+	if err != nil {
+		return nil, err
+	}
+	if len(attrMsg) > core.MaxHeaderMessageSize {
+		return nil, fmt.Errorf("message of %d bytes exceeds the %d byte header message limit",
+			len(attrMsg), core.MaxHeaderMessageSize)
+	}
+	return attrMsg, nil
+}
+
 // buildCompactAttributeMessages turns a name→value map into a slice of
 // MsgAttribute MessageWriters suitable for inlining into an object
 // header. Returns (nil, nil) when there are no attributes.
@@ -1996,16 +2019,7 @@ func buildCompactAttributeMessages(attrs map[string]interface{}, order []string)
 	msgs := make([]core.MessageWriter, 0, len(attrs))
 	seen := make(map[string]bool, len(order))
 	emit := func(name string) error {
-		value := dimScaleStringAttribute(name, attrs[name])
-		datatype, dataspace, err := inferDatatypeFromValue(value)
-		if err != nil {
-			return fmt.Errorf("attribute %q: %w", name, err)
-		}
-		data, err := encodeAttributeValue(value)
-		if err != nil {
-			return fmt.Errorf("attribute %q: %w", name, err)
-		}
-		attrMsg, err := core.EncodeAttributeMessage(name, datatype, dataspace, data)
+		attrMsg, err := encodeCompactAttribute(name, attrs[name])
 		if err != nil {
 			return fmt.Errorf("attribute %q: %w", name, err)
 		}
