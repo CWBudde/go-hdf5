@@ -80,3 +80,33 @@ func attributeCrtIdxs(oh *ObjectHeader) []uint16 {
 	}
 	return idx
 }
+
+// TestTrackAttributeCreationOrderLimit checks that at most 0xFFFF attributes
+// get creation indexes (0 to 0xFFFE): the next index is stored in 16 bits.
+func TestTrackAttributeCreationOrderLimit(t *testing.T) {
+	sb := &Superblock{Version: 2, OffsetSize: 8, LengthSize: 8, Endianness: binary.LittleEndian}
+	header := func(n int) *ObjectHeaderWriter {
+		ohw := &ObjectHeaderWriter{Version: 2, Messages: make([]MessageWriter, n)}
+		for i := range ohw.Messages {
+			ohw.Messages[i] = MessageWriter{Type: MsgAttribute, Data: []byte{1}}
+		}
+		return ohw
+	}
+
+	ohw := header(maxCreationIndex)
+	require.NoError(t, ohw.TrackAttributeCreationOrder(sb))
+	info, err := ParseAttributeInfoMessage(ohw.Messages[0].Data, sb)
+	require.NoError(t, err)
+	require.Equal(t, uint64(maxCreationIndex), info.MaxCreationIndex)
+	require.Equal(t, uint16(maxCreationIndex-1), ohw.Messages[len(ohw.Messages)-1].CrtIdx)
+
+	require.Error(t, header(maxCreationIndex+1).TrackAttributeCreationOrder(sb))
+
+	// Without an Attribute Info message the next index follows the largest
+	// one in use, and 0xFFFF is refused there too.
+	oh := &ObjectHeader{
+		Version: 2, Flags: ObjectHeaderAttrCreationOrderTracked,
+		Messages: []*HeaderMessage{{Type: MsgAttribute, CrtIdx: maxCreationIndex - 1, Data: []byte{1}}},
+	}
+	require.Error(t, AddMessageToObjectHeader(oh, MsgAttribute, []byte{2}))
+}

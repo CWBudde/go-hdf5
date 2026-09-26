@@ -85,16 +85,19 @@ func (daw *DenseAttributeWriter) TrackCreationOrder(next uint16) {
 //
 // Reference: H5Adense.c - H5A__dense_insert().
 func (daw *DenseAttributeWriter) AddAttribute(attr *core.Attribute, sb *core.Superblock) error {
-	if daw.nextCrtIdx > 0xFFFF {
-		return fmt.Errorf("maximum attribute creation index reached")
-	}
-	return daw.AddAttributeWithCreationOrder(attr, sb, uint16(daw.nextCrtIdx))
+	return daw.AddAttributeWithCreationOrder(attr, sb, uint16(min(daw.nextCrtIdx, 0xFFFF)))
 }
 
 // AddAttributeWithCreationOrder adds an attribute with the given creation
 // order (e.g. that of a compact attribute moved to dense storage). It is
-// recorded only if the storage tracks creation order.
+// recorded only if the storage tracks creation order, and must then be
+// below 0xFFFF: the next index is stored in 2 bytes and must not wrap to 0
+// (libhdf5's H5O_MAX_CRT_ORDER_IDX).
 func (daw *DenseAttributeWriter) AddAttributeWithCreationOrder(attr *core.Attribute, sb *core.Superblock, order uint16) error {
+	tracked := daw.attrInfo.Flags&core.AttributeInfoTrackCreationOrder != 0
+	if tracked && order == 0xFFFF {
+		return fmt.Errorf("maximum attribute creation index reached")
+	}
 	if attr == nil {
 		return fmt.Errorf("attribute is nil")
 	}
@@ -129,7 +132,7 @@ func (daw *DenseAttributeWriter) AddAttributeWithCreationOrder(attr *core.Attrib
 
 	// 3. Insert into B-tree v2 (REUSE from dense groups!)
 	// For attributes, we use attribute name directly (not link name)
-	if daw.attrInfo.Flags&core.AttributeInfoTrackCreationOrder == 0 {
+	if !tracked {
 		order = 0
 	}
 	err = daw.btree.InsertAttributeRecord(attr.Name, heapID, order)

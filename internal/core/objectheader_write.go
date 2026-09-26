@@ -69,8 +69,8 @@ func (ohw *ObjectHeaderWriter) TrackAttributeCreationOrder(sb *Superblock) error
 	for i := range ohw.Messages {
 		switch ohw.Messages[i].Type {
 		case MsgAttribute:
-			if n > maxCreationIndex {
-				return fmt.Errorf("more than %d attributes", maxCreationIndex+1)
+			if n >= maxCreationIndex {
+				return fmt.Errorf("more than %d attributes", maxCreationIndex)
 			}
 			ohw.Messages[i].CrtIdx = uint16(n)
 			n++
@@ -102,8 +102,9 @@ func (ohw *ObjectHeaderWriter) TrackAttributeCreationOrder(sb *Superblock) error
 	return nil
 }
 
-// maxCreationIndex is the largest attribute creation index (2 bytes, like
-// libhdf5's H5O_MAX_CRT_ORDER_IDX).
+// maxCreationIndex bounds attribute creation indexes like libhdf5's
+// H5O_MAX_CRT_ORDER_IDX: the next index is stored in 2 bytes, so indexes run
+// from 0 to maxCreationIndex-1 and the next one never wraps to 0.
 const maxCreationIndex = 0xFFFF
 
 // NewMinimalRootGroupHeader creates a minimal object header v2 for an empty root group.
@@ -559,7 +560,7 @@ func nextAttributeCreationIndex(oh *ObjectHeader) (uint16, error) {
 			next = max(next, uint32(m.CrtIdx)+1)
 		}
 	}
-	if next > maxCreationIndex {
+	if next >= maxCreationIndex {
 		return 0, fmt.Errorf("maximum attribute creation index reached")
 	}
 	return uint16(next), nil

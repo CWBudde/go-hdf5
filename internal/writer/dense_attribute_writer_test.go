@@ -262,3 +262,30 @@ func makeInt64Bytes(val int64) []byte {
 	binary.LittleEndian.PutUint64(buf, uint64(val))
 	return buf
 }
+
+// TestDenseAttributeWriter_CreationIndexLimit checks that creation index
+// 0xFFFF is never assigned: the next index is stored in 16 bits
+// (libhdf5's H5O_MAX_CRT_ORDER_IDX), so assigning it would wrap to 0.
+func TestDenseAttributeWriter_CreationIndexLimit(t *testing.T) {
+	sb := &core.Superblock{OffsetSize: 8, LengthSize: 8, Endianness: binary.LittleEndian}
+	attr := func(name string) *core.Attribute {
+		return &core.Attribute{
+			Name:      name,
+			Datatype:  &core.DatatypeMessage{Class: core.DatatypeFloat, Size: 8},
+			Dataspace: &core.DataspaceMessage{Dimensions: []uint64{1}},
+			Data:      make([]byte, 8),
+		}
+	}
+
+	daw := NewDenseAttributeWriter(0x2000)
+	daw.TrackCreationOrder(0xFFFE)
+	require.NoError(t, daw.AddAttribute(attr("last"), sb))
+	require.Error(t, daw.AddAttribute(attr("one_too_many"), sb))
+	require.Error(t, daw.AddAttributeWithCreationOrder(attr("explicit"), sb, 0xFFFF))
+	require.Len(t, daw.attributes, 1)
+
+	// Untracked storage records order 0 and has no limit.
+	daw = NewDenseAttributeWriter(0x2000)
+	require.NoError(t, daw.AddAttributeWithCreationOrder(attr("a"), sb, 0xFFFF))
+	require.NoError(t, daw.AddAttribute(attr("b"), sb))
+}
