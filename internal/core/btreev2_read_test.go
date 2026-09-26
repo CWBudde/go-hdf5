@@ -6,9 +6,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/cwbudde/go-hdf5/internal/utils"
+	"github.com/stretchr/testify/require"
 )
 
 // allocatedDuring returns the bytes allocated while f runs.

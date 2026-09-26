@@ -9,10 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cwbudde/go-hdf5/internal/utils"
 	"github.com/cwbudde/go-hdf5/internal/writer"
 	"github.com/stretchr/testify/require"
-
-	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
 // This file checks that files produced by the writer satisfy the structural
@@ -366,7 +365,9 @@ func newLayoutChecker(t *testing.T, d []byte) *layoutChecker {
 }
 
 func (c *layoutChecker) u64(off uint64) uint64 { return binary.LittleEndian.Uint64(c.d[off : off+8]) }
+
 func (c *layoutChecker) u32(off uint64) uint32 { return binary.LittleEndian.Uint32(c.d[off : off+4]) }
+
 func (c *layoutChecker) u16(off uint64) uint16 { return binary.LittleEndian.Uint16(c.d[off : off+2]) }
 
 // inside asserts that [addr, addr+size) lies below the EOA.
