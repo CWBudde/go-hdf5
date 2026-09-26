@@ -1087,6 +1087,9 @@ func (fw *FileWriter) createDataset(name string, dtype Datatype, dims []uint64, 
 		return nil, fmt.Errorf("dataset %q: %w", name, err)
 	}
 	ohw.Messages = append(ohw.Messages, attrMsgs...)
+	if err := reserveDimensionListSpace(ohw, len(dims)); err != nil {
+		return nil, err
+	}
 
 	// Allocate space for object header
 	// We need to calculate size first
@@ -1258,6 +1261,9 @@ func (fw *FileWriter) CreateCompoundDataset(name string, compoundType *core.Data
 			{Type: core.MsgDataLayout, Data: layoutData},
 		},
 	}
+	if err := reserveDimensionListSpace(ohw, len(dims)); err != nil {
+		return nil, err
+	}
 
 	// Calculate object header size for pre-allocation
 	headerSize, err := calculateObjectHeaderSize(ohw)
@@ -1300,6 +1306,18 @@ func (fw *FileWriter) CreateCompoundDataset(name string, compoundType *core.Data
 	}
 
 	return dsw, nil
+}
+
+// reserveDimensionListSpace appends a NIL message to a new dataset object
+// header that is large enough for the DIMENSION_LIST attribute of a dataset
+// of the given rank (see dimensionListMessageSize).
+func reserveDimensionListSpace(ohw *core.ObjectHeaderWriter, rank int) error {
+	n, err := dimensionListMessageSize(rank)
+	if err != nil {
+		return err
+	}
+	ohw.Messages = append(ohw.Messages, core.MessageWriter{Type: core.MsgNil, Data: make([]byte, n)})
+	return nil
 }
 
 // calculateObjectHeaderSize calculates the size of an object header before writing.
