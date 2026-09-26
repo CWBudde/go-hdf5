@@ -270,6 +270,12 @@ The library automatically selects the storage:
 - **Groups**: Compact storage up to 8 attributes, dense storage (Fractal
   Heap + B-tree index) above
 
+Groups and datasets track the creation order of their attributes, as
+netCDF-C does, so `ncdump` and h5py list them in the order they were
+written. Dense storage that also indexes the creation order (netCDF-C
+files, h5py `track_order=True`, above 8 attributes) cannot be modified
+yet: writing there returns `ErrCreationOrderIndexNotSupported`.
+
 ### Why Use This?
 
 **Problem**: Adding attributes after file creation can cause corruption due to fixed object header sizes.

@@ -48,7 +48,9 @@ func TestSOFALayoutForLibmysofa(t *testing.T) {
 			case core.MsgContinuation:
 				conts++
 			case core.MsgAttributeInfo:
-				t.Errorf("%s: attributes must stay compact", p)
+				if hasDenseAttributeStorage(oh, sb) {
+					t.Errorf("%s: attributes must stay compact", p)
+				}
 			case core.MsgAttribute:
 				attrs++
 			}

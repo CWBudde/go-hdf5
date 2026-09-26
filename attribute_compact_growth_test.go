@@ -21,14 +21,13 @@ func attributeStorage(t *testing.T, path string, addr uint64) (compact int, dens
 	oh, err := core.ReadObjectHeader(f.Reader(), addr, f.Superblock())
 	require.NoError(t, err)
 	for _, m := range oh.Messages {
-		switch m.Type {
-		case core.MsgAttribute:
+		if m.Type == core.MsgAttribute {
 			compact++
-		case core.MsgAttributeInfo:
-			dense = true
 		}
 	}
-	return compact, dense
+	// An Attribute Info message without dense storage only tracks the
+	// attributes' creation order.
+	return compact, hasDenseAttributeStorage(oh, f.Superblock())
 }
 
 // TestAttributesStayCompactWhenHeaderGrows checks that dataset attributes

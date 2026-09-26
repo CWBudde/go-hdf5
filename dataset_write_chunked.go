@@ -129,6 +129,9 @@ func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []u
 		return nil, fmt.Errorf("dataset %q: %w", name, err)
 	}
 	ohw.Messages = append(ohw.Messages, attrMsgs...)
+	if err := ohw.TrackAttributeCreationOrder(fw.file.sb); err != nil {
+		return nil, fmt.Errorf("dataset %q: %w", name, err)
+	}
 	if err := reserveDimensionListSpace(ohw, len(dims)); err != nil {
 		return nil, err
 	}
@@ -159,15 +162,19 @@ func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []u
 	// prefix length (signature through chunk-size field) is derived from the
 	// written size, because the chunk-size field widens to 2 or 4 bytes for
 	// headers with more than 255 bytes of messages.
+	msgHeader := uint64(4) // type, size, flags
+	if ohw.Flags&core.ObjectHeaderAttrCreationOrderTracked != 0 {
+		msgHeader = 6 // and the creation index
+	}
 	var messageBytes uint64
 	for _, m := range ohw.Messages {
-		messageBytes += 4 + uint64(len(m.Data))
+		messageBytes += msgHeader + uint64(len(m.Data))
 	}
 	prefixLen := writtenSize - messageBytes - core.ObjectHeaderV2ChecksumSize
 	layoutBTreeOffset := headerAddress + prefixLen +
-		4 + uint64(len(datatypeData)) + // datatype message
-		4 + uint64(len(dataspaceData)) + // dataspace message
-		4 + // layout message header
+		msgHeader + uint64(len(datatypeData)) + // datatype message
+		msgHeader + uint64(len(dataspaceData)) + // dataspace message
+		msgHeader + // layout message header
 		3 // version + class + dimensionality
 
 	// 9. Link to parent group

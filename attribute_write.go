@@ -2,6 +2,7 @@ package hdf5
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -24,6 +25,14 @@ const (
 	// unlimitedCompactAttributes is the compact limit for datasets.
 	unlimitedCompactAttributes = math.MaxInt
 )
+
+// ErrCreationOrderIndexNotSupported is returned when an attribute would
+// have to be added to, changed in or deleted from dense attribute storage
+// that indexes attribute creation order (netCDF-C files, h5py with
+// track_order=True, at more than 8 attributes): go-hdf5 cannot update that
+// index (a v2 B-tree of type 9) yet. Compact attributes of such objects can
+// be written.
+var ErrCreationOrderIndexNotSupported = errors.New("dense attribute storage with a creation order index is not supported")
 
 // WriteAttribute writes an attribute to a dataset.
 //
@@ -173,7 +182,7 @@ func (ds *DatasetWriter) RebalanceAttributeBTree() error {
 		}
 	}
 
-	if attrInfo == nil {
+	if attrInfo == nil || !isDefinedAddress(attrInfo.FractalHeapAddr) {
 		// No dense storage - nothing to rebalance
 		return nil
 	}
@@ -425,9 +434,13 @@ func writeAttributeWithCachedHeader(fw *FileWriter, objectAddr uint64, oh *core.
 //
 // This is similar to writeDenseAttribute but uses the cached AttributeInfoMessage
 // instead of searching for it in the object header.
-func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
+func writeDenseAttributeWithInfo(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
 	attrInfo *core.AttributeInfoMessage, name string, value interface{}, sb *core.Superblock,
 ) error {
+	if attrInfo.Flags&core.AttributeInfoIndexCreationOrder != 0 {
+		return fmt.Errorf("attribute %q: %w", name, ErrCreationOrderIndexNotSupported)
+	}
+
 	// Load existing fractal heap from file
 	heap := structures.NewGrowableFractalHeap(structures.AttributeHeapStartBlockSize) // size comes from the file
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
@@ -479,6 +492,10 @@ func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
 		}
 	} else {
 		// Create new attribute (Phase 3 - original RMW code)
+		order, orderErr := claimDenseCreationIndex(fw, objectAddr, oh, attrInfo, sb)
+		if orderErr != nil {
+			return orderErr
+		}
 
 		// Insert into fractal heap
 		heapIDBytes, insertErr := heap.InsertObject(attrMsg)
@@ -493,7 +510,7 @@ func writeDenseAttributeWithInfo(fw *FileWriter, _ uint64, _ *core.ObjectHeader,
 		heapID := binary.LittleEndian.Uint64(heapIDBytes)
 
 		// Insert into B-tree
-		err = btree.InsertRecord(name, heapID)
+		err = btree.InsertAttributeRecord(name, heapID, order)
 		if err != nil {
 			return fmt.Errorf("failed to insert into B-tree: %w", err)
 		}
@@ -531,16 +548,9 @@ func deleteAttribute(fw *FileWriter, objectAddr uint64, name string) error {
 		return fmt.Errorf("failed to read object header: %w", err)
 	}
 
-	// Check storage type
-	hasDenseStorage := false
-	for _, msg := range oh.Messages {
-		if msg.Type == core.MsgAttributeInfo {
-			hasDenseStorage = true
-			break
-		}
-	}
-
-	if hasDenseStorage {
+	// Check storage type (an Attribute Info message without dense storage
+	// only tracks creation order)
+	if hasDenseAttributeStorage(oh, sb) {
 		// Dense storage → delete from B-tree and heap
 		return deleteDenseAttributeFromHeader(fw, objectAddr, oh, name, sb)
 	}
@@ -649,6 +659,10 @@ func deleteDenseAttributeFromHeader(fw *FileWriter, _ uint64, oh *core.ObjectHea
 func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessage,
 	name string, sb *core.Superblock,
 ) error {
+	if attrInfo.Flags&core.AttributeInfoIndexCreationOrder != 0 {
+		return fmt.Errorf("attribute %q: %w", name, ErrCreationOrderIndexNotSupported)
+	}
+
 	// Load existing fractal heap from file
 	heap := structures.NewGrowableFractalHeap(structures.AttributeHeapStartBlockSize) // size comes from the file
 	err := heap.LoadFromFile(fw.writer.Reader(), attrInfo.FractalHeapAddr, sb)
@@ -704,7 +718,7 @@ func deleteDenseAttributeImpl(fw *FileWriter, attrInfo *core.AttributeInfoMessag
 // Reference: H5Adense.c - H5A__dense_insert().
 //
 //nolint:gocognit,gocyclo,cyclop // Complex RMW logic with multiple verification steps
-func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
+func writeDenseAttribute(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
 	name string, value interface{}, sb *core.Superblock,
 ) error {
 	// Step 1: Find Attribute Info Message
@@ -723,6 +737,9 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 
 	if attrInfo == nil {
 		return fmt.Errorf("attribute info message not found (dense storage not initialized)")
+	}
+	if attrInfo.Flags&core.AttributeInfoIndexCreationOrder != 0 {
+		return fmt.Errorf("attribute %q: %w", name, ErrCreationOrderIndexNotSupported)
 	}
 
 	// Step 2: Load existing fractal heap from file
@@ -775,6 +792,10 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 		}
 	} else {
 		// Create new attribute (Phase 3 - original code)
+		order, orderErr := claimDenseCreationIndex(fw, objectAddr, oh, attrInfo, sb)
+		if orderErr != nil {
+			return orderErr
+		}
 
 		// Insert into fractal heap
 		heapIDBytes, insertErr := heap.InsertObject(attrMsg)
@@ -789,7 +810,7 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 		heapID := binary.LittleEndian.Uint64(heapIDBytes)
 
 		// Insert into B-tree
-		err = btree.InsertRecord(name, heapID)
+		err = btree.InsertAttributeRecord(name, heapID, order)
 		if err != nil {
 			return fmt.Errorf("failed to insert into B-tree: %w", err)
 		}
@@ -829,20 +850,15 @@ func writeDenseAttribute(fw *FileWriter, _ uint64, oh *core.ObjectHeader,
 //
 // Reference: H5Aint.c - H5A__dense_create().
 //
-//nolint:gocognit,gocyclo,cyclop // Complex but necessary business logic for compact→dense transition
+//nolint:gocyclo,cyclop // Complex but necessary business logic for compact→dense transition
 func transitionToDenseAttributes(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
 	name string, value interface{}, sb *core.Superblock,
 ) error {
-	// 1. Read all existing compact attributes
-	var compactAttrs []*core.Attribute
-	for _, msg := range oh.Messages {
-		if msg.Type == core.MsgAttribute {
-			attr, err := core.ParseAttributeMessage(msg.Data, sb.Endianness)
-			if err != nil {
-				return fmt.Errorf("failed to parse existing attribute: %w", err)
-			}
-			compactAttrs = append(compactAttrs, attr)
-		}
+	// 1. Add all existing compact attributes to a DenseAttributeWriter,
+	// keeping their creation order.
+	daw, tracked, err := denseWriterWithCompactAttributes(objectAddr, oh, sb)
+	if err != nil {
+		return fmt.Errorf("attribute %q: %w", name, err)
 	}
 
 	// 2. Infer datatype and encode new attribute
@@ -863,18 +879,7 @@ func transitionToDenseAttributes(fw *FileWriter, objectAddr uint64, oh *core.Obj
 		Data:      data,
 	}
 
-	// 3. Create DenseAttributeWriter
-	daw := writer.NewDenseAttributeWriter(objectAddr)
-
-	// 4. Add all existing attributes
-	for _, attr := range compactAttrs {
-		err = daw.AddAttribute(attr, sb)
-		if err != nil {
-			return fmt.Errorf("failed to add existing attribute: %w", err)
-		}
-	}
-
-	// 5. Add new attribute
+	// 3. Add new attribute
 	err = daw.AddAttribute(newAttr, sb)
 	if err != nil {
 		return fmt.Errorf("failed to add new attribute: %w", err)
@@ -905,12 +910,15 @@ func transitionToDenseAttributes(fw *FileWriter, objectAddr uint64, oh *core.Obj
 	}
 
 	// Add temporary AttrInfo message to calculate size
-	// Use REAL size (2 + offsetSize*2) even though addresses are unknown
+	// Use REAL size (2 + offsetSize*2, + 2 if tracked) even though addresses are unknown
 	tempAttrInfo := &core.AttributeInfoMessage{
 		Version:            0,
 		Flags:              0,
 		FractalHeapAddr:    0,
 		BTreeNameIndexAddr: 0,
+	}
+	if tracked {
+		tempAttrInfo.Flags = core.AttributeInfoTrackCreationOrder
 	}
 	tempAttrInfoMsg, err := core.EncodeAttributeInfoMessage(tempAttrInfo, sb)
 	if err != nil {
@@ -968,6 +976,83 @@ func transitionToDenseAttributes(fw *FileWriter, objectAddr uint64, oh *core.Obj
 	}
 
 	return nil
+}
+
+// denseWriterWithCompactAttributes returns a DenseAttributeWriter holding
+// the compact attributes of oh and whether oh tracks attribute creation
+// order. If it does, the attributes keep their creation indexes and new ones
+// continue after the largest index used (or recorded in the Attribute Info
+// message). It fails with ErrCreationOrderIndexNotSupported if the object
+// indexes creation order.
+func denseWriterWithCompactAttributes(objectAddr uint64, oh *core.ObjectHeader, sb *core.Superblock) (*writer.DenseAttributeWriter, bool, error) {
+	var attrs []*core.Attribute
+	var orders []uint16
+	next := uint16(0)
+	for _, msg := range oh.Messages {
+		switch msg.Type {
+		case core.MsgAttribute:
+			attr, err := core.ParseAttributeMessage(msg.Data, sb.Endianness)
+			if err != nil {
+				return nil, false, fmt.Errorf("failed to parse existing attribute: %w", err)
+			}
+			attrs = append(attrs, attr)
+			orders = append(orders, msg.CrtIdx)
+		case core.MsgAttributeInfo:
+			info, err := core.ParseAttributeInfoMessage(msg.Data, sb)
+			if err != nil {
+				return nil, false, fmt.Errorf("failed to parse attribute info: %w", err)
+			}
+			if info.Flags&core.AttributeInfoIndexCreationOrder != 0 {
+				return nil, false, ErrCreationOrderIndexNotSupported
+			}
+			if info.Flags&core.AttributeInfoTrackCreationOrder != 0 {
+				next = uint16(info.MaxCreationIndex) //nolint:gosec // G115: 16-bit on disk
+			}
+		}
+	}
+
+	daw := writer.NewDenseAttributeWriter(objectAddr)
+	tracked := oh.Flags&core.ObjectHeaderAttrCreationOrderTracked != 0
+	if tracked {
+		daw.TrackCreationOrder(next) // AddAttributeWithCreationOrder raises it past used indexes
+	}
+	for i, attr := range attrs {
+		if err := daw.AddAttributeWithCreationOrder(attr, sb, orders[i]); err != nil {
+			return nil, false, fmt.Errorf("failed to add existing attribute: %w", err)
+		}
+	}
+	return daw, tracked, nil
+}
+
+// claimDenseCreationIndex returns the creation order of a new attribute in
+// the dense storage described by attrInfo and, if the object tracks it,
+// advances the maximum creation index in its Attribute Info message
+// (rewriting the object header). Untracked storage records order 0.
+func claimDenseCreationIndex(fw *FileWriter, objectAddr uint64, oh *core.ObjectHeader,
+	attrInfo *core.AttributeInfoMessage, sb *core.Superblock,
+) (uint16, error) {
+	if attrInfo.Flags&core.AttributeInfoTrackCreationOrder == 0 {
+		return 0, nil
+	}
+	if attrInfo.MaxCreationIndex >= 0xFFFF {
+		return 0, fmt.Errorf("maximum attribute creation index reached")
+	}
+	order := uint16(attrInfo.MaxCreationIndex)
+	attrInfo.MaxCreationIndex++
+	data, err := core.EncodeAttributeInfoMessage(attrInfo, sb)
+	if err != nil {
+		return 0, fmt.Errorf("failed to encode attribute info: %w", err)
+	}
+	for _, msg := range oh.Messages {
+		if msg.Type == core.MsgAttributeInfo {
+			msg.Data = data
+			if err := core.WriteObjectHeader(fw.writer, objectAddr, oh, sb); err != nil {
+				return 0, fmt.Errorf("failed to write object header: %w", err)
+			}
+			return order, nil
+		}
+	}
+	return 0, fmt.Errorf("attribute info message not found")
 }
 
 // inferDatatypeFromValue infers HDF5 datatype and dimensions from a Go value.
