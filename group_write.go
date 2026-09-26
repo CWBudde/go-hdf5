@@ -1,6 +1,7 @@
 package hdf5
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -213,7 +214,7 @@ func (fw *FileWriter) RootGroup() (*GroupWriter, error) {
 // Limitations for MVP (v0.11.0-beta):
 //   - Only symbol table structure (no indexed groups)
 //   - No link creation time tracking
-//   - Maximum 32 entries per group (symbol table node capacity)
+//   - Local heap and group B-tree grow as links are added (no size limit)
 //   - Parent group must exist (create parents first)
 func (fw *FileWriter) CreateGroup(path string) (*GroupWriter, error) {
 	// Validate path
@@ -338,12 +339,12 @@ func (fw *FileWriter) linkToParent(parentPath, childName string, childAddr uint6
 		btreeAddr = meta.btreeAddr
 	}
 
-	// Step 1: Read the group B-tree (single leaf level) and all its symbol table nodes.
-	snodAddrs, err := fw.readGroupBTreeChildren(btreeAddr)
+	// Step 1: Read the group B-tree and all its symbol table nodes.
+	tree, err := fw.readGroupBTree(btreeAddr)
 	if err != nil {
 		return err
 	}
-	entries, err := fw.readGroupEntries(snodAddrs)
+	entries, err := fw.readGroupEntries(tree.snods)
 	if err != nil {
 		return err
 	}
@@ -366,13 +367,13 @@ func (fw *FileWriter) linkToParent(parentPath, childName string, childAddr uint6
 	// The HDF5 library reserves heap offset 0 for the empty string: it is the
 	// left-most key of the group B-tree (H5G__stab_create_components).
 	if len(entries) == 0 {
-		if _, err := heap.AddString(""); err != nil {
+		if _, err := fw.addHeapString(heap, ""); err != nil {
 			return fmt.Errorf("reserve empty name in heap: %w", err)
 		}
 	}
 
 	// Step 3: Add child name to heap and the new entry.
-	nameOffset, err := heap.AddString(childName)
+	nameOffset, err := fw.addHeapString(heap, childName)
 	if err != nil {
 		return fmt.Errorf("add string to heap: %w", err)
 	}
@@ -400,8 +401,28 @@ func (fw *FileWriter) linkToParent(parentPath, childName string, childAddr uint6
 
 	// Step 5: Distribute entries over symbol table nodes of at most 2*leafK
 	// entries (the C library reads nodes with exactly that capacity) and
-	// rewrite the group B-tree leaf.
-	return fw.writeGroupSymbolTable(btreeAddr, snodAddrs, entries)
+	// rebuild the group B-tree.
+	return fw.writeGroupSymbolTable(btreeAddr, tree, entries)
+}
+
+// addHeapString adds s to a group's local heap. When the data segment is
+// full it is relocated to newly allocated space of at least twice the size
+// (the heap header, whose address the symbol table message holds, stays in
+// place and is rewritten by LocalHeap.WriteTo); the old segment is
+// abandoned.
+func (fw *FileWriter) addHeapString(heap *structures.LocalHeap, s string) (uint64, error) {
+	off, err := heap.AddString(s)
+	if !errors.Is(err, structures.ErrLocalHeapFull) {
+		return off, err
+	}
+	newSize := max(2*heap.DataSegmentSize, heap.UsedSize()+uint64(len(s))+1)
+	newSize = (newSize + 7) &^ 7
+	addr, err := fw.writer.Allocate(newSize)
+	if err != nil {
+		return 0, fmt.Errorf("allocate local heap data segment: %w", err)
+	}
+	heap.Relocate(addr, newSize)
+	return heap.AddString(s)
 }
 
 // readGroupEntries collects the entries of all given symbol table nodes.
@@ -438,33 +459,80 @@ const (
 	groupInternalK = 16
 )
 
-// readGroupBTreeChildren returns the symbol table node addresses referenced
-// by a single-level (leaf) v1 group B-tree.
-func (fw *FileWriter) readGroupBTreeChildren(btreeAddr uint64) ([]uint64, error) {
+// maxGroupBTreeLevel bounds the depth of group B-trees read by the writer.
+// With 32 children per node, 8 levels address far more links than any file
+// can hold.
+const maxGroupBTreeLevel = 8
+
+// groupBTree lists the nodes of a group's v1 B-tree.
+type groupBTree struct {
+	snods    []uint64 // symbol table nodes, in key order
+	internal []uint64 // B-tree nodes other than the root, in visit order
+}
+
+// readGroupBTree walks the group B-tree rooted at btreeAddr and returns its
+// symbol table nodes and non-root B-tree nodes.
+func (fw *FileWriter) readGroupBTree(btreeAddr uint64) (*groupBTree, error) {
+	t := &groupBTree{}
+	visited := map[uint64]bool{}
+	if err := fw.walkGroupBTree(btreeAddr, -1, visited, t, true); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (fw *FileWriter) walkGroupBTree(addr uint64, wantLevel int, visited map[uint64]bool, t *groupBTree, root bool) error {
 	sb := fw.file.sb
 	o := int(sb.OffsetSize)
 	l := int(sb.LengthSize)
+	if visited[addr] {
+		return fmt.Errorf("group B-tree node %d referenced twice", addr)
+	}
+	visited[addr] = true
 	hdr := make([]byte, 8+2*o)
-	if _, err := fw.writer.ReadAt(hdr, int64(btreeAddr)); err != nil { //nolint:gosec // Safe: file address
-		return nil, fmt.Errorf("read group B-tree header: %w", err)
+	if _, err := fw.writer.ReadAt(hdr, int64(addr)); err != nil { //nolint:gosec // Safe: file address
+		return fmt.Errorf("read group B-tree header: %w", err)
 	}
 	if string(hdr[0:4]) != "TREE" || hdr[4] != 0 {
-		return nil, fmt.Errorf("no group B-tree at address %d", btreeAddr)
+		return fmt.Errorf("no group B-tree at address %d", addr)
 	}
-	if hdr[5] != 0 {
-		return nil, fmt.Errorf("group B-tree at %d has level %d; only single-level trees are supported", btreeAddr, hdr[5])
+	level := int(hdr[5])
+	if level > maxGroupBTreeLevel || (wantLevel >= 0 && level != wantLevel) {
+		return fmt.Errorf("group B-tree node %d has unexpected level %d", addr, level)
 	}
 	n := int(sb.Endianness.Uint16(hdr[6:8]))
-	body := make([]byte, n*(l+o))
-	if _, err := fw.writer.ReadAt(body, int64(btreeAddr)+int64(len(hdr))); err != nil { //nolint:gosec // Safe: file address
-		return nil, fmt.Errorf("read group B-tree entries: %w", err)
+	if n > 2*groupInternalK {
+		return fmt.Errorf("group B-tree node %d has %d children", addr, n)
 	}
-	addrs := make([]uint64, n)
+	if !root {
+		t.internal = append(t.internal, addr)
+	}
+	body := make([]byte, n*(l+o))
+	if _, err := fw.writer.ReadAt(body, int64(addr)+int64(len(hdr))); err != nil { //nolint:gosec // Safe: file address
+		return fmt.Errorf("read group B-tree entries: %w", err)
+	}
 	for i := 0; i < n; i++ {
 		pos := i*(l+o) + l // skip key i
-		addrs[i] = readUintN(body[pos:pos+o], sb)
+		child := readUintN(body[pos:pos+o], sb)
+		if level == 0 {
+			t.snods = append(t.snods, child)
+			continue
+		}
+		if err := fw.walkGroupBTree(child, level-1, visited, t, false); err != nil {
+			return err
+		}
 	}
-	return addrs, nil
+	return nil
+}
+
+// readGroupBTreeChildren returns the symbol table node addresses referenced
+// by the group B-tree at btreeAddr (any depth).
+func (fw *FileWriter) readGroupBTreeChildren(btreeAddr uint64) ([]uint64, error) {
+	t, err := fw.readGroupBTree(btreeAddr)
+	if err != nil {
+		return nil, err
+	}
+	return t.snods, nil
 }
 
 func readUintN(b []byte, sb *core.Superblock) uint64 {
@@ -490,70 +558,147 @@ func putUintN(b []byte, v uint64, sb *core.Superblock) {
 	}
 }
 
-// writeGroupSymbolTable writes sorted entries into symbol table nodes
-// (reusing existingNodes, allocating more if needed) and rewrites the
-// single-leaf group B-tree at btreeAddr to reference them.
-func (fw *FileWriter) writeGroupSymbolTable(btreeAddr uint64, existingNodes []uint64, entries []structures.SymbolTableEntry) error {
+// groupBTreeChild is a child of a group B-tree node with the heap offsets
+// of the names bounding it: its left key (the right key of its left
+// neighbor, "" for the first child) and its right key (its largest name).
+type groupBTreeChild struct {
+	addr     uint64
+	leftKey  uint64
+	rightKey uint64
+}
+
+// writeGroupSymbolTable writes sorted entries into symbol table nodes of at
+// most 2*groupLeafK entries and rebuilds the group B-tree above them, with
+// at most 2*groupInternalK children per node, adding levels as needed. The
+// root stays at btreeAddr (the symbol table message points there); nodes of
+// the previous tree are reused before new space is allocated.
+func (fw *FileWriter) writeGroupSymbolTable(btreeAddr uint64, old *groupBTree, entries []structures.SymbolTableEntry) error {
+	children, err := fw.writeGroupSNODs(old.snods, entries)
+	if err != nil {
+		return err
+	}
+	spare := old.internal
+	level := 0
+	for ; len(children) > 2*groupInternalK; level++ {
+		if level >= maxGroupBTreeLevel {
+			return fmt.Errorf("group B-tree deeper than %d levels", maxGroupBTreeLevel)
+		}
+		if children, err = fw.writeGroupBTreeLevel(level, children, &spare); err != nil {
+			return err
+		}
+	}
+	return fw.writeGroupBTreeNode(btreeAddr, level, children, ^uint64(0), ^uint64(0))
+}
+
+// writeGroupBTreeLevel writes B-tree nodes of the given level holding up to
+// 2*groupInternalK of children each, taking node addresses from spare
+// before allocating, and returns the nodes as children for the level above.
+func (fw *FileWriter) writeGroupBTreeLevel(level int, children []groupBTreeChild, spare *[]uint64) ([]groupBTreeChild, error) {
+	const perBTreeNode = 2 * groupInternalK
+	numParents := (len(children) + perBTreeNode - 1) / perBTreeNode
+	addrs := make([]uint64, numParents)
+	for i := range addrs {
+		if len(*spare) > 0 {
+			addrs[i], *spare = (*spare)[0], (*spare)[1:]
+			continue
+		}
+		var err error
+		if addrs[i], err = fw.writer.Allocate(fw.groupBTreeNodeSize()); err != nil {
+			return nil, fmt.Errorf("allocate group B-tree node: %w", err)
+		}
+	}
+	parents := make([]groupBTreeChild, numParents)
+	for i := range parents {
+		lo := i * perBTreeNode
+		hi := min(lo+perBTreeNode, len(children))
+		left, right := ^uint64(0), ^uint64(0)
+		if i > 0 {
+			left = addrs[i-1]
+		}
+		if i+1 < numParents {
+			right = addrs[i+1]
+		}
+		if err := fw.writeGroupBTreeNode(addrs[i], level, children[lo:hi], left, right); err != nil {
+			return nil, err
+		}
+		parents[i] = groupBTreeChild{addr: addrs[i], leftKey: children[lo].leftKey, rightKey: children[hi-1].rightKey}
+	}
+	return parents, nil
+}
+
+// writeGroupSNODs writes the sorted entries into symbol table nodes of at
+// most 2*groupLeafK entries (reusing the nodes at existing first) and
+// returns them as children of the lowest B-tree level.
+func (fw *FileWriter) writeGroupSNODs(existing []uint64, entries []structures.SymbolTableEntry) ([]groupBTreeChild, error) {
 	sb := fw.file.sb
 	const perNode = 2 * groupLeafK
-	numNodes := (len(entries) + perNode - 1) / perNode
-	if numNodes == 0 {
-		numNodes = 1
-	}
-	if numNodes > 2*groupInternalK {
-		return fmt.Errorf("group is full: at most %d links are supported per symbol-table group", 2*groupInternalK*perNode)
-	}
+	numNodes := max((len(entries)+perNode-1)/perNode, 1)
 
 	entrySize := 2*int(sb.OffsetSize) + 4 + 4 + 16
-	nodes := append([]uint64(nil), existingNodes...)
-	for len(nodes) < numNodes {
+	snods := append([]uint64(nil), existing...)
+	for len(snods) < numNodes {
 		addr, err := fw.writer.Allocate(uint64(8 + perNode*entrySize)) //nolint:gosec // G115: small constant
 		if err != nil {
-			return fmt.Errorf("allocate symbol table node: %w", err)
+			return nil, fmt.Errorf("allocate symbol table node: %w", err)
 		}
-		nodes = append(nodes, addr)
+		snods = append(snods, addr)
 	}
 
-	o := int(sb.OffsetSize)
-	l := int(sb.LengthSize)
-	bt := make([]byte, 8+2*o+numNodes*(l+o)+l)
-	copy(bt[0:4], "TREE")
-	bt[4] = 0                                          // node type: group
-	bt[5] = 0                                          // level: leaf
-	sb.Endianness.PutUint16(bt[6:8], uint16(numNodes)) //nolint:gosec // G115: <= 32
-	putUintN(bt[8:8+o], ^uint64(0), sb)                // left sibling: UNDEF
-	putUintN(bt[8+o:8+2*o], ^uint64(0), sb)            // right sibling: UNDEF
-	pos := 8 + 2*o
-	putUintN(bt[pos:pos+l], 0, sb) // key 0: empty string
-	pos += l
-
+	children := make([]groupBTreeChild, numNodes)
+	var leftKey uint64 // heap offset 0: the empty string
 	for i := 0; i < numNodes; i++ {
 		lo := i * perNode
-		hi := lo + perNode
-		if hi > len(entries) {
-			hi = len(entries)
-		}
+		hi := min(lo+perNode, len(entries))
 		node := structures.NewSymbolTableNode(perNode)
 		for _, e := range entries[lo:hi] {
 			if err := node.AddEntry(e); err != nil {
-				return fmt.Errorf("add entry to symbol table node: %w", err)
+				return nil, fmt.Errorf("add entry to symbol table node: %w", err)
 			}
 		}
-		if err := node.WriteAt(fw.writer, nodes[i], sb.OffsetSize, perNode, sb.Endianness); err != nil {
-			return fmt.Errorf("write symbol table node: %w", err)
+		if err := node.WriteAt(fw.writer, snods[i], sb.OffsetSize, perNode, sb.Endianness); err != nil {
+			return nil, fmt.Errorf("write symbol table node: %w", err)
 		}
-
-		putUintN(bt[pos:pos+o], nodes[i], sb) // child i
-		pos += o
-		var maxKey uint64
+		rightKey := leftKey
 		if hi > lo {
-			maxKey = entries[hi-1].LinkNameOffset // key i+1: largest name in child i
+			rightKey = entries[hi-1].LinkNameOffset
 		}
-		putUintN(bt[pos:pos+l], maxKey, sb)
+		children[i] = groupBTreeChild{addr: snods[i], leftKey: leftKey, rightKey: rightKey}
+		leftKey = rightKey
+	}
+	return children, nil
+}
+
+// groupBTreeNodeSize is the on-disk size of a group B-tree node with
+// 2*groupInternalK children.
+func (fw *FileWriter) groupBTreeNodeSize() uint64 {
+	o := uint64(fw.file.sb.OffsetSize)
+	l := uint64(fw.file.sb.LengthSize)
+	return 8 + 2*o + (2*groupInternalK+1)*l + 2*groupInternalK*o
+}
+
+// writeGroupBTreeNode writes a group B-tree node at addr: keys and child
+// addresses interleaved, zero-padded to the full node size.
+func (fw *FileWriter) writeGroupBTreeNode(addr uint64, level int, children []groupBTreeChild, left, right uint64) error {
+	sb := fw.file.sb
+	o := int(sb.OffsetSize)
+	l := int(sb.LengthSize)
+	bt := make([]byte, fw.groupBTreeNodeSize())
+	copy(bt[0:4], "TREE")
+	bt[4] = 0 // node type: group
+	bt[5] = byte(level)
+	sb.Endianness.PutUint16(bt[6:8], uint16(len(children))) //nolint:gosec // G115: <= 32
+	putUintN(bt[8:8+o], left, sb)
+	putUintN(bt[8+o:8+2*o], right, sb)
+	pos := 8 + 2*o
+	putUintN(bt[pos:pos+l], children[0].leftKey, sb)
+	pos += l
+	for _, c := range children {
+		putUintN(bt[pos:pos+o], c.addr, sb)
+		pos += o
+		putUintN(bt[pos:pos+l], c.rightKey, sb)
 		pos += l
 	}
-
-	if err := fw.writer.WriteAtAddress(bt, btreeAddr); err != nil {
+	if err := fw.writer.WriteAtAddress(bt, addr); err != nil {
 		return fmt.Errorf("write group B-tree: %w", err)
 	}
 	return nil

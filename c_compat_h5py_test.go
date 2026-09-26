@@ -153,6 +153,23 @@ func TestInteropH5py(t *testing.T) {
 				for i := 0; i < 20; i++ {
 					require.Contains(t, got, "/d"+string(rune('0'+i/10))+string(rune('0'+i%10)))
 				}
+			case "links_100", "links_1000":
+				n := 100
+				if sc.name == "links_1000" {
+					n = 1000
+				}
+				_, nc := got["_netcdf4"]
+				want := n + n/2 + 2 // datasets + "/" + "/sub"
+				if nc {
+					want++
+				}
+				require.Equal(t, want, len(got))
+				for i := 0; i < n; i++ {
+					require.InDelta(t, float64(i), got["/"+manyLinkName(i)].Sum, 0)
+					if i%2 == 0 {
+						require.InDelta(t, float64(i), got["/sub/"+manyLinkName(i)].Sum, 0)
+					}
+				}
 			case "vlen_dataset":
 				require.Equal(t, []int{3}, got["/v"].Shape)
 				require.InDelta(t, 21.0, got["/v"].Sum, 1e-9)

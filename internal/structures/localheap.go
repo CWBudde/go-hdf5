@@ -9,6 +9,10 @@ import (
 	"github.com/cwbudde/go-hdf5/internal/utils"
 )
 
+// ErrLocalHeapFull is returned by AddString when the data segment has no
+// room for the string; see Relocate.
+var ErrLocalHeapFull = errors.New("local heap is full")
+
 // LocalHeap represents an HDF5 local heap for storing short strings.
 // Used by symbol tables to store object names.
 //
@@ -87,7 +91,8 @@ func LoadLocalHeap(r io.ReaderAt, address uint64, sb *core.Superblock) (*LocalHe
 
 	heap := &LocalHeap{
 		//nolint:gosec // G115: headerSize is calculated from small values (LengthSize, OffsetSize <= 8)
-		HeaderSize: uint64(headerSize),
+		HeaderSize:         uint64(headerSize),
+		DataSegmentAddress: dataSegmentAddr,
 	}
 
 	// Allocate and read data segment from the ACTUAL address in the header
@@ -133,7 +138,7 @@ func (h *LocalHeap) GetString(offset uint64) (string, error) {
 // For MVP:
 //   - No free list management (append-only)
 //   - Strings are stored sequentially with null terminators
-//   - Size is fixed at creation (no dynamic growth)
+//   - Size is fixed at creation; callers grow the heap with Relocate
 func NewLocalHeap(initialSize uint64) *LocalHeap {
 	// Ensure minimum size (at least 16 bytes for alignment)
 	if initialSize < 16 {
@@ -171,7 +176,7 @@ func (h *LocalHeap) AddString(s string) (offset uint64, err error) {
 	// Check if we have space
 	currentSize := uint64(len(h.strings))
 	if currentSize+uint64(needed) > h.DataSegmentSize { //nolint:gosec // Safe: size calculation
-		return 0, errors.New("local heap is full")
+		return 0, ErrLocalHeapFull
 	}
 
 	// Record offset before adding
@@ -191,6 +196,22 @@ func (h *LocalHeap) AddString(s string) (offset uint64, err error) {
 	return offset, nil
 }
 
+// UsedSize returns the number of data segment bytes holding strings.
+func (h *LocalHeap) UsedSize() uint64 {
+	return uint64(len(h.strings))
+}
+
+// Relocate moves the data segment of a heap being modified to addr with the
+// given (larger) size. Offsets of existing strings are unchanged. The next
+// WriteTo writes the header pointing to the new segment and the segment
+// itself; the old segment is no longer referenced.
+func (h *LocalHeap) Relocate(addr, size uint64) {
+	h.DataSegmentAddress = addr
+	if size > h.DataSegmentSize {
+		h.DataSegmentSize = size
+	}
+}
+
 // WriteTo writes the local heap to the file at the specified address.
 // This includes the header and the data segment.
 //
@@ -205,12 +226,15 @@ func (h *LocalHeap) AddString(s string) (offset uint64, err error) {
 //   - Header (32 bytes): Signature + version + size + free list + data address
 //   - Data segment (at address + 32): Strings with null terminators
 //
-// The data segment address in the header is set to address + 32.
+// A new heap's data segment is placed at address + 32 (directly after the
+// header); a heap loaded from the file or relocated keeps its segment
+// address.
 func (h *LocalHeap) WriteTo(w io.WriterAt, address uint64) error {
-	// Set data segment address (immediately after header)
 	// Header size is 32 bytes for 8-byte addressing (4 + 1 + 3 + 8 + 8 + 8)
 	headerSize := uint64(32)
-	h.DataSegmentAddress = address + headerSize
+	if h.DataSegmentAddress == 0 {
+		h.DataSegmentAddress = address + headerSize
+	}
 
 	// Pad strings buffer to full data segment size
 	if uint64(len(h.strings)) < h.DataSegmentSize {
