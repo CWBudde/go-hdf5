@@ -262,7 +262,7 @@ func TestChunkedArrayDatasetChunks(t *testing.T) {
 	chunk := func(values ...int32) []byte {
 		b := make([]byte, 48)
 		for i, v := range values {
-			binary.LittleEndian.PutUint32(b[4*i:], uint32(v)) //nolint:gosec // small test values
+			binary.LittleEndian.PutUint32(b[4*i:], uint32(v))
 		}
 		return b
 	}

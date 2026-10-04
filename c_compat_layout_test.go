@@ -43,7 +43,7 @@ func seqFloat64(n int) []float64 {
 func seqInt32(n int) []int32 {
 	out := make([]int32, n)
 	for i := range out {
-		out[i] = int32(i + 1) //nolint:gosec // small test sizes
+		out[i] = int32(i + 1)
 	}
 	return out
 }
