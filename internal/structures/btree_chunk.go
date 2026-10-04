@@ -73,6 +73,7 @@ type ChunkBTreeWriter struct {
 	// chunkDims, when set via SetChunkDims, switches the writer to the
 	// on-disk format expected by the HDF5 C library (see SetChunkDims).
 	chunkDims []uint64
+	elemSize  uint64
 }
 
 // chunkBTreeK is the HDF5 default "indexed storage internal node K"
@@ -85,14 +86,21 @@ const chunkBTreeK = 32
 //     dimension), followed by an extra trailing 0 offset for the datatype
 //     "dimension", as in H5D__btree_encode_key;
 //   - the final key is the chunk just after the last one (last+1 in every
-//     dimension), which is a valid multiple of the chunk dimensions;
+//     dimension), which is a valid multiple of the chunk dimensions, and
+//     its datatype offset is elemSize, as H5D__btree_new_node writes it.
+//     Readers such as libmysofa stop at the first key with a non-zero
+//     datatype offset instead of counting entries;
 //   - every node is padded to the full 2K entries size and trees with more
 //     than 2K chunks are split into multiple levels.
 //
-// chunkDims must have exactly `dimensionality` entries (the dataset rank).
-func (w *ChunkBTreeWriter) SetChunkDims(chunkDims []uint64) error {
+// chunkDims must have exactly `dimensionality` entries (the dataset rank);
+// elemSize is the datatype size in bytes.
+func (w *ChunkBTreeWriter) SetChunkDims(chunkDims []uint64, elemSize uint64) error {
 	if len(chunkDims) != w.dimensionality {
 		return fmt.Errorf("chunk dims rank mismatch: expected %d, got %d", w.dimensionality, len(chunkDims))
+	}
+	if elemSize == 0 {
+		return fmt.Errorf("element size is zero")
 	}
 	for i, d := range chunkDims {
 		if d == 0 {
@@ -100,6 +108,7 @@ func (w *ChunkBTreeWriter) SetChunkDims(chunkDims []uint64) error {
 		}
 	}
 	w.chunkDims = append([]uint64(nil), chunkDims...)
+	w.elemSize = elemSize
 	return nil
 }
 
@@ -265,6 +274,9 @@ func (w *ChunkBTreeWriter) writeHDF5Tree(writer Writer, allocator Allocator) (ui
 				v++
 			}
 			out[i] = v * w.chunkDims[i]
+		}
+		if plusOne {
+			out[w.dimensionality] = w.elemSize
 		}
 		return out
 	}

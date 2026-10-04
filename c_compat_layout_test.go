@@ -101,6 +101,9 @@ func compatScenarios() []writeScenario {
 				WithGZIPCompression(6))
 			require.NoError(t, err)
 			require.NoError(t, k3.Write(seqFloat64(60)))
+			k4, err := fw.CreateDataset("/k4", Int32, []uint64{9}, WithChunkDims([]uint64{4}))
+			require.NoError(t, err)
+			require.NoError(t, k4.Write([]int32{1, 2, 3, 4, 5, 6, 7, 8, 9})) // 4-byte elements
 
 			// Never written: allocated space must still be inside the file.
 			_, err = fw.CreateDataset("/unwritten", Float64, []uint64{100})
@@ -329,6 +332,9 @@ type sofaShape struct {
 	// adds 4 global attributes, so the root's 10 attributes use dense
 	// storage, one of them non-ASCII (largeSOFARoomDescription).
 	Extras int
+	// Deflate stores Data.IR in shuffled, deflated chunks of one receiver
+	// across all measurements, as SOFA files from netCDF-C usually are.
+	Deflate bool
 }
 
 // largeSOFARoomDescription is a non-ASCII global attribute of files written
@@ -361,7 +367,7 @@ func writeSOFA(t *testing.T, path string, shape sofaShape) {
 	fw, err := CreateForWrite(path, CreateTruncate, opts...)
 	require.NoError(t, err)
 
-	m, n := shape.M, shape.N
+	m, n, deflate := shape.M, shape.N, shape.Deflate
 	dims := map[string]uint64{"M": uint64(m), "R": 2, "E": 1, "N": uint64(n), "C": 3, "I": 1}
 	scales := map[string]*DatasetWriter{}
 	for _, name := range []string{"C", "E", "I", "M", "N", "R"} {
@@ -381,7 +387,11 @@ func writeSOFA(t *testing.T, path string, shape sofaShape) {
 		}
 		// Attributes are given at creation, as go-sofa does, so the space
 		// reserved for DIMENSION_LIST is still free at Close.
-		opts := make([]DatasetOption, 0, len(attrs)/2)
+		opts := make([]DatasetOption, 0, len(attrs)/2+3)
+		if name == "Data.IR" && deflate {
+			opts = append(opts, WithChunkDims([]uint64{uint64(m), 1, uint64(n)}),
+				WithShuffle(), WithGZIPCompression(4))
+		}
 		for i := 0; i+1 < len(attrs); i += 2 {
 			opts = append(opts, WithAttribute(attrs[i], attrs[i+1]))
 		}
@@ -760,12 +770,15 @@ func (c *layoutChecker) checkLayout(l []byte, rank int) {
 		for i := range dims {
 			dims[i] = uint64(binary.LittleEndian.Uint32(l[11+4*i:]))
 		}
-		c.checkChunkBTree(btree, dims)
+		c.checkChunkBTree(btree, dims, true)
 	}
 }
 
-// checkChunkBTree validates a v1 raw-data chunk B-tree (node K = 32).
-func (c *layoutChecker) checkChunkBTree(addr uint64, dims []uint64) {
+// checkChunkBTree validates a v1 raw-data chunk B-tree (node K = 32). The
+// last key of the right-most nodes carries the element size (the last of
+// dims) as its datatype offset, as the C library writes it; libmysofa stops
+// reading a node at that key. All other datatype offsets are 0.
+func (c *layoutChecker) checkChunkBTree(addr uint64, dims []uint64, rightmost bool) {
 	t := c.t
 	nd := uint64(len(dims))
 	keySize := 8 + 8*nd
@@ -782,12 +795,17 @@ func (c *layoutChecker) checkChunkBTree(addr uint64, dims []uint64) {
 			off := c.u64(pos + 8 + 8*j)
 			require.Zero(t, off%dims[j], "chunk key offset must be a multiple of the chunk dimension")
 		}
-		require.Zero(t, c.u64(pos+8+8*(nd-1)), "datatype dimension offset must be 0")
+		dtOff := c.u64(pos + 8 + 8*(nd-1))
+		if rightmost && i == n {
+			require.Equal(t, dims[nd-1], dtOff, "final key datatype offset must be the element size")
+		} else {
+			require.Zero(t, dtOff, "datatype dimension offset must be 0")
+		}
 		pos += keySize
 		if i < n {
 			child := c.u64(pos)
 			if level > 0 {
-				c.checkChunkBTree(child, dims)
+				c.checkChunkBTree(child, dims, rightmost && i == n-1)
 			} else {
 				c.inside("chunk", child, uint64(c.u32(pos-keySize)))
 			}

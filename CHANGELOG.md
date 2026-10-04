@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The last key of a chunk B-tree carries the element size as its datatype
+  offset, as the HDF5 C library writes it (it was 0). libmysofa reads chunk
+  keys until it finds a non-zero datatype offset, so it ran past the last
+  chunk and rejected every chunked, deflated dataset written by go-hdf5.
+
 ## [v0.18.0] - 2026-09-26
 
 ### Changed

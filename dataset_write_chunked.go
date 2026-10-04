@@ -248,7 +248,7 @@ func (dw *DatasetWriter) writeChunkedData(buf []byte) error {
 	// 1. Create B-tree writer
 	dimensionality := len(dw.dims)
 	btreeWriter := structures.NewChunkBTreeWriter(dimensionality)
-	if err := btreeWriter.SetChunkDims(dw.chunkDims); err != nil {
+	if err := btreeWriter.SetChunkDims(dw.chunkDims, uint64(elemSize)); err != nil {
 		return fmt.Errorf("failed to configure chunk index: %w", err)
 	}
 
