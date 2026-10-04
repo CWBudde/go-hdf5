@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.18.1] - 2026-10-04
+
 ### Fixed
 
 - The last key of a chunk B-tree carries the element size as its datatype
