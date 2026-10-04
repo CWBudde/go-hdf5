@@ -27,6 +27,7 @@ func TestLibmysofaLoad(t *testing.T) {
 	}{
 		{"minimal", sofaShape{M: 2, N: 4}},
 		{"large", largeSOFAShape},
+		{"deflate", sofaShape{M: 100, N: 256, Deflate: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), tc.name+".sofa")

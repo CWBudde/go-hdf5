@@ -1,6 +1,8 @@
 package hdf5
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -240,4 +242,30 @@ func TestChunkedDatasetLargeInitialHeader(t *testing.T) {
 		}
 	})
 	require.Equal(t, want, got)
+}
+
+// TestChunkedArrayDatasetChunks checks that chunks of an array dataset hold
+// whole elements: with 12-byte ArrayInt32{3} elements and 4 elements per
+// chunk, the chunks are 48 bytes (the last padded with zeros), not 16.
+func TestChunkedArrayDatasetChunks(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "array.h5")
+	fw, err := CreateForWrite(p, CreateTruncate)
+	require.NoError(t, err)
+	ds, err := fw.CreateDataset("/a", ArrayInt32, []uint64{6}, WithArrayDims([]uint64{3}),
+		WithChunkDims([]uint64{4}))
+	require.NoError(t, err)
+	require.NoError(t, ds.Write(seqInt32(18)))
+	require.NoError(t, fw.Close())
+
+	data, err := os.ReadFile(p)
+	require.NoError(t, err)
+	chunk := func(values ...int32) []byte {
+		b := make([]byte, 48)
+		for i, v := range values {
+			binary.LittleEndian.PutUint32(b[4*i:], uint32(v))
+		}
+		return b
+	}
+	require.True(t, bytes.Contains(data, chunk(seqInt32(12)...)), "first chunk: elements 0-3")
+	require.True(t, bytes.Contains(data, chunk(seqInt32(18)[12:]...)), "second chunk: elements 4-5 and padding")
 }
