@@ -39,6 +39,15 @@ func seqFloat64(n int) []float64 {
 	return v
 }
 
+// seqInt32 returns 1, 2, ..., n.
+func seqInt32(n int) []int32 {
+	out := make([]int32, n)
+	for i := range out {
+		out[i] = int32(i + 1) //nolint:gosec // small test sizes
+	}
+	return out
+}
+
 //nolint:gocognit // one closure per scenario
 func compatScenarios() []writeScenario {
 	closeOK := func(t *testing.T, fw *FileWriter) {
@@ -104,6 +113,10 @@ func compatScenarios() []writeScenario {
 			k4, err := fw.CreateDataset("/k4", Int32, []uint64{9}, WithChunkDims([]uint64{4}))
 			require.NoError(t, err)
 			require.NoError(t, k4.Write([]int32{1, 2, 3, 4, 5, 6, 7, 8, 9})) // 4-byte elements
+			k5, err := fw.CreateDataset("/k5", ArrayInt32, []uint64{5}, WithArrayDims([]uint64{3}),
+				WithChunkDims([]uint64{2}))
+			require.NoError(t, err)
+			require.NoError(t, k5.Write(seqInt32(15))) // 12-byte elements of a 4-byte base type
 
 			// Never written: allocated space must still be inside the file.
 			_, err = fw.CreateDataset("/unwritten", Float64, []uint64{100})

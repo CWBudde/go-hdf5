@@ -217,6 +217,7 @@ func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []u
 		chunkCoordinator:  chunkCoordinator,
 		chunkDims:         config.chunkDims,
 		pipeline:          config.pipeline, // Filter pipeline
+		chunkElemSize:     dtInfo.size,
 		layoutBTreeOffset: layoutBTreeOffset,
 	}, nil
 }
@@ -243,7 +244,7 @@ func (dw *DatasetWriter) writeChunkedData(buf []byte) error {
 		return fmt.Errorf("data size mismatch: expected %d bytes, got %d", dw.dataSize, len(buf))
 	}
 
-	elemSize := dw.dtype.Size
+	elemSize := dw.chunkElemSize
 
 	// 1. Create B-tree writer
 	dimensionality := len(dw.dims)

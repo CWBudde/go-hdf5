@@ -1331,6 +1331,7 @@ type DatasetWriter struct {
 	chunkCoordinator *writer.ChunkCoordinator // For chunked datasets
 	chunkDims        []uint64                 // Chunk dimensions
 	pipeline         *writer.FilterPipeline   // Filter pipeline for chunked datasets
+	chunkElemSize    uint32                   // Bytes per element of a chunked dataset; dtype is only the base type of arrays
 
 	// layoutBTreeOffset is the file offset where the B-tree address is stored
 	// in the layout message. Used to update the address after writing chunks.
